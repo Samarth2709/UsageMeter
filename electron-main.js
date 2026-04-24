@@ -29,6 +29,20 @@ let latestSnapshot = null;
 let refreshPromise = null;
 let backgroundRefreshTimer = null;
 
+function buildFailureSnapshot(error) {
+  const message = error instanceof Error ? error.message : "Refresh failed.";
+  const state = getState();
+
+  return {
+    refreshedAt: new Date().toISOString(),
+    results: state.config.accounts.map((account) => ({
+      accountId: account.id,
+      ok: false,
+      error: message
+    }))
+  };
+}
+
 function createTrayIcon() {
   const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.svg"));
   icon.setTemplateImage(true);
@@ -138,7 +152,14 @@ async function refreshSnapshot() {
   }
 
   refreshPromise = (async () => {
-    const snapshot = await refreshAllAccounts();
+    let snapshot;
+
+    try {
+      snapshot = await refreshAllAccounts();
+    } catch (error) {
+      snapshot = buildFailureSnapshot(error);
+    }
+
     latestSnapshot = snapshot;
     broadcastSnapshot(snapshot);
     return snapshot;

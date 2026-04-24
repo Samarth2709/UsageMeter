@@ -5,12 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Rate Limit Tool</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=20260423b" />
+    <link rel="stylesheet" href="styles.css?v=20260424b" />
   </head>
   <body>
     <main class="widget-shell">
       <header class="widget-header">
-        <h1>Limits</h1>
+        <div class="title-group">
+          <h1>Limits</h1>
+          <div class="status-anchor">
+            <span
+              id="overall-status"
+              class="header-status status-pending"
+              aria-label="Waiting for refresh"
+              tabindex="0"
+              title="Waiting for refresh"
+            ></span>
+            <div id="status-tooltip" class="status-tooltip">Waiting for refresh</div>
+          </div>
+        </div>
         <button id="refresh-button" class="icon-button" aria-label="Refresh" title="Refresh">
           ↻
         </button>
@@ -28,6 +40,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=20260423b" type="module"></script>
+    <script src="app.js?v=20260424b" type="module"></script>
   </body>
 </html>

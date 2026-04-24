@@ -1,10 +1,13 @@
 const accountsRoot = document.querySelector("#accounts");
 const accountTemplate = document.querySelector("#account-template");
 const refreshButton = document.querySelector("#refresh-button");
+const overallStatus = document.querySelector("#overall-status");
+const statusTooltip = document.querySelector("#status-tooltip");
 const nativeApi = window.rateLimitAPI || null;
 
 let state = null;
 let accountElements = new Map();
+let accountStates = new Map();
 let refreshInFlight = null;
 let unsubscribeSnapshot = null;
 
@@ -72,6 +75,16 @@ function compactWindowLabel(label) {
   return String(label || "").toLowerCase();
 }
 
+function compactEmail(email) {
+  const local = String(email || "").split("@")[0].trim();
+
+  if (!local) {
+    return "";
+  }
+
+  return `${local.slice(0, 8).replace(/[._-]+$/g, "")}...`;
+}
+
 function buildSummary(data) {
   if (!Array.isArray(data.windows) || !data.windows.length) {
     return "No limit data";
@@ -80,6 +93,92 @@ function buildSummary(data) {
   return data.windows
     .map((window) => `${compactWindowLabel(window.label)} ${Math.round(window.remainingPercent)}%`)
     .join("  ");
+}
+
+function getAccount(accountId) {
+  return state?.config.accounts.find((account) => account.id === accountId) || null;
+}
+
+function baseAccountName(account) {
+  if (!account) {
+    return "Account";
+  }
+
+  return account.type === "claude" ? "Claude" : "Codex";
+}
+
+function buildAccountName(account, data) {
+  const emailLabel = compactEmail(data?.email);
+
+  if (!emailLabel) {
+    return baseAccountName(account);
+  }
+
+  return `${baseAccountName(account)} (${emailLabel})`;
+}
+
+function setOverallStatus(detail, className) {
+  overallStatus.className = `header-status ${className}`;
+  overallStatus.title = detail;
+  overallStatus.setAttribute("aria-label", detail.replace(/\n/g, "; "));
+  statusTooltip.textContent = detail;
+}
+
+function syncOverallStatus() {
+  if (!state) {
+    return;
+  }
+
+  const entries = state.config.accounts.map((account) => {
+    const existing = accountStates.get(account.id);
+
+    if (existing) {
+      return existing;
+    }
+
+    return {
+      name: buildAccountName(account),
+      kind: "pending",
+      detail: "Waiting for refresh"
+    };
+  });
+
+  let headline = "Waiting for refresh";
+  let className = "status-pending";
+
+  if (entries.some((entry) => entry.kind === "error" || entry.kind === "disconnected")) {
+    headline = "Some accounts need attention";
+    className = "status-error";
+  } else if (entries.every((entry) => entry.kind === "ok")) {
+    headline = "All accounts connected";
+    className = "status-ok";
+  } else if (entries.some((entry) => entry.detail === "Loading…")) {
+    headline = "Refreshing usage";
+  }
+
+  const detail = [headline, ...entries.map((entry) => `${entry.name}: ${entry.detail}`)].join("\n");
+  setOverallStatus(detail, className);
+}
+
+function updateAccountState(accountId, patch = {}) {
+  const account = getAccount(accountId);
+  const elements = accountElements.get(accountId);
+  const existing = accountStates.get(accountId) || {};
+  const data = patch.data !== undefined ? patch.data : existing.data;
+  const nextState = {
+    ...existing,
+    ...patch,
+    data,
+    name: buildAccountName(account, data)
+  };
+
+  accountStates.set(accountId, nextState);
+
+  if (elements) {
+    elements.name.textContent = nextState.name;
+  }
+
+  syncOverallStatus();
 }
 
 function setLoading(accountId) {
@@ -91,6 +190,11 @@ function setLoading(accountId) {
   elements.summary.textContent = "Loading…";
   elements.summary.className = "account-summary pending";
   elements.connectButton.classList.add("hidden");
+  elements.connectButton.textContent = "Connect";
+  updateAccountState(accountId, {
+    kind: "pending",
+    detail: "Loading…"
+  });
 }
 
 function setIdle(accountId) {
@@ -102,6 +206,11 @@ function setIdle(accountId) {
   elements.summary.textContent = "Waiting…";
   elements.summary.className = "account-summary pending";
   elements.connectButton.classList.add("hidden");
+  elements.connectButton.textContent = "Connect";
+  updateAccountState(accountId, {
+    kind: "pending",
+    detail: "Waiting for refresh"
+  });
 }
 
 function renderConnected(accountId, data) {
@@ -110,9 +219,16 @@ function renderConnected(accountId, data) {
     return;
   }
 
-  elements.summary.textContent = buildSummary(data);
+  const summary = buildSummary(data);
+  elements.summary.textContent = summary;
   elements.summary.className = "account-summary";
   elements.connectButton.classList.add("hidden");
+  elements.connectButton.textContent = "Connect";
+  updateAccountState(accountId, {
+    kind: "ok",
+    detail: summary,
+    data
+  });
 }
 
 function renderDisconnected(accountId) {
@@ -122,18 +238,30 @@ function renderDisconnected(accountId) {
   }
 
   elements.summary.textContent = "Not connected";
+  elements.summary.className = "account-summary error";
   elements.connectButton.classList.remove("hidden");
+  elements.connectButton.textContent = "Connect";
+  updateAccountState(accountId, {
+    kind: "disconnected",
+    detail: "Not connected"
+  });
 }
 
-function renderError(accountId) {
+function renderError(accountId, error) {
   const elements = accountElements.get(accountId);
   if (!elements) {
     return;
   }
 
+  const detail = String(error || "Unavailable");
   elements.summary.textContent = "Unavailable";
   elements.summary.className = "account-summary error";
   elements.connectButton.classList.add("hidden");
+  elements.connectButton.textContent = "Connect";
+  updateAccountState(accountId, {
+    kind: "error",
+    detail
+  });
 }
 
 function renderResult(result) {
@@ -147,7 +275,7 @@ function renderResult(result) {
     return;
   }
 
-  renderError(result.accountId);
+  renderError(result.accountId, result.error);
 }
 
 function applySnapshot(snapshot) {
@@ -166,7 +294,7 @@ function createAccountRow(account) {
   const summary = node.querySelector(".account-summary");
   const connectButton = node.querySelector(".connect-button");
 
-  name.textContent = account.label;
+  name.textContent = buildAccountName(account);
   summary.textContent = "Loading…";
   summary.className = "account-summary pending";
 
@@ -175,14 +303,16 @@ function createAccountRow(account) {
     connectButton.textContent = "Opening…";
     summary.textContent = "Waiting for login…";
     summary.className = "account-summary pending";
+    updateAccountState(account.id, {
+      kind: "pending",
+      detail: "Waiting for login"
+    });
 
     try {
       await openAccountLogin(account.id);
-      connectButton.textContent = "Waiting…";
+      connectButton.textContent = "Connect";
     } catch {
-      connectButton.textContent = "Retry";
-      summary.textContent = "Not connected";
-      summary.className = "account-summary";
+      renderDisconnected(account.id);
     } finally {
       connectButton.disabled = false;
     }
@@ -200,6 +330,7 @@ function createAccountRow(account) {
 async function loadState() {
   state = await loadAppState();
   accountElements = new Map();
+  accountStates = new Map();
   accountsRoot.innerHTML = "";
 
   for (const account of state.config.accounts) {
@@ -218,7 +349,13 @@ async function refreshAll() {
       setLoading(account.id);
     }
 
-    applySnapshot(await refreshAppUsage());
+    try {
+      applySnapshot(await refreshAppUsage());
+    } catch (error) {
+      for (const account of state.config.accounts) {
+        renderError(account.id, error?.message || "Unavailable");
+      }
+    }
   })();
 
   try {
@@ -257,3 +394,9 @@ const snapshot = await loadSnapshot();
 if (snapshot) {
   applySnapshot(snapshot);
 }
+
+window.addEventListener("beforeunload", () => {
+  if (typeof unsubscribeSnapshot === "function") {
+    unsubscribeSnapshot();
+  }
+});
