@@ -1,0 +1,41 @@
+{
+  "name": "rate-limit-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Mac app for checking Codex and Claude usage limits.",
+  "author": "Samarth Kumbla",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "server": "node server.js",
+    "dist:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.samarth.ratelimittool",
+    "productName": "Rate Limit Tool",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "files": [
+      "assets/**",
+      "public/**",
+      "electron-main.js",
+      "preload.js",
+      "server.js",
+      "package.json"
+    ]
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
+  }
+}

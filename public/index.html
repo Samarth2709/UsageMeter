@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rate Limit Tool</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="styles.css?v=20260423b" />
+  </head>
+  <body>
+    <main class="widget-shell">
+      <header class="widget-header">
+        <h1>Limits</h1>
+        <button id="refresh-button" class="icon-button" aria-label="Refresh" title="Refresh">
+          ↻
+        </button>
+      </header>
+      <section id="accounts" class="account-list" aria-live="polite"></section>
+    </main>
+
+    <template id="account-template">
+      <article class="account-row">
+        <p class="account-name"></p>
+        <div class="account-right">
+          <p class="account-summary"></p>
+          <button class="connect-button hidden">Connect</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js?v=20260423b" type="module"></script>
+  </body>
+</html>
