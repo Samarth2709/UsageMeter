@@ -2,7 +2,6 @@ const accountsRoot = document.querySelector("#accounts");
 const accountTemplate = document.querySelector("#account-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
-const statusTooltip = document.querySelector("#status-tooltip");
 const nativeApi = window.rateLimitAPI || null;
 
 let state = null;
@@ -92,7 +91,55 @@ function buildSummary(data) {
 
   return data.windows
     .map((window) => `${compactWindowLabel(window.label)} ${Math.round(window.remainingPercent)}%`)
-    .join("  ");
+    .join("  ") + buildResetSuffix(data);
+}
+
+function formatResetTime(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value).replace(/\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
+function getFiveHourWindow(data) {
+  if (!Array.isArray(data?.windows)) {
+    return null;
+  }
+
+  return data.windows.find((window) => /5-hour/i.test(window.label || "")) || null;
+}
+
+function getWindowReset(window) {
+  return formatResetTime(window?.resetAt || window?.resetText);
+}
+
+function buildResetSuffix(data) {
+  const reset = getWindowReset(getFiveHourWindow(data));
+  return reset ? `  r ${reset}` : "";
+}
+
+function buildResetTitle(data) {
+  if (!Array.isArray(data?.windows)) {
+    return "";
+  }
+
+  return data.windows
+    .map((window) => {
+      const reset = getWindowReset(window);
+      return reset ? `${compactWindowLabel(window.label)} resets ${reset}` : null;
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function getAccount(accountId) {
@@ -117,11 +164,10 @@ function buildAccountName(account, data) {
   return `${baseAccountName(account)} (${emailLabel})`;
 }
 
-function setOverallStatus(detail, className) {
+function setOverallStatus(statusText, className) {
   overallStatus.className = `header-status ${className}`;
-  overallStatus.title = detail;
-  overallStatus.setAttribute("aria-label", detail.replace(/\n/g, "; "));
-  statusTooltip.textContent = detail;
+  overallStatus.title = statusText;
+  overallStatus.setAttribute("aria-label", statusText);
 }
 
 function syncOverallStatus() {
@@ -156,8 +202,7 @@ function syncOverallStatus() {
     headline = "Refreshing usage";
   }
 
-  const detail = [headline, ...entries.map((entry) => `${entry.name}: ${entry.detail}`)].join("\n");
-  setOverallStatus(detail, className);
+  setOverallStatus(headline, className);
 }
 
 function updateAccountState(accountId, patch = {}) {
@@ -188,6 +233,7 @@ function setLoading(accountId) {
   }
 
   elements.summary.textContent = "Loading…";
+  elements.summary.title = "";
   elements.summary.className = "account-summary pending";
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
@@ -204,6 +250,7 @@ function setIdle(accountId) {
   }
 
   elements.summary.textContent = "Waiting…";
+  elements.summary.title = "";
   elements.summary.className = "account-summary pending";
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
@@ -221,6 +268,7 @@ function renderConnected(accountId, data) {
 
   const summary = buildSummary(data);
   elements.summary.textContent = summary;
+  elements.summary.title = buildResetTitle(data);
   elements.summary.className = "account-summary";
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
@@ -238,6 +286,7 @@ function renderDisconnected(accountId) {
   }
 
   elements.summary.textContent = "Not connected";
+  elements.summary.title = "";
   elements.summary.className = "account-summary error";
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Connect";
@@ -255,6 +304,7 @@ function renderError(accountId, error) {
 
   const detail = String(error || "Unavailable");
   elements.summary.textContent = "Unavailable";
+  elements.summary.title = detail;
   elements.summary.className = "account-summary error";
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
@@ -296,12 +346,14 @@ function createAccountRow(account) {
 
   name.textContent = buildAccountName(account);
   summary.textContent = "Loading…";
+  summary.title = "";
   summary.className = "account-summary pending";
 
   connectButton.addEventListener("click", async () => {
     connectButton.disabled = true;
     connectButton.textContent = "Opening…";
     summary.textContent = "Waiting for login…";
+    summary.title = "";
     summary.className = "account-summary pending";
     updateAccountState(account.id, {
       kind: "pending",

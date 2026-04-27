@@ -9,9 +9,12 @@ const app = express();
 const port = Number(process.env.PORT || 4545);
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const configPath = path.join(appDataDir, "accounts.json");
+const automationStatePath = path.join(appDataDir, "automation-state.json");
+const automationWorkspaceRoot = path.join(appDataDir, "automation-workspaces");
 const defaultCodexHome = path.join(os.homedir(), ".codex");
 const defaultSecondCodexHome = path.join(appDataDir, "codex-account-2");
 const defaultWorkspace = process.cwd();
+const timerKickPrompt = "Reply with exactly OK.";
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -197,6 +200,63 @@ async function saveConfig(config) {
   return normalized;
 }
 
+function defaultAutomationState() {
+  return {
+    accounts: {}
+  };
+}
+
+function normalizeAutomationState(raw) {
+  const accounts = typeof raw?.accounts === "object" && raw.accounts !== null
+    ? raw.accounts
+    : {};
+
+  return {
+    accounts: Object.fromEntries(
+      Object.entries(accounts).map(([accountId, entry]) => [
+        accountId,
+        {
+          lastSuccessfulWindowId: typeof entry?.lastSuccessfulWindowId === "string"
+            ? entry.lastSuccessfulWindowId
+            : null,
+          lastTriggeredAt: typeof entry?.lastTriggeredAt === "string"
+            ? entry.lastTriggeredAt
+            : null,
+          lastAttemptedWindowId: typeof entry?.lastAttemptedWindowId === "string"
+            ? entry.lastAttemptedWindowId
+            : null,
+          lastAttemptedAt: typeof entry?.lastAttemptedAt === "string"
+            ? entry.lastAttemptedAt
+            : null,
+          lastError: typeof entry?.lastError === "string" ? entry.lastError : null
+        }
+      ])
+    )
+  };
+}
+
+async function ensureAutomationState() {
+  await fs.mkdir(appDataDir, { recursive: true });
+
+  if (!existsSync(automationStatePath)) {
+    const initial = defaultAutomationState();
+    await fs.writeFile(automationStatePath, JSON.stringify(initial, null, 2));
+    return initial;
+  }
+
+  const raw = JSON.parse(await fs.readFile(automationStatePath, "utf8"));
+  const normalized = normalizeAutomationState(raw);
+  await fs.writeFile(automationStatePath, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
+async function saveAutomationState(state) {
+  const normalized = normalizeAutomationState(state);
+  await fs.mkdir(appDataDir, { recursive: true });
+  await fs.writeFile(automationStatePath, JSON.stringify(normalized, null, 2));
+  return normalized;
+}
+
 function execFilePromise(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     execFile(command, args, options, (error, stdout, stderr) => {
@@ -341,6 +401,7 @@ async function fetchCodexUsage(account) {
 
   return {
     service: "codex",
+    providerAccountId: accountId,
     email: payload?.email || null,
     planType: payload?.plan_type || null,
     allowed: Boolean(payload?.rate_limit?.allowed),
@@ -375,12 +436,12 @@ function parseClaudeUsageScreen(screenText) {
   const windows = [];
   const sessionBlock = getLastBlock(
     compact,
-    /Current\s*ses{1,2}ion/gi,
-    [/Current\s*we+k\s*\(all\s*models\)/i]
+    /Current\s*ses{1,2}(?:ion)?/gi,
+    [/Current\s*we+k(?:\s*\(all\s*models\))?/i]
   );
   const weekBlock = getLastBlock(
     compact,
-    /Current\s*we+k\s*\(all\s*models\)/gi,
+    /Current\s*we+k(?:\s*\(all\s*models\))?/gi,
     [/Approximate/i, /Last\s*24h/i, /Extra\s*usage/i]
   );
   const extraUsageMatch = getLastMatch(
@@ -579,6 +640,36 @@ async function refreshAccountById(accountId) {
   }
 }
 
+function rejectDuplicateCodexIdentities(results) {
+  const seen = new Map();
+
+  return results.map((result) => {
+    if (!result.ok || result.data?.service !== "codex") {
+      return result;
+    }
+
+    const identity = result.data.providerAccountId || result.data.email;
+
+    if (!identity) {
+      return result;
+    }
+
+    const normalizedIdentity = String(identity).toLowerCase();
+    const firstAccountId = seen.get(normalizedIdentity);
+
+    if (!firstAccountId) {
+      seen.set(normalizedIdentity, result.accountId);
+      return result;
+    }
+
+    return {
+      accountId: result.accountId,
+      ok: false,
+      error: `Duplicate Codex login: this slot is using the same account as ${firstAccountId}. Run login for this account first.`
+    };
+  });
+}
+
 async function refreshAllAccounts() {
   const config = await ensureConfig();
   const results = await Promise.all(
@@ -586,8 +677,210 @@ async function refreshAllAccounts() {
   );
 
   return {
-    results,
+    results: rejectDuplicateCodexIdentities(results),
     refreshedAt: new Date().toISOString()
+  };
+}
+
+function getFiveHourWindow(data) {
+  if (!Array.isArray(data?.windows)) {
+    return null;
+  }
+
+  return data.windows.find((window) => /5-hour/i.test(window?.label || "")) || null;
+}
+
+function getFiveHourWindowId(window) {
+  if (!window) {
+    return null;
+  }
+
+  return String(
+    window.resetAt ||
+      window.resetText ||
+      `${window.label}:${window.usedPercent}:${window.remainingPercent}`
+  );
+}
+
+function getUsageIdentityKey(account, data) {
+  const identity = data?.providerAccountId || data?.email || account.id;
+  return `${account.type}:${String(identity).toLowerCase()}`;
+}
+
+function getAutomationStateEntry(state, identityKey) {
+  return state.accounts[identityKey] || {};
+}
+
+async function ensureAutomationWorkspace(accountId) {
+  const workspace = path.join(automationWorkspaceRoot, accountId);
+  await fs.mkdir(workspace, { recursive: true });
+  return workspace;
+}
+
+async function triggerCodexTimer(account) {
+  const workspace = await ensureAutomationWorkspace(account.id);
+
+  const { stdout, stderr } = await execFilePromise(
+    codexBin,
+    [
+      "exec",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--color",
+      "never",
+      "-s",
+      "read-only",
+      "-C",
+      workspace,
+      timerKickPrompt
+    ],
+    {
+      cwd: workspace,
+      timeout: 120000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: {
+        ...process.env,
+        CODEX_HOME: account.codeHome
+      }
+    }
+  );
+
+  return {
+    stdout: String(stdout || "").trim(),
+    stderr: String(stderr || "").trim()
+  };
+}
+
+async function triggerClaudeTimer(account) {
+  const { stdout, stderr } = await execFilePromise(
+    claudeBin,
+    [
+      "-p",
+      "--output-format",
+      "text",
+      "--permission-mode",
+      "bypassPermissions",
+      "--no-session-persistence",
+      "--tools",
+      "",
+      timerKickPrompt
+    ],
+    {
+      cwd: account.workspace,
+      timeout: 120000,
+      maxBuffer: 2 * 1024 * 1024
+    }
+  );
+
+  return {
+    stdout: String(stdout || "").trim(),
+    stderr: String(stderr || "").trim()
+  };
+}
+
+async function triggerFiveHourTimerForAccount(account) {
+  if (account.type === "claude") {
+    return triggerClaudeTimer(account);
+  }
+
+  return triggerCodexTimer(account);
+}
+
+function summarizeTriggerOutput(result) {
+  const text = String(result?.stdout || result?.stderr || "").trim();
+
+  if (!text) {
+    return null;
+  }
+
+  if (text.length <= 160) {
+    return text;
+  }
+
+  return `${text.slice(0, 157)}...`;
+}
+
+async function processAutoStartSnapshot(snapshot) {
+  const config = await ensureConfig();
+  const automationState = await ensureAutomationState();
+  const configById = new Map(config.accounts.map((account) => [account.id, account]));
+  const actions = [];
+
+  for (const result of snapshot?.results || []) {
+    const account = configById.get(result.accountId);
+
+    if (!account || !result.ok) {
+      continue;
+    }
+
+    const fiveHourWindow = getFiveHourWindow(result.data);
+
+    if (!fiveHourWindow || Number(fiveHourWindow.remainingPercent || 0) < 100) {
+      continue;
+    }
+
+    const windowId = getFiveHourWindowId(fiveHourWindow);
+    const identityKey = getUsageIdentityKey(account, result.data);
+    const entry = getAutomationStateEntry(automationState, identityKey);
+
+    if (!windowId || entry.lastSuccessfulWindowId === windowId) {
+      continue;
+    }
+
+    const attemptedAt = new Date().toISOString();
+
+    if (process.env.RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN === "1") {
+      actions.push({
+        accountId: result.accountId,
+        identityKey,
+        ok: true,
+        dryRun: true,
+        windowId
+      });
+      continue;
+    }
+
+    try {
+      const triggerResult = await triggerFiveHourTimerForAccount(account);
+      automationState.accounts[identityKey] = {
+        ...entry,
+        lastSuccessfulWindowId: windowId,
+        lastTriggeredAt: attemptedAt,
+        lastAttemptedWindowId: windowId,
+        lastAttemptedAt: attemptedAt,
+        lastError: null
+      };
+      actions.push({
+        accountId: result.accountId,
+        identityKey,
+        ok: true,
+        windowId,
+        response: summarizeTriggerOutput(triggerResult)
+      });
+    } catch (error) {
+      automationState.accounts[identityKey] = {
+        ...entry,
+        lastAttemptedWindowId: windowId,
+        lastAttemptedAt: attemptedAt,
+        lastError: error.message
+      };
+      actions.push({
+        accountId: result.accountId,
+        identityKey,
+        ok: false,
+        windowId,
+        error: error.message
+      });
+    }
+  }
+
+  await saveAutomationState(automationState);
+
+  return {
+    checkedAt: new Date().toISOString(),
+    actions
   };
 }
 
@@ -662,7 +955,7 @@ app.post("/api/refresh", async (request, response) => {
 async function startServer() {
   await ensureConfig();
   app.listen(port, () => {
-    console.log(`Rate Limit Tool running at http://localhost:${port}`);
+    console.log(`Usage Meter running at http://localhost:${port}`);
   });
 }
 
@@ -675,6 +968,7 @@ module.exports = {
   saveConfig,
   refreshAccountById,
   refreshAllAccounts,
+  processAutoStartSnapshot,
   openLoginForAccountById,
   startServer
 };

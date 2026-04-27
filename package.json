@@ -1,5 +1,5 @@
 {
-  "name": "rate-limit-tool",
+  "name": "usage-meter",
   "version": "0.1.0",
   "private": true,
   "description": "Local Mac app for checking Codex and Claude usage limits.",
@@ -12,8 +12,8 @@
     "dist:mac": "electron-builder --mac"
   },
   "build": {
-    "appId": "com.samarth.ratelimittool",
-    "productName": "Rate Limit Tool",
+    "appId": "com.samarth.usagemeter",
+    "productName": "Usage Meter",
     "mac": {
       "category": "public.app-category.utilities",
       "identity": null,
