@@ -2,3 +2,4 @@ node_modules/
 npm-debug.log*
 .playwright-cli/
 dist/
+.DS_Store
