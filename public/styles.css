@@ -16,6 +16,8 @@ body {
   font-family: "Times New Roman", Times, serif;
   color: var(--fg);
   background: var(--bg);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 button {
@@ -27,6 +29,7 @@ button {
   color: var(--fg);
   background: transparent;
   cursor: pointer;
+  -webkit-app-region: no-drag;
 }
 
 button:disabled {
@@ -36,6 +39,7 @@ button:disabled {
 
 .widget-shell {
   padding: 10px 12px 12px;
+  -webkit-app-region: drag;
 }
 
 .widget-header {

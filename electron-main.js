@@ -30,6 +30,7 @@ const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 
 let tray = null;
 let popover = null;
+let lastPopoverBounds = null;
 let isQuitting = false;
 let latestSnapshot = null;
 let refreshPromise = null;
@@ -88,18 +89,28 @@ function createPopover() {
 
   popover.loadFile(path.join(__dirname, "public", "index.html"));
 
+  popover.on("moved", () => {
+    lastPopoverBounds = popover.getBounds();
+  });
+
   popover.on("blur", () => {
     if (process.env.RATE_LIMIT_TOOL_KEEP_OPEN) {
       return;
     }
 
     if (!isQuitting && !popover.webContents.isDevToolsOpened()) {
+      lastPopoverBounds = popover.getBounds();
       popover.hide();
     }
   });
 }
 
 function positionPopover() {
+  if (lastPopoverBounds) {
+    popover.setBounds(lastPopoverBounds);
+    return;
+  }
+
   const trayBounds = tray.getBounds();
   const display = trayBounds.width > 0 && trayBounds.height > 0
     ? screen.getDisplayNearestPoint({
@@ -128,6 +139,7 @@ function togglePopover() {
   }
 
   if (popover.isVisible()) {
+    lastPopoverBounds = popover.getBounds();
     popover.hide();
     return;
   }
