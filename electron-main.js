@@ -62,7 +62,7 @@ async function buildFailureSnapshot(error) {
 }
 
 function createTrayIcon() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.svg"));
+  const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.png"));
   icon.setTemplateImage(true);
   return icon;
 }

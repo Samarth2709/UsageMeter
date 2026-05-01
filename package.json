@@ -17,6 +17,9 @@
     "mac": {
       "category": "public.app-category.utilities",
       "identity": null,
+      "extendInfo": {
+        "LSUIElement": true
+      },
       "target": [
         "dmg",
         "zip"
