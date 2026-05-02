@@ -4,6 +4,7 @@ const path = require("path");
 const os = require("os");
 const { existsSync } = require("fs");
 const { execFile } = require("child_process");
+const crypto = require("crypto");
 
 const app = express();
 const port = Number(process.env.PORT || 4545);
@@ -11,11 +12,14 @@ const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const configPath = path.join(appDataDir, "accounts.json");
 const automationStatePath = path.join(appDataDir, "automation-state.json");
 const automationWorkspaceRoot = path.join(appDataDir, "automation-workspaces");
+const claudeWorkspaceRoot = path.join(appDataDir, "claude-workspaces");
 const codexIdentityRoot = path.join(appDataDir, "codex-identities");
 const defaultCodexHome = path.join(os.homedir(), ".codex");
 const defaultSecondCodexHome = path.join(appDataDir, "codex-account-2");
 const defaultWorkspace = process.cwd();
 const timerKickPrompt = "Reply with exactly OK.";
+const browserServerHost = "127.0.0.1";
+const browserServerToken = crypto.randomBytes(32).toString("base64url");
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -47,11 +51,55 @@ const scriptBin = resolveExecutable("script", ["/usr/bin/script"]);
 const codexUsageRequestTimeoutMs = 800;
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+
+async function sendBrowserIndex(response) {
+  const indexPath = path.join(__dirname, "public", "index.html");
+  const html = await fs.readFile(indexPath, "utf8");
+  const tokenScript = `<script>window.__RATE_LIMIT_SERVER_TOKEN__=${JSON.stringify(browserServerToken)};</script>`;
+  response.type("html").send(html.replace("</head>", `${tokenScript}\n  </head>`));
+}
+
+function requireBrowserServerToken(request, response, next) {
+  if (request.get("X-Rate-Limit-Tool-Token") !== browserServerToken) {
+    response.status(403).json({ error: "Invalid local session token." });
+    return;
+  }
+
+  next();
+}
+
+app.get(["/", "/index.html"], async (request, response) => {
+  try {
+    await sendBrowserIndex(response);
+  } catch (error) {
+    response.status(500).send(error.message);
+  }
+});
+app.use(express.static(path.join(__dirname, "public"), { index: false }));
+app.use("/api", requireBrowserServerToken);
 
 function defaultConfig() {
   return {
-    identities: []
+    identities: [
+      {
+        id: "codex-1",
+        type: "codex",
+        label: "Codex Account 1",
+        codeHome: defaultCodexHome
+      },
+      {
+        id: "codex-2",
+        type: "codex",
+        label: "Codex Account 2",
+        codeHome: defaultSecondCodexHome
+      },
+      {
+        id: "claude-1",
+        type: "claude",
+        label: "Claude Code",
+        workspace: defaultWorkspace
+      }
+    ]
   };
 }
 
@@ -220,7 +268,8 @@ function normalizeConfig(raw) {
     : Array.isArray(raw?.accounts)
       ? raw.accounts.map(legacyAccountToIdentity)
       : base.identities;
-  const normalized = incomingIdentities.map(normalizeIdentity);
+  const normalized = (incomingIdentities.length ? incomingIdentities : base.identities)
+    .map(normalizeIdentity);
   const byKey = new Map();
 
   for (const identity of normalized) {
@@ -775,13 +824,13 @@ async function captureClaudeStatus(account) {
     shellQuote(scriptBin),
     "-q",
     "/dev/null",
-    shellQuote(claudeBin),
-    "--dangerously-skip-permissions"
+    shellQuote(claudeBin)
   ].join(" ");
 
   try {
+    const workspace = await ensureClaudeWorkspace(account.id || "status");
     const { stdout } = await execFilePromise("/bin/zsh", ["-lc", command], {
-      cwd: account.workspace,
+      cwd: workspace,
       timeout: 20000,
       maxBuffer: 2 * 1024 * 1024,
       env: {
@@ -1233,6 +1282,12 @@ async function ensureAutomationWorkspace(accountId) {
   return workspace;
 }
 
+async function ensureClaudeWorkspace(accountId) {
+  const workspace = path.join(claudeWorkspaceRoot, safeSegment(accountId));
+  await fs.mkdir(workspace, { recursive: true });
+  return workspace;
+}
+
 async function triggerCodexTimer(account) {
   const workspace = await ensureAutomationWorkspace(account.id);
 
@@ -1270,21 +1325,20 @@ async function triggerCodexTimer(account) {
 }
 
 async function triggerClaudeTimer(account) {
+  const workspace = await ensureClaudeWorkspace(account.id);
   const { stdout, stderr } = await execFilePromise(
     claudeBin,
     [
       "-p",
       "--output-format",
       "text",
-      "--permission-mode",
-      "bypassPermissions",
       "--no-session-persistence",
       "--tools",
       "",
       timerKickPrompt
     ],
     {
-      cwd: account.workspace,
+      cwd: workspace,
       timeout: 120000,
       maxBuffer: 2 * 1024 * 1024
     }
@@ -1470,8 +1524,8 @@ app.post("/api/refresh", async (request, response) => {
 
 async function startServer() {
   await ensureConfig();
-  app.listen(port, () => {
-    console.log(`Usage Meter running at http://localhost:${port}`);
+  app.listen(port, browserServerHost, () => {
+    console.log(`Usage Meter running at http://${browserServerHost}:${port}`);
   });
 }
 
@@ -1487,5 +1541,11 @@ module.exports = {
   getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById,
-  startServer
+  startServer,
+  _test: {
+    defaultConfig,
+    normalizeConfig,
+    serializeConfig,
+    parseClaudeResetAt
+  }
 };

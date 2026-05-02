@@ -3,6 +3,7 @@ const accountTemplate = document.querySelector("#account-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
 const nativeApi = window.rateLimitAPI || null;
+const serverToken = window.__RATE_LIMIT_SERVER_TOKEN__ || "";
 
 let state = null;
 let accountElements = new Map();
@@ -15,7 +16,8 @@ let rowsExpanded = true;
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(serverToken ? { "X-Rate-Limit-Tool-Token": serverToken } : {})
     },
     ...options
   });
@@ -312,7 +314,10 @@ function syncOverallStatus() {
   let headline = "Waiting for refresh";
   let className = "status-pending";
 
-  if (entries.some((entry) => entry.kind === "error" || entry.kind === "disconnected")) {
+  if (!entries.length) {
+    headline = "No accounts configured";
+    className = "status-error";
+  } else if (entries.some((entry) => entry.kind === "error" || entry.kind === "disconnected")) {
     headline = "Some accounts need attention";
     className = "status-error";
   } else if (entries.every((entry) => entry.kind === "ok")) {

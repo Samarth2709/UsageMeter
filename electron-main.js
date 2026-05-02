@@ -2,6 +2,7 @@ const path = require("path");
 const http = require("http");
 const fs = require("fs/promises");
 const os = require("os");
+const crypto = require("crypto");
 const {
   app,
   BrowserWindow,
@@ -36,6 +37,7 @@ const claudeWebRefreshMs = 30000;
 const claudeCliFallbackRefreshMs = 120000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const claudeUsageApiToken = crypto.randomBytes(32).toString("base64url");
 
 let tray = null;
 let popover = null;
@@ -875,12 +877,18 @@ function preserveRecentSuccessfulResults(snapshot, previousSnapshot) {
 
 function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Content-Type": "application/json"
   });
   response.end(JSON.stringify(body, null, 2));
+}
+
+function authorizeClaudeUsageApiRequest(request, response) {
+  if (request.headers["x-rate-limit-tool-token"] !== claudeUsageApiToken) {
+    sendJson(response, 403, { ok: false, error: "Invalid local session token." });
+    return false;
+  }
+
+  return true;
 }
 
 function startClaudeUsageApiServer() {
@@ -891,8 +899,7 @@ function startClaudeUsageApiServer() {
   claudeUsageApiServer = http.createServer(async (request, response) => {
     const url = new URL(request.url, `http://127.0.0.1:${claudeUsageApiPort}`);
 
-    if (request.method === "OPTIONS") {
-      sendJson(response, 200, { ok: true });
+    if (!authorizeClaudeUsageApiRequest(request, response)) {
       return;
     }
 
