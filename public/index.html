@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Usage Meter</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=20260426a" />
+    <link rel="stylesheet" href="styles.css?v=20260501b" />
   </head>
   <body>
     <main class="widget-shell">
@@ -33,12 +33,36 @@
       <article class="account-row">
         <p class="account-name"></p>
         <div class="account-right">
+          <div class="limit-grid" aria-label="Usage limits">
+            <div class="limit-window" data-window="5h">
+              <div class="limit-topline">
+                <span class="limit-label">5h</span>
+                <span class="limit-value">--</span>
+              </div>
+              <p class="limit-reset">
+                <span class="limit-countdown"></span>
+                <span class="limit-separator">·</span>
+                <span class="limit-time"></span>
+              </p>
+            </div>
+            <div class="limit-window" data-window="week">
+              <div class="limit-topline">
+                <span class="limit-label">Week</span>
+                <span class="limit-value">--</span>
+              </div>
+              <p class="limit-reset">
+                <span class="limit-countdown"></span>
+                <span class="limit-separator">·</span>
+                <span class="limit-time"></span>
+              </p>
+            </div>
+          </div>
           <p class="account-summary"></p>
           <button class="connect-button hidden">Connect</button>
         </div>
       </article>
     </template>
 
-    <script src="app.js?v=20260426a" type="module"></script>
+    <script src="app.js?v=20260501c" type="module"></script>
   </body>
 </html>

@@ -1,5 +1,7 @@
 const path = require("path");
 const http = require("http");
+const fs = require("fs/promises");
+const os = require("os");
 const {
   app,
   BrowserWindow,
@@ -15,22 +17,32 @@ const {
   getState,
   saveConfig,
   refreshAllAccounts,
+  getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById
 } = require("./server");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
-const windowHeight = 170;
+const compactWindowHeight = 170;
+const expandedWindowHeight = 220;
+const maxWindowHeight = 620;
+const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
+const windowStatePath = path.join(appDataDir, "window-state.json");
 const backgroundRefreshMs = 60000;
 const claudeUsageApiPort = Number(process.env.CLAUDE_USAGE_API_PORT || 4555);
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
 const claudeWebRefreshMs = 30000;
+const claudeCliFallbackRefreshMs = 120000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 let tray = null;
 let popover = null;
-let lastPopoverBounds = null;
+let currentWindowHeight = expandedWindowHeight;
+let currentRowCount = 3;
+let popoverPosition = null;
+let popoverPositionSaveTimer = null;
 let isQuitting = false;
 let latestSnapshot = null;
 let refreshPromise = null;
@@ -41,12 +53,17 @@ let claudeLoginWindow = null;
 let claudeUsageApiServer = null;
 let claudeWebRefreshTimer = null;
 let claudeWebRefreshPromise = null;
+let claudeFallbackRefreshPromise = null;
+let lastClaudeFallbackRefreshAt = 0;
+let claudeWebOrgId = null;
 let claudeWebUsageCache = {
   ok: false,
   status: "starting",
   error: "Claude web usage has not refreshed yet.",
   fetchedAt: null
 };
+const refreshMetricWindowSize = 20;
+const refreshMetricSamplesByEvent = new Map();
 
 async function buildFailureSnapshot(error) {
   const message = error instanceof Error ? error.message : "Refresh failed.";
@@ -69,9 +86,12 @@ function createTrayIcon() {
 }
 
 function createPopover() {
+  const initialBounds = getPopoverBounds();
   popover = new BrowserWindow({
     width: windowWidth,
-    height: windowHeight,
+    height: currentWindowHeight,
+    x: initialBounds.x,
+    y: initialBounds.y,
     show: false,
     frame: false,
     resizable: false,
@@ -87,11 +107,12 @@ function createPopover() {
     }
   });
 
+  popover.setAlwaysOnTop(true, "floating");
+  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   popover.loadFile(path.join(__dirname, "public", "index.html"));
 
-  popover.on("moved", () => {
-    lastPopoverBounds = popover.getBounds();
-  });
+  popover.on("move", queueSavePopoverPosition);
+  popover.on("moved", queueSavePopoverPosition);
 
   popover.on("blur", () => {
     if (process.env.RATE_LIMIT_TOOL_KEEP_OPEN) {
@@ -99,35 +120,154 @@ function createPopover() {
     }
 
     if (!isQuitting && !popover.webContents.isDevToolsOpened()) {
-      lastPopoverBounds = popover.getBounds();
+      queueSavePopoverPosition();
       popover.hide();
     }
   });
 }
 
-function positionPopover() {
-  if (lastPopoverBounds) {
-    popover.setBounds(lastPopoverBounds);
+async function loadPopoverPosition() {
+  try {
+    const raw = JSON.parse(await fs.readFile(windowStatePath, "utf8"));
+    if (Number.isFinite(raw?.x) && Number.isFinite(raw?.y)) {
+      popoverPosition = {
+        x: Math.round(raw.x),
+        y: Math.round(raw.y)
+      };
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`Could not load window position: ${error.message}`);
+    }
+  }
+}
+
+async function savePopoverPosition(position) {
+  try {
+    await fs.mkdir(appDataDir, { recursive: true });
+    await fs.writeFile(
+      windowStatePath,
+      JSON.stringify(
+        {
+          x: Math.round(position.x),
+          y: Math.round(position.y),
+          savedAt: new Date().toISOString()
+        },
+        null,
+        2
+      )
+    );
+  } catch (error) {
+    console.warn(`Could not save window position: ${error.message}`);
+  }
+}
+
+function queueSavePopoverPosition() {
+  if (!popover || popover.isDestroyed()) {
     return;
   }
 
+  const bounds = popover.getBounds();
+  popoverPosition = {
+    x: bounds.x,
+    y: bounds.y
+  };
+  clearTimeout(popoverPositionSaveTimer);
+  popoverPositionSaveTimer = setTimeout(() => {
+    savePopoverPosition(popoverPosition).catch(() => {});
+  }, 250);
+}
+
+function getPreferredDisplay() {
+  if (!tray) {
+    return screen.getPrimaryDisplay();
+  }
+
   const trayBounds = tray.getBounds();
-  const display = trayBounds.width > 0 && trayBounds.height > 0
-    ? screen.getDisplayNearestPoint({
-        x: Math.round(trayBounds.x),
-        y: Math.round(trayBounds.y)
-      })
-    : screen.getPrimaryDisplay();
+  if (trayBounds.width > 0 && trayBounds.height > 0) {
+    return screen.getDisplayNearestPoint({
+      x: Math.round(trayBounds.x),
+      y: Math.round(trayBounds.y)
+    });
+  }
+
+  return screen.getPrimaryDisplay();
+}
+
+function getDefaultPopoverBounds() {
+  const display = getPreferredDisplay();
   const x = Math.round(display.workArea.x + display.workArea.width - windowWidth - 12);
   const y = Math.round(display.workArea.y + 12);
 
-  popover.setBounds({ x, y, width: windowWidth, height: windowHeight });
+  return { x, y, width: windowWidth, height: currentWindowHeight };
+}
+
+function clampPopoverBounds(bounds) {
+  const display = screen.getDisplayMatching({
+    x: bounds.x,
+    y: bounds.y,
+    width: windowWidth,
+    height: currentWindowHeight
+  });
+  const area = display.workArea;
+  const maxX = area.x + area.width - windowWidth;
+  const maxY = area.y + area.height - currentWindowHeight;
+
+  return {
+    x: Math.min(Math.max(Math.round(bounds.x), area.x), Math.max(area.x, maxX)),
+    y: Math.min(Math.max(Math.round(bounds.y), area.y), Math.max(area.y, maxY)),
+    width: windowWidth,
+    height: currentWindowHeight
+  };
+}
+
+function getPopoverBounds() {
+  if (!popoverPosition) {
+    return getDefaultPopoverBounds();
+  }
+
+  return clampPopoverBounds({
+    x: popoverPosition.x,
+    y: popoverPosition.y,
+    width: windowWidth,
+    height: currentWindowHeight
+  });
+}
+
+function getWindowHeight(expanded, rowCount = currentRowCount) {
+  const count = Math.max(1, Number(rowCount) || 1);
+  const baseHeight = expanded ? expandedWindowHeight : compactWindowHeight;
+  const rowHeight = expanded ? 57 : 43;
+  const dynamicHeight = 50 + count * rowHeight;
+  return Math.min(maxWindowHeight, Math.max(baseHeight, dynamicHeight));
+}
+
+function setExpandedView(expanded, rowCount = currentRowCount) {
+  currentRowCount = Math.max(1, Number(rowCount) || 1);
+  currentWindowHeight = getWindowHeight(expanded, currentRowCount);
+
+  if (!popover) {
+    return;
+  }
+
+  const bounds = popover.getBounds();
+  popover.setBounds({
+    x: bounds.x,
+    y: bounds.y,
+    width: windowWidth,
+    height: currentWindowHeight
+  });
+  queueSavePopoverPosition();
 }
 
 function showPopover() {
-  positionPopover();
+  const bounds = getPopoverBounds();
+  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  popover.setBounds(bounds);
   popover.show();
+  popover.moveTop();
   popover.focus();
+  queueSavePopoverPosition();
   if (process.env.RATE_LIMIT_TOOL_DEBUG) {
     console.log("Popover visible:", popover.isVisible(), popover.getBounds());
   }
@@ -191,10 +331,113 @@ function cleanResetText(value) {
   const cleaned = String(value || "")
     .replace(/\d+%\s*used.*/i, "")
     .replace(/\s*used\s*$/i, "")
+    .replace(/\b([A-Z][a-z]{2})(\d{1,2})\b/g, "$1 $2")
+    .replace(/(\d)(?=\()/g, "$1 ")
+    .replace(/\b([A-Z][a-z]{2}\s+\d{1,2})\s+t\s+(\d)/g, "$1 at $2")
     .replace(/\s+/g, " ")
     .trim();
 
   return cleaned || null;
+}
+
+async function getClaudeOrgId() {
+  if (claudeWebOrgId) {
+    return claudeWebOrgId;
+  }
+
+  const authStatus = await getClaudeAuthStatus().catch(() => null);
+
+  if (authStatus?.orgId) {
+    claudeWebOrgId = authStatus.orgId;
+    return claudeWebOrgId;
+  }
+
+  claudeWebOrgId = await getClaudeOrgIdFromWebSession();
+  return claudeWebOrgId;
+}
+
+function findClaudeOrgId(payload) {
+  const candidates = [
+    payload?.organization,
+    payload?.current_organization,
+    payload?.currentOrganization,
+    payload?.account?.organization,
+    ...(Array.isArray(payload?.organizations) ? payload.organizations : []),
+    ...(Array.isArray(payload?.account?.organizations) ? payload.account.organizations : [])
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const id = candidate.uuid || candidate.id || candidate.organization_uuid || candidate.organizationId;
+    if (typeof id === "string" && id.trim()) {
+      return id.trim();
+    }
+  }
+
+  const serialized = JSON.stringify(payload || {});
+  const match = serialized.match(
+    /"(?:uuid|id|organization_id)"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i
+  );
+  if (match) {
+    return match[1];
+  }
+
+  return null;
+}
+
+async function ensureClaudeOrigin() {
+  const window = getOrCreateClaudeUsageWindow();
+
+  if (!/^https:\/\/claude\.ai(?:\/|$)/i.test(window.webContents.getURL())) {
+    await window.loadURL("https://claude.ai/");
+  }
+
+  return window;
+}
+
+async function getClaudeOrgIdFromWebSession() {
+  const window = await ensureClaudeOrigin();
+  const endpoints = [
+    "https://claude.ai/api/bootstrap",
+    "https://claude.ai/api/organizations"
+  ];
+
+  for (const endpoint of endpoints) {
+    const response = await window.webContents.executeJavaScript(
+      `fetch(${JSON.stringify(endpoint)}, {
+        credentials: "include",
+        headers: {
+          "Accept": "application/json"
+        }
+      }).then(async (response) => ({
+        ok: response.ok,
+        status: response.status,
+        body: await response.text()
+      }))`,
+      true
+    );
+
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("Claude usage API needs a web login.");
+    }
+
+    if (!response.ok) {
+      continue;
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(response.body);
+    } catch {
+      throw new Error("Claude usage API needs a web login.");
+    }
+
+    const orgId = findClaudeOrgId(payload);
+    if (orgId) {
+      return orgId;
+    }
+  }
+
+  throw new Error("Claude web session is logged in, but no organization id was found.");
 }
 
 function extractClaudeWebWindow(label, patterns, text) {
@@ -225,6 +468,56 @@ function extractClaudeWebWindow(label, patterns, text) {
   }
 
   return null;
+}
+
+function parseClaudeUsageApiPayload(payload) {
+  const windows = [];
+  const fiveHour = payload?.five_hour;
+  const sevenDay = payload?.seven_day;
+
+  if (fiveHour) {
+    const usedPercent = Math.min(100, Math.max(0, Number(fiveHour.utilization || 0)));
+    windows.push({
+      label: "5-hour",
+      usedPercent,
+      remainingPercent: Math.max(0, 100 - usedPercent),
+      resetAt: fiveHour.resets_at || null,
+      source: "claude_usage_api"
+    });
+  }
+
+  if (sevenDay) {
+    const usedPercent = Math.min(100, Math.max(0, Number(sevenDay.utilization || 0)));
+    windows.push({
+      label: "weekly",
+      usedPercent,
+      remainingPercent: Math.max(0, 100 - usedPercent),
+      resetAt: sevenDay.resets_at || null,
+      source: "claude_usage_api"
+    });
+  }
+
+  if (!windows.length) {
+    return {
+      ok: false,
+      status: "unparsed",
+      error: "Claude usage API responded, but usage windows were not found.",
+      payloadKeys: Object.keys(payload || {}),
+      fetchedAt: new Date().toISOString()
+    };
+  }
+
+  return {
+    ok: true,
+    status: "ok",
+    data: {
+      service: "claude",
+      windows,
+      extraUsage: payload?.extra_usage || null,
+      fetchedAt: new Date().toISOString()
+    },
+    fetchedAt: new Date().toISOString()
+  };
 }
 
 function parseClaudeWebUsagePage(payload) {
@@ -359,6 +652,27 @@ async function readClaudeUsagePage() {
   );
 }
 
+async function readClaudeUsageApi() {
+  const orgId = await getClaudeOrgId();
+  const window = await ensureClaudeOrigin();
+  const usageUrl = `https://claude.ai/api/organizations/${orgId}/usage`;
+
+  return window.webContents.executeJavaScript(
+    `fetch(${JSON.stringify(usageUrl)}, {
+      credentials: "include",
+      headers: {
+        "Accept": "application/json"
+      }
+    }).then(async (response) => ({
+      ok: response.ok,
+      status: response.status,
+      url: response.url,
+      body: await response.text()
+    }))`,
+    true
+  );
+}
+
 async function refreshClaudeWebUsage() {
   if (claudeWebRefreshPromise) {
     return claudeWebRefreshPromise;
@@ -366,7 +680,34 @@ async function refreshClaudeWebUsage() {
 
   claudeWebRefreshPromise = (async () => {
     try {
-      claudeWebUsageCache = parseClaudeWebUsagePage(await readClaudeUsagePage());
+      const response = await readClaudeUsageApi();
+
+      if (response.status === 401 || response.status === 403) {
+        claudeWebUsageCache = {
+          ok: false,
+          status: "login_required",
+          error: "Claude usage API needs a web login.",
+          fetchedAt: new Date().toISOString()
+        };
+      } else if (!response.ok) {
+        throw new Error(`Claude usage API request failed with ${response.status}.`);
+      } else {
+        let payload;
+
+        try {
+          payload = JSON.parse(response.body);
+        } catch {
+          claudeWebUsageCache = {
+            ok: false,
+            status: "login_required",
+            error: "Claude usage API needs a web login.",
+            fetchedAt: new Date().toISOString()
+          };
+          return claudeWebUsageCache;
+        }
+
+        claudeWebUsageCache = parseClaudeUsageApiPayload(payload);
+      }
     } catch (error) {
       claudeWebUsageCache = {
         ok: false,
@@ -413,6 +754,120 @@ async function mergeClaudeWebUsage(snapshot) {
           ...claudeWebUsageCache.data,
           source: "claude_web_usage"
         }
+      };
+    })
+  };
+}
+
+async function refreshClaudeFallbackUsage() {
+  if (claudeFallbackRefreshPromise) {
+    return claudeFallbackRefreshPromise;
+  }
+
+  claudeFallbackRefreshPromise = (async () => {
+    lastClaudeFallbackRefreshAt = Date.now();
+    const startedAt = nowMs();
+    const snapshot = await refreshAllAccounts({ onlyAccountTypes: ["claude"] });
+    const results = snapshot.results || [];
+
+    if (latestSnapshot?.results?.length) {
+      const resultsByAccountId = new Map(results.map((result) => [result.accountId, result]));
+      const existingResultIds = new Set(latestSnapshot.results.map((result) => result.accountId));
+      latestSnapshot = {
+        ...latestSnapshot,
+        config: snapshot.config || latestSnapshot.config,
+        results: [
+          ...latestSnapshot.results.map((result) => resultsByAccountId.get(result.accountId) || result),
+          ...results.filter((result) => !existingResultIds.has(result.accountId))
+        ]
+      };
+      broadcastSnapshot(latestSnapshot);
+    }
+
+    logRefreshMetric({
+      event: "claude_cli_refresh",
+      durationMs: nowMs() - startedAt,
+      resultCount: results.length,
+      okCount: results.filter((result) => result.ok).length
+    });
+
+    return results;
+  })();
+
+  try {
+    return await claudeFallbackRefreshPromise;
+  } finally {
+    claudeFallbackRefreshPromise = null;
+  }
+}
+
+function shouldRefreshClaudeFallback() {
+  const hasClaudeResult = latestSnapshot?.results?.some((result) => result.data?.service === "claude");
+
+  if (!hasClaudeResult) {
+    return true;
+  }
+
+  return Date.now() - lastClaudeFallbackRefreshAt >= claudeCliFallbackRefreshMs;
+}
+
+async function preserveFastClaudeResults(snapshot, previousSnapshot) {
+  if (!snapshot?.results?.length || !previousSnapshot?.results?.length) {
+    return snapshot;
+  }
+
+  const state = await getState();
+  const claudeAccountIds = new Set(
+    state.config.accounts
+      .filter((account) => account.type === "claude")
+      .map((account) => account.id)
+  );
+  const previousByAccountId = new Map(
+    previousSnapshot.results.map((result) => [result.accountId, result])
+  );
+
+  return {
+    ...snapshot,
+    results: snapshot.results.map((result) => {
+      if (!claudeAccountIds.has(result.accountId) || result.error !== "Skipped for fast refresh.") {
+        return result;
+      }
+
+      return previousByAccountId.get(result.accountId) || {
+        ...result,
+        error: claudeWebUsageCache.error || "Claude usage API needs a web login."
+      };
+    })
+  };
+}
+
+function preserveRecentSuccessfulResults(snapshot, previousSnapshot) {
+  if (!snapshot?.results?.length || !previousSnapshot?.results?.length) {
+    return snapshot;
+  }
+
+  const previousByAccountId = new Map(
+    previousSnapshot.results
+      .filter((result) => result.ok)
+      .map((result) => [result.accountId, result])
+  );
+
+  return {
+    ...snapshot,
+    results: snapshot.results.map((result) => {
+      if (result.ok || !/timed out/i.test(result.error || "")) {
+        return result;
+      }
+
+      const previous = previousByAccountId.get(result.accountId);
+      if (!previous) {
+        return result;
+      }
+
+      return {
+        ...previous,
+        stale: true,
+        staleReason: result.error
       };
     })
   };
@@ -468,6 +923,19 @@ function startClaudeUsageApiServer() {
     sendJson(response, 404, { ok: false, error: "Not found." });
   });
 
+  claudeUsageApiServer.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.warn(
+        `Claude web usage API port ${claudeUsageApiPort} is already in use; continuing without the helper server.`
+      );
+      claudeUsageApiServer = null;
+      return;
+    }
+
+    console.warn(`Claude web usage API failed to start: ${error.message}`);
+    claudeUsageApiServer = null;
+  });
+
   claudeUsageApiServer.listen(claudeUsageApiPort, "127.0.0.1", () => {
     console.log(`Claude web usage API running at http://127.0.0.1:${claudeUsageApiPort}`);
   });
@@ -520,24 +988,122 @@ function queueAutoStart(snapshot) {
   return autoStartPromise;
 }
 
+function nowMs() {
+  return Number(process.hrtime.bigint() / 1000000n);
+}
+
+function logRefreshMetric(fields) {
+  const durationMs = Number(fields.durationMs);
+
+  if (!Number.isFinite(durationMs)) {
+    console.log(`[refresh-metric] ${JSON.stringify(fields)}`);
+    return;
+  }
+
+  const samples = refreshMetricSamplesByEvent.get(fields.event) || [];
+  samples.push(durationMs);
+
+  if (samples.length > refreshMetricWindowSize) {
+    samples.shift();
+  }
+
+  refreshMetricSamplesByEvent.set(fields.event, samples);
+
+  const total = samples.reduce((sum, value) => sum + value, 0);
+  const enrichedFields = {
+    ...fields,
+    stats: {
+      sampleCount: samples.length,
+      averageDurationMs: Math.round(total / samples.length),
+      minDurationMs: Math.min(...samples),
+      maxDurationMs: Math.max(...samples)
+    }
+  };
+
+  console.log(`[refresh-metric] ${JSON.stringify(enrichedFields)}`);
+}
+
 async function refreshSnapshot() {
   if (refreshPromise) {
     return refreshPromise;
   }
 
   refreshPromise = (async () => {
+    const refreshStartedAt = nowMs();
     let snapshot;
+    const previousSnapshot = latestSnapshot;
 
+    const claudeStartedAt = nowMs();
+    refreshClaudeWebUsage()
+      .then(async () => {
+        const claudeFetchMs = nowMs() - claudeStartedAt;
+        if (!claudeWebUsageCache.ok && shouldRefreshClaudeFallback()) {
+          refreshClaudeFallbackUsage().catch((error) => {
+            logRefreshMetric({
+              event: "claude_cli_refresh",
+              durationMs: nowMs() - claudeStartedAt,
+              status: "error",
+              ok: false,
+              error: error.message
+            });
+          });
+        }
+
+        if (!latestSnapshot) {
+          logRefreshMetric({
+            event: "claude_web_refresh",
+            durationMs: claudeFetchMs,
+            status: claudeWebUsageCache.status,
+            ok: claudeWebUsageCache.ok,
+            error: claudeWebUsageCache.ok ? undefined : claudeWebUsageCache.error
+          });
+          return;
+        }
+
+        latestSnapshot = await mergeClaudeWebUsage(latestSnapshot);
+        broadcastSnapshot(latestSnapshot);
+        logRefreshMetric({
+          event: "claude_web_refresh",
+          durationMs: claudeFetchMs,
+          status: claudeWebUsageCache.status,
+          ok: claudeWebUsageCache.ok,
+          error: claudeWebUsageCache.ok ? undefined : claudeWebUsageCache.error
+        });
+      })
+      .catch((error) => {
+        logRefreshMetric({
+          event: "claude_web_refresh",
+          durationMs: nowMs() - claudeStartedAt,
+          status: "error",
+          ok: false,
+          error: error.message
+        });
+      });
+
+    const accountRefreshStartedAt = nowMs();
     try {
-      snapshot = await refreshAllAccounts();
+      snapshot = await refreshAllAccounts({ skipAccountTypes: ["claude"] });
     } catch (error) {
       snapshot = await buildFailureSnapshot(error);
     }
+    const accountRefreshMs = nowMs() - accountRefreshStartedAt;
 
-    latestSnapshot = snapshot;
-    latestSnapshot = await mergeClaudeWebUsage(latestSnapshot);
+    const mergeStartedAt = nowMs();
+    snapshot = preserveRecentSuccessfulResults(snapshot, previousSnapshot);
+    snapshot = await preserveFastClaudeResults(snapshot, previousSnapshot);
+    latestSnapshot = await mergeClaudeWebUsage(snapshot);
+    const mergeMs = nowMs() - mergeStartedAt;
+
     broadcastSnapshot(latestSnapshot);
     queueAutoStart(latestSnapshot);
+    logRefreshMetric({
+      event: "manual_refresh",
+      durationMs: nowMs() - refreshStartedAt,
+      accountRefreshMs,
+      mergeMs,
+      resultCount: latestSnapshot?.results?.length || 0,
+      okCount: latestSnapshot?.results?.filter((result) => result.ok).length || 0
+    });
     return latestSnapshot;
   })();
 
@@ -563,43 +1129,65 @@ function registerIpcHandlers() {
     return getState();
   });
   ipcMain.handle("rate-limit:open-login", async (event, accountId) => {
+    const state = await getState();
+    const account = state.config.accounts.find((entry) => entry.id === accountId);
+
+    if (account?.type === "claude") {
+      showClaudeUsageLogin();
+      return { ok: true };
+    }
+
     return openLoginForAccountById(accountId);
   });
   ipcMain.handle("rate-limit:refresh", () => refreshSnapshot());
   ipcMain.handle("rate-limit:toggle", togglePopover);
+  ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount) => {
+    setExpandedView(Boolean(expanded), rowCount);
+  });
 }
 
-app.whenReady().then(() => {
-  app.setName("Usage Meter");
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (popover) {
+      showPopover();
+    }
+  });
 
-  if (app.dock) {
-    app.dock.hide();
-  }
+  app.whenReady().then(async () => {
+    app.setName("Usage Meter");
 
-  registerIpcHandlers();
-  createPopover();
-  createTray();
-  popover.once("ready-to-show", showPopover);
-  setTimeout(showPopover, 800);
-  startBackgroundRefresh();
-  startClaudeUsageApiServer();
-  startClaudeWebUsageRefresh();
+    if (app.dock) {
+      app.dock.hide();
+    }
 
-  const registered = globalShortcut.register(toggleShortcut, togglePopover);
-  if (process.env.RATE_LIMIT_TOOL_DEBUG) {
-    console.log(`Shortcut ${toggleShortcut} registered:`, registered);
-  }
-  if (!registered) {
-    console.warn(`Could not register global shortcut ${toggleShortcut}.`);
-  }
-});
-
-app.on("activate", () => {
-  if (!popover) {
+    await loadPopoverPosition();
+    registerIpcHandlers();
     createPopover();
-  }
-  showPopover();
-});
+    createTray();
+    popover.once("ready-to-show", showPopover);
+    setTimeout(showPopover, 800);
+    startBackgroundRefresh();
+    startClaudeUsageApiServer();
+    startClaudeWebUsageRefresh();
+
+    const registered = globalShortcut.register(toggleShortcut, togglePopover);
+    if (process.env.RATE_LIMIT_TOOL_DEBUG) {
+      console.log(`Shortcut ${toggleShortcut} registered:`, registered);
+    }
+    if (!registered) {
+      console.warn(`Could not register global shortcut ${toggleShortcut}.`);
+    }
+  });
+
+  app.on("activate", () => {
+    if (!popover) {
+      createPopover();
+    }
+    showPopover();
+  });
+}
 
 app.on("before-quit", () => {
   isQuitting = true;
@@ -608,6 +1196,7 @@ app.on("before-quit", () => {
 app.on("will-quit", () => {
   clearInterval(backgroundRefreshTimer);
   clearInterval(claudeWebRefreshTimer);
+  clearTimeout(popoverPositionSaveTimer);
   if (claudeUsageApiServer) {
     claudeUsageApiServer.close();
   }
