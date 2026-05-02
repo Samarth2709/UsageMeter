@@ -11,6 +11,7 @@ const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const configPath = path.join(appDataDir, "accounts.json");
 const automationStatePath = path.join(appDataDir, "automation-state.json");
 const automationWorkspaceRoot = path.join(appDataDir, "automation-workspaces");
+const codexIdentityRoot = path.join(appDataDir, "codex-identities");
 const defaultCodexHome = path.join(os.homedir(), ".codex");
 const defaultSecondCodexHome = path.join(appDataDir, "codex-account-2");
 const defaultWorkspace = process.cwd();
@@ -43,32 +44,14 @@ const claudeBin = resolveExecutable("claude", [
   )
 ]);
 const scriptBin = resolveExecutable("script", ["/usr/bin/script"]);
+const codexUsageRequestTimeoutMs = 800;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 function defaultConfig() {
   return {
-    accounts: [
-      {
-        id: "codex-1",
-        type: "codex",
-        label: "Codex Account 1",
-        codeHome: defaultCodexHome
-      },
-      {
-        id: "codex-2",
-        type: "codex",
-        label: "Codex Account 2",
-        codeHome: defaultSecondCodexHome
-      },
-      {
-        id: "claude-1",
-        type: "claude",
-        label: "Claude Code",
-        workspace: defaultWorkspace
-      }
-    ]
+    identities: []
   };
 }
 
@@ -106,31 +89,72 @@ function compactHome(input) {
   return input;
 }
 
-function normalizeAccount(raw) {
-  const base = typeof raw === "object" && raw !== null ? raw : {};
-  const id = String(base.id || "");
-  const type = base.type === "claude" ? "claude" : "codex";
-  const label = String(base.label || "").trim();
+function safeSegment(value) {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
 
-  if (!id) {
-    throw new Error("Each account needs an id.");
+  return cleaned || "unknown";
+}
+
+function timestampOrNull(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
   }
 
-  if (!label) {
-    throw new Error(`Account ${id} needs a label.`);
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function identityType(raw) {
+  return raw?.provider === "claude" || raw?.type === "claude" ? "claude" : "codex";
+}
+
+function buildIdentityId(type, identity) {
+  const source = identity.providerAccountId || identity.email || identity.label || "current";
+  return `${type}-${safeSegment(source)}`;
+}
+
+function normalizeIdentity(raw) {
+  const base = typeof raw === "object" && raw !== null ? raw : {};
+  const type = identityType(base);
+  const email = typeof base.email === "string" && base.email.trim()
+    ? base.email.trim()
+    : typeof base.expectedEmail === "string" && base.expectedEmail.trim()
+      ? base.expectedEmail.trim()
+      : null;
+  const providerAccountId =
+    typeof base.providerAccountId === "string" && base.providerAccountId.trim()
+      ? base.providerAccountId.trim()
+      : typeof base.expectedProviderAccountId === "string" && base.expectedProviderAccountId.trim()
+        ? base.expectedProviderAccountId.trim()
+        : null;
+  const label = String(base.label || "").trim();
+  const id = String(base.id || buildIdentityId(type, { email, providerAccountId, label })).trim();
+  const now = new Date().toISOString();
+
+  if (!id) {
+    throw new Error("Each identity needs an id.");
   }
 
   if (type === "codex") {
-    const codeHome = expandHome(String(base.codeHome || "").trim());
+    const codeHome = expandHome(String(base.codeHome || base.authHome || "").trim());
     if (!codeHome) {
-      throw new Error(`Account ${id} needs a Codex home path.`);
+      throw new Error(`Codex identity ${id} needs an auth home path.`);
     }
 
     return {
       id,
       type,
-      label,
-      codeHome
+      label: label || email || "Codex",
+      codeHome,
+      email,
+      providerAccountId,
+      firstSeenAt: timestampOrNull(base.firstSeenAt) || now,
+      lastSeenAt: timestampOrNull(base.lastSeenAt),
+      lastSuccessfulRefreshAt: timestampOrNull(base.lastSuccessfulRefreshAt)
     };
   }
 
@@ -138,43 +162,112 @@ function normalizeAccount(raw) {
   return {
     id,
     type,
-    label,
-    workspace: workspace || defaultWorkspace
+    label: label || email || "Claude",
+    workspace: workspace || defaultWorkspace,
+    email,
+    providerAccountId,
+    organization: typeof base.organization === "string" && base.organization.trim()
+      ? base.organization.trim()
+      : null,
+    firstSeenAt: timestampOrNull(base.firstSeenAt) || now,
+    lastSeenAt: timestampOrNull(base.lastSeenAt),
+    lastSuccessfulRefreshAt: timestampOrNull(base.lastSuccessfulRefreshAt)
+  };
+}
+
+function legacyAccountToIdentity(account, index) {
+  const type = identityType(account);
+  const email = account.expectedEmail || account.email || null;
+  const providerAccountId = account.expectedProviderAccountId || account.providerAccountId || null;
+  const id = account.id || buildIdentityId(type, {
+    email,
+    providerAccountId,
+    label: account.label || `${type}-${index + 1}`
+  });
+
+  return {
+    ...account,
+    id,
+    email,
+    providerAccountId
+  };
+}
+
+function identityDedupKey(identity) {
+  const identityValue = identity.providerAccountId || identity.email || identity.id;
+  return `${identity.type}:${String(identityValue).trim().toLowerCase()}`;
+}
+
+function mergeIdentity(existing, incoming) {
+  return {
+    ...existing,
+    ...Object.fromEntries(
+      Object.entries(incoming).filter(([, value]) => value !== null && value !== undefined && value !== "")
+    ),
+    id: existing.id,
+    type: existing.type,
+    label: existing.label || incoming.label,
+    codeHome: existing.type === "codex" ? existing.codeHome || incoming.codeHome : undefined,
+    workspace: existing.type === "claude" ? existing.workspace || incoming.workspace : undefined,
+    firstSeenAt: existing.firstSeenAt || incoming.firstSeenAt
   };
 }
 
 function normalizeConfig(raw) {
   const base = defaultConfig();
-  const incomingAccounts = Array.isArray(raw?.accounts) ? raw.accounts : base.accounts;
-  const normalized = incomingAccounts.map(normalizeAccount);
-  const byId = new Map(normalized.map((account) => [account.id, account]));
+  const incomingIdentities = Array.isArray(raw?.identities)
+    ? raw.identities
+    : Array.isArray(raw?.accounts)
+      ? raw.accounts.map(legacyAccountToIdentity)
+      : base.identities;
+  const normalized = incomingIdentities.map(normalizeIdentity);
+  const byKey = new Map();
 
-  for (const account of base.accounts) {
-    if (!byId.has(account.id)) {
-      byId.set(account.id, account);
+  for (const identity of normalized) {
+    const key = identityDedupKey(identity);
+    const existing = byKey.get(key);
+    if (existing) {
+      byKey.set(key, mergeIdentity(existing, identity));
+    } else {
+      byKey.set(key, identity);
     }
   }
 
   return {
-    accounts: Array.from(byId.values())
+    identities: Array.from(byKey.values())
   };
 }
 
 function serializeConfig(config) {
-  return {
-    accounts: config.accounts.map((account) => {
-      if (account.type === "codex") {
-        return {
-          ...account,
-          codeHome: compactHome(account.codeHome)
-        };
-      }
+  const identities = config.identities.map((identity) => {
+    const serialized = {
+      ...identity
+    };
 
-      return {
-        ...account,
-        workspace: compactHome(account.workspace)
-      };
-    })
+    if (identity.type === "codex") {
+      serialized.codeHome = compactHome(identity.codeHome);
+    } else {
+      serialized.workspace = compactHome(identity.workspace);
+    }
+
+    for (const key of [
+      "email",
+      "providerAccountId",
+      "organization",
+      "lastSeenAt",
+      "lastSuccessfulRefreshAt"
+    ]) {
+      if (!serialized[key]) {
+        delete serialized[key];
+      }
+    }
+
+    return serialized;
+  });
+
+  return {
+    identities,
+    accounts: identities
   };
 }
 
@@ -348,12 +441,27 @@ async function fetchCodexUsage(account) {
     throw new Error("This Codex home does not have the access token and account id needed for usage lookup.");
   }
 
-  const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "ChatGPT-Account-ID": accountId
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), codexUsageRequestTimeoutMs);
+  let response;
+
+  try {
+    response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "ChatGPT-Account-ID": accountId
+      }
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Codex usage request timed out.");
     }
-  });
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (response.status === 401 || response.status === 403) {
     throw new Error("Codex auth was rejected. Re-run login for this account.");
@@ -505,14 +613,15 @@ function extractClaudeWindow(label, block) {
   }
 
   const usedPercent = Number(percentMatch[1]);
-  const resetMatch = getLastMatch(block, /Resets?\s*([^\n]+)/g);
+  const resetMatch = getLastMatch(block, /(?:Resets?|Rests?)\s*([^\n]+)/g);
   const resetText = resetMatch ? cleanClaudeResetText(resetMatch[1]) : null;
 
   return {
     label,
     usedPercent,
     remainingPercent: Math.max(0, 100 - usedPercent),
-    resetText
+    resetText,
+    resetAt: parseClaudeResetAt(resetText)
   };
 }
 
@@ -520,13 +629,122 @@ function cleanClaudeResetText(value) {
   const cleaned = String(value || "")
     .replace(/\d+%\s*used.*/i, "")
     .replace(/\s*used\s*$/i, "")
+    .replace(/\bM\s*y\s*(\d{1,2})\b/gi, "May $1")
     .replace(/\b([A-Z][a-z]{2})(\d{1,2})\b/g, "$1 $2")
     .replace(/(\d)(?=\()/g, "$1 ")
+    .replace(/([ap]m)(?=\()/gi, "$1 ")
     .replace(/\b([A-Z][a-z]{2}\s+\d{1,2})\s+t\s+(\d)/g, "$1 at $2")
     .replace(/\s+/g, " ")
     .trim();
 
   return cleaned || null;
+}
+
+function parseClaudeMonth(value) {
+  const normalized = String(value || "").toLowerCase();
+  const aliases = {
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    my: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11
+  };
+
+  return Object.prototype.hasOwnProperty.call(aliases, normalized) ? aliases[normalized] : null;
+}
+
+function parseClaudeTimeParts(value) {
+  const match = String(value || "").match(/\b(\d{1,2})(?::(\d{2}))?\s*([ap]m)\b/i);
+
+  if (!match) {
+    return null;
+  }
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const meridiem = match[3].toLowerCase();
+
+  if (meridiem === "pm" && hour < 12) {
+    hour += 12;
+  } else if (meridiem === "am" && hour === 12) {
+    hour = 0;
+  }
+
+  return { hour, minute };
+}
+
+function parseClaudeResetAt(value, now = new Date()) {
+  const text = cleanClaudeResetText(value);
+  const time = parseClaudeTimeParts(text);
+
+  if (!text || !time) {
+    return null;
+  }
+
+  const dateMatch = text.match(
+    /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|My|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})\b/i
+  );
+  const year = now.getFullYear();
+  let resetDate;
+
+  if (dateMatch) {
+    const month = parseClaudeMonth(dateMatch[1]);
+    const day = Number(dateMatch[2]);
+
+    if (month === null || !day) {
+      return null;
+    }
+
+    resetDate = new Date(year, month, day, time.hour, time.minute, 0, 0);
+
+    if (resetDate.getTime() < now.getTime() - 60000) {
+      resetDate = new Date(year + 1, month, day, time.hour, time.minute, 0, 0);
+    }
+  } else {
+    resetDate = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      time.hour,
+      time.minute,
+      0,
+      0
+    );
+
+    if (resetDate.getTime() < now.getTime() - 60000) {
+      resetDate = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1,
+        time.hour,
+        time.minute,
+        0,
+        0
+      );
+    }
+  }
+
+  return resetDate.toISOString();
 }
 
 function stripTerminalControl(input) {
@@ -586,10 +804,7 @@ async function captureClaudeStatus(account) {
 }
 
 async function fetchClaudeUsage(account) {
-  const { stdout } = await execFilePromise(claudeBin, ["auth", "status", "--json"], {
-    cwd: account.workspace
-  });
-  const authStatus = JSON.parse(stdout);
+  const authStatus = await getClaudeAuthStatus(account.workspace);
 
   if (!authStatus.loggedIn) {
     throw new Error("Claude is not logged in on this machine. Run Claude login first.");
@@ -609,6 +824,14 @@ async function fetchClaudeUsage(account) {
   };
 }
 
+async function getClaudeAuthStatus(workspace = defaultWorkspace) {
+  const { stdout } = await execFilePromise(claudeBin, ["auth", "status", "--json"], {
+    cwd: workspace,
+    timeout: 2000
+  });
+  return JSON.parse(stdout);
+}
+
 async function fetchUsageForAccount(account) {
   if (account.type === "claude") {
     return fetchClaudeUsage(account);
@@ -617,27 +840,257 @@ async function fetchUsageForAccount(account) {
   return fetchCodexUsage(account);
 }
 
-async function refreshAccountById(accountId) {
-  const config = await ensureConfig();
-  const account = config.accounts.find((entry) => entry.id === accountId);
+function identityLabelFromUsage(data) {
+  return data?.email || data?.providerAccountId || "unknown account";
+}
 
-  if (!account) {
-    throw new Error("Account not found.");
+function findIdentityForUsage(identities, type, data) {
+  const providerAccountId = normalizeIdentityValue(data?.providerAccountId);
+  const email = normalizeIdentityValue(data?.email);
+
+  return identities.find((identity) => {
+    if (identity.type !== type) {
+      return false;
+    }
+
+    if (providerAccountId && normalizeIdentityValue(identity.providerAccountId) === providerAccountId) {
+      return true;
+    }
+
+    return Boolean(email && normalizeIdentityValue(identity.email) === email);
+  }) || null;
+}
+
+function findUnclaimedIdentity(identities, type) {
+  return identities.find((identity) => (
+    identity.type === type &&
+    !identity.providerAccountId &&
+    !identity.email
+  )) || null;
+}
+
+function codexIdentityHome(data) {
+  return path.join(
+    codexIdentityRoot,
+    safeSegment(data?.email || data?.providerAccountId || "codex-account")
+  );
+}
+
+async function copyCodexAuth(sourceHome, targetHome) {
+  const sourceAuthPath = path.join(sourceHome, "auth.json");
+
+  if (!existsSync(sourceAuthPath)) {
+    return false;
   }
 
+  await fs.mkdir(targetHome, { recursive: true });
+  await fs.copyFile(sourceAuthPath, path.join(targetHome, "auth.json"));
+  return true;
+}
+
+async function persistCodexAuthForIdentity(identity, sourceHome, data) {
+  const stableHome = codexIdentityHome(data);
+  const source = expandHome(sourceHome);
+  const target = expandHome(identity.codeHome || stableHome);
+  const shouldUseStableHome = source === defaultCodexHome || target === defaultCodexHome || !identity.codeHome;
+  const nextHome = shouldUseStableHome ? stableHome : target;
+  const copied = await copyCodexAuth(source, nextHome);
+
+  if (copied && identity.codeHome !== nextHome) {
+    identity.codeHome = nextHome;
+    return true;
+  }
+
+  return false;
+}
+
+function updateIdentityFromUsage(identity, data) {
+  let changed = false;
+  const now = new Date().toISOString();
+
+  if (data?.email && identity.email !== data.email) {
+    identity.email = data.email;
+    changed = true;
+  }
+
+  if (data?.providerAccountId && identity.providerAccountId !== data.providerAccountId) {
+    identity.providerAccountId = data.providerAccountId;
+    changed = true;
+  }
+
+  if (data?.organization && identity.organization !== data.organization) {
+    identity.organization = data.organization;
+    changed = true;
+  }
+
+  if (data?.email && (!identity.label || /^codex|claude$/i.test(identity.label))) {
+    identity.label = data.email;
+    changed = true;
+  }
+
+  if (!identity.firstSeenAt) {
+    identity.firstSeenAt = now;
+    changed = true;
+  }
+
+  if (identity.lastSeenAt !== now) {
+    identity.lastSeenAt = now;
+    changed = true;
+  }
+
+  if (identity.lastSuccessfulRefreshAt !== now) {
+    identity.lastSuccessfulRefreshAt = now;
+    changed = true;
+  }
+
+  return changed;
+}
+
+function createIdentityFromUsage(type, data, extras = {}) {
+  const now = new Date().toISOString();
+  const identity = normalizeIdentity({
+    id: buildIdentityId(type, data),
+    type,
+    label: data?.email || (type === "claude" ? "Claude" : "Codex"),
+    email: data?.email || null,
+    providerAccountId: data?.providerAccountId || null,
+    organization: data?.organization || null,
+    firstSeenAt: now,
+    lastSeenAt: now,
+    lastSuccessfulRefreshAt: now,
+    ...extras
+  });
+
+  return identity;
+}
+
+async function discoverCurrentCodexIdentity(config) {
   try {
+    const data = await fetchCodexUsage({
+      id: "codex-current",
+      type: "codex",
+      label: "Current Codex",
+      codeHome: defaultCodexHome
+    });
+    let identity = findIdentityForUsage(config.identities, "codex", data);
+    let changed = false;
+
+    if (!identity) {
+      identity = findUnclaimedIdentity(config.identities, "codex");
+    }
+
+    if (!identity) {
+      identity = createIdentityFromUsage("codex", data, {
+        codeHome: codexIdentityHome(data)
+      });
+      config.identities.push(identity);
+      changed = true;
+    }
+
+    changed = updateIdentityFromUsage(identity, data) || changed;
+    changed = await persistCodexAuthForIdentity(identity, defaultCodexHome, data) || changed;
+
     return {
-      accountId,
       ok: true,
-      data: await fetchUsageForAccount(account)
+      changed,
+      identity,
+      result: {
+        accountId: identity.id,
+        ok: true,
+        data
+      }
     };
   } catch (error) {
     return {
-      accountId,
+      ok: false,
+      changed: false,
+      error: error.message
+    };
+  }
+}
+
+async function discoverCurrentClaudeIdentity(config) {
+  try {
+    const data = await fetchClaudeUsage({
+      id: "claude-current",
+      type: "claude",
+      label: "Current Claude",
+      workspace: defaultWorkspace
+    });
+    let identity = findIdentityForUsage(config.identities, "claude", data);
+    let changed = false;
+
+    if (!identity) {
+      identity = findUnclaimedIdentity(config.identities, "claude");
+    }
+
+    if (!identity) {
+      identity = createIdentityFromUsage("claude", data, {
+        workspace: defaultWorkspace
+      });
+      config.identities.push(identity);
+      changed = true;
+    }
+
+    changed = updateIdentityFromUsage(identity, data) || changed;
+
+    return {
+      ok: true,
+      changed,
+      identity,
+      result: {
+        accountId: identity.id,
+        ok: true,
+        data
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      changed: false,
+      error: error.message
+    };
+  }
+}
+
+async function refreshIdentity(config, identity, cachedResult = null) {
+  if (cachedResult?.ok) {
+    return cachedResult;
+  }
+
+  try {
+    const data = await fetchUsageForAccount(identity);
+    updateIdentityFromUsage(identity, data);
+
+    if (identity.type === "codex") {
+      await persistCodexAuthForIdentity(identity, identity.codeHome, data);
+    }
+
+    return {
+      accountId: identity.id,
+      ok: true,
+      data
+    };
+  } catch (error) {
+    return {
+      accountId: identity.id,
       ok: false,
       error: error.message
     };
   }
+}
+
+async function refreshAccountById(accountId) {
+  const config = await ensureConfig();
+  const identity = config.identities.find((entry) => entry.id === accountId);
+
+  if (!identity) {
+    throw new Error("Account not found.");
+  }
+
+  const result = await refreshIdentity(config, identity);
+  await saveConfig(config);
+  return result;
 }
 
 function rejectDuplicateCodexIdentities(results) {
@@ -665,20 +1118,83 @@ function rejectDuplicateCodexIdentities(results) {
     return {
       accountId: result.accountId,
       ok: false,
-      error: `Duplicate Codex login: this slot is using the same account as ${firstAccountId}. Run login for this account first.`
+      error: `Duplicate Codex login: this slot is using the same account as ${firstAccountId}. Re-run login for this account.`
     };
   });
 }
 
-async function refreshAllAccounts() {
+function normalizeIdentityValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function refreshAllAccounts(options = {}) {
   const config = await ensureConfig();
+  const skippedTypes = new Set(options.skipAccountTypes || []);
+  const onlyTypes = Array.isArray(options.onlyAccountTypes)
+    ? new Set(options.onlyAccountTypes)
+    : null;
+  const cachedResults = new Map();
+  let configChanged = false;
+  let currentClaudeIdentityId = null;
+  let currentClaudeLabel = null;
+
+  if ((!onlyTypes || onlyTypes.has("codex")) && !skippedTypes.has("codex")) {
+    const discovery = await discoverCurrentCodexIdentity(config);
+    configChanged = discovery.changed || configChanged;
+    if (discovery.ok) {
+      cachedResults.set(discovery.identity.id, discovery.result);
+    }
+  }
+
+  if ((!onlyTypes || onlyTypes.has("claude")) && !skippedTypes.has("claude")) {
+    const discovery = await discoverCurrentClaudeIdentity(config);
+    configChanged = discovery.changed || configChanged;
+    if (discovery.ok) {
+      currentClaudeIdentityId = discovery.identity.id;
+      currentClaudeLabel = identityLabelFromUsage(discovery.result.data);
+      cachedResults.set(discovery.identity.id, discovery.result);
+    }
+  }
+
+  const identities = config.identities.filter((identity) => {
+    if (onlyTypes && !onlyTypes.has(identity.type)) {
+      return false;
+    }
+
+    return true;
+  });
   const results = await Promise.all(
-    config.accounts.map((account) => refreshAccountById(account.id))
+    identities.map(async (identity) => {
+      if (skippedTypes.has(identity.type)) {
+        return {
+          accountId: identity.id,
+          ok: false,
+          error: "Skipped for fast refresh."
+        };
+      }
+
+      if (identity.type === "claude" && currentClaudeIdentityId && identity.id !== currentClaudeIdentityId) {
+        return {
+          accountId: identity.id,
+          ok: false,
+          error: `Claude is currently logged in as ${currentClaudeLabel}. Run login for this account to refresh it.`
+        };
+      }
+
+      return refreshIdentity(config, identity, cachedResults.get(identity.id));
+    })
   );
+
+  if (configChanged || results.some((result) => result.ok)) {
+    await saveConfig(config);
+  }
+
+  const latestConfig = await ensureConfig();
 
   return {
     results: rejectDuplicateCodexIdentities(results),
-    refreshedAt: new Date().toISOString()
+    refreshedAt: new Date().toISOString(),
+    config: serializeConfig(latestConfig)
   };
 }
 
@@ -805,7 +1321,7 @@ function summarizeTriggerOutput(result) {
 async function processAutoStartSnapshot(snapshot) {
   const config = await ensureConfig();
   const automationState = await ensureAutomationState();
-  const configById = new Map(config.accounts.map((account) => [account.id, account]));
+  const configById = new Map(config.identities.map((account) => [account.id, account]));
   const actions = [];
 
   for (const result of snapshot?.results || []) {
@@ -898,7 +1414,7 @@ async function openLoginForAccount(account) {
 
 async function openLoginForAccountById(accountId) {
   const config = await ensureConfig();
-  const account = config.accounts.find((entry) => entry.id === accountId);
+  const account = config.identities.find((entry) => entry.id === accountId);
 
   if (!account) {
     throw new Error("Account not found.");
@@ -968,6 +1484,7 @@ module.exports = {
   saveConfig,
   refreshAccountById,
   refreshAllAccounts,
+  getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById,
   startServer
