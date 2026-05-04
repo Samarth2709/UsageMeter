@@ -3,7 +3,7 @@ const accountTemplate = document.querySelector("#account-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
 const nativeApi = window.rateLimitAPI || null;
-const serverToken = window.__RATE_LIMIT_SERVER_TOKEN__ || "";
+const serverToken = document.querySelector('meta[name="rate-limit-server-token"]')?.content || "";
 
 let state = null;
 let accountElements = new Map();

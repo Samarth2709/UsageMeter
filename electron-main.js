@@ -22,6 +22,7 @@ const {
   processAutoStartSnapshot,
   openLoginForAccountById
 } = require("./server");
+const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
@@ -281,7 +282,7 @@ function togglePopover() {
   }
 
   if (popover.isVisible()) {
-    lastPopoverBounds = popover.getBounds();
+    queueSavePopoverPosition();
     popover.hide();
     return;
   }
@@ -483,7 +484,7 @@ function parseClaudeUsageApiPayload(payload) {
       label: "5-hour",
       usedPercent,
       remainingPercent: Math.max(0, 100 - usedPercent),
-      resetAt: fiveHour.resets_at || null,
+      resetAt: coerceResetAt(fiveHour.resets_at),
       source: "claude_usage_api"
     });
   }
@@ -494,7 +495,7 @@ function parseClaudeUsageApiPayload(payload) {
       label: "weekly",
       usedPercent,
       remainingPercent: Math.max(0, 100 - usedPercent),
-      resetAt: sevenDay.resets_at || null,
+      resetAt: coerceResetAt(sevenDay.resets_at),
       source: "claude_usage_api"
     });
   }
@@ -614,6 +615,8 @@ function getOrCreateClaudeUsageWindow() {
 }
 
 function showClaudeUsageLogin() {
+  claudeWebOrgId = null;
+
   if (claudeLoginWindow && !claudeLoginWindow.isDestroyed()) {
     claudeLoginWindow.show();
     claudeLoginWindow.focus();
@@ -685,6 +688,7 @@ async function refreshClaudeWebUsage() {
       const response = await readClaudeUsageApi();
 
       if (response.status === 401 || response.status === 403) {
+        claudeWebOrgId = null;
         claudeWebUsageCache = {
           ok: false,
           status: "login_required",
@@ -748,12 +752,16 @@ async function mergeClaudeWebUsage(snapshot) {
         return result;
       }
 
+      const existingData = result.data || {};
+      const webData = claudeWebUsageCache.data || {};
+
       return {
         ...result,
         ok: true,
         data: {
-          ...(result.data || {}),
-          ...claudeWebUsageCache.data,
+          ...existingData,
+          ...webData,
+          windows: mergeUsageWindows(existingData.windows, webData.windows),
           source: "claude_web_usage"
         }
       };

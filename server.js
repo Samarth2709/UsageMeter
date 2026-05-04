@@ -15,7 +15,7 @@ const automationWorkspaceRoot = path.join(appDataDir, "automation-workspaces");
 const claudeWorkspaceRoot = path.join(appDataDir, "claude-workspaces");
 const codexIdentityRoot = path.join(appDataDir, "codex-identities");
 const defaultCodexHome = path.join(os.homedir(), ".codex");
-const defaultSecondCodexHome = path.join(appDataDir, "codex-account-2");
+const legacySecondCodexHome = path.join(appDataDir, "codex-account-2");
 const defaultWorkspace = process.cwd();
 const timerKickPrompt = "Reply with exactly OK.";
 const browserServerHost = "127.0.0.1";
@@ -48,15 +48,32 @@ const claudeBin = resolveExecutable("claude", [
   )
 ]);
 const scriptBin = resolveExecutable("script", ["/usr/bin/script"]);
+const codexUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
+const codexOAuthTokenEndpoint = "https://auth.openai.com/oauth/token";
+const codexOAuthClientId = "app_EMoamEEZ73f0CkXaXp7hrann";
 const codexUsageRequestTimeoutMs = 800;
+const codexAuthRefreshTimeoutMs = 10000;
+const codexTokenRefreshSkewMs = 60000;
 
 app.use(express.json());
+
+function escapeHtmlAttribute(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function createBrowserIndexHtml(html, token) {
+  const tokenMeta = `<meta name="rate-limit-server-token" content="${escapeHtmlAttribute(token)}" />`;
+  return html.replace("</head>", `${tokenMeta}\n  </head>`);
+}
 
 async function sendBrowserIndex(response) {
   const indexPath = path.join(__dirname, "public", "index.html");
   const html = await fs.readFile(indexPath, "utf8");
-  const tokenScript = `<script>window.__RATE_LIMIT_SERVER_TOKEN__=${JSON.stringify(browserServerToken)};</script>`;
-  response.type("html").send(html.replace("</head>", `${tokenScript}\n  </head>`));
+  response.type("html").send(createBrowserIndexHtml(html, browserServerToken));
 }
 
 function requireBrowserServerToken(request, response, next) {
@@ -81,18 +98,6 @@ app.use("/api", requireBrowserServerToken);
 function defaultConfig() {
   return {
     identities: [
-      {
-        id: "codex-1",
-        type: "codex",
-        label: "Codex Account 1",
-        codeHome: defaultCodexHome
-      },
-      {
-        id: "codex-2",
-        type: "codex",
-        label: "Codex Account 2",
-        codeHome: defaultSecondCodexHome
-      },
       {
         id: "claude-1",
         type: "claude",
@@ -261,18 +266,22 @@ function mergeIdentity(existing, incoming) {
   };
 }
 
-function normalizeConfig(raw) {
-  const base = defaultConfig();
-  const incomingIdentities = Array.isArray(raw?.identities)
-    ? raw.identities
-    : Array.isArray(raw?.accounts)
-      ? raw.accounts.map(legacyAccountToIdentity)
-      : base.identities;
-  const normalized = (incomingIdentities.length ? incomingIdentities : base.identities)
-    .map(normalizeIdentity);
+function isLegacyDefaultCodexPlaceholder(identity) {
+  if (identity.type !== "codex" || identity.email || identity.providerAccountId) {
+    return false;
+  }
+
+  const codeHome = expandHome(identity.codeHome);
+  return (
+    (identity.id === "codex-1" && codeHome === defaultCodexHome) ||
+    (identity.id === "codex-2" && codeHome === legacySecondCodexHome)
+  );
+}
+
+function mergeIdentities(identities) {
   const byKey = new Map();
 
-  for (const identity of normalized) {
+  for (const identity of identities) {
     const key = identityDedupKey(identity);
     const existing = byKey.get(key);
     if (existing) {
@@ -282,8 +291,22 @@ function normalizeConfig(raw) {
     }
   }
 
+  return Array.from(byKey.values());
+}
+
+function normalizeConfig(raw) {
+  const base = defaultConfig();
+  const incomingIdentities = Array.isArray(raw?.identities)
+    ? raw.identities
+    : Array.isArray(raw?.accounts)
+      ? raw.accounts.map(legacyAccountToIdentity)
+      : base.identities;
+  const normalized = (incomingIdentities.length ? incomingIdentities : base.identities)
+    .map(normalizeIdentity)
+    .filter((identity) => !isLegacyDefaultCodexPlaceholder(identity));
+
   return {
-    identities: Array.from(byKey.values())
+    identities: mergeIdentities(normalized)
   };
 }
 
@@ -320,17 +343,100 @@ function serializeConfig(config) {
   };
 }
 
-async function ensureConfig() {
-  await fs.mkdir(appDataDir, { recursive: true });
-
-  if (!existsSync(configPath)) {
-    const initial = defaultConfig();
-    await fs.writeFile(configPath, JSON.stringify(initial, null, 2));
-    return initial;
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
   }
 
-  const raw = JSON.parse(await fs.readFile(configPath, "utf8"));
-  const normalized = normalizeConfig(raw);
+  return null;
+}
+
+async function readJsonOrNull(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function loadStoredCodexIdentities(root = codexIdentityRoot) {
+  let entries;
+
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+
+  const identities = [];
+  const directories = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+
+  for (const directory of directories) {
+    const codeHome = path.join(root, directory);
+    const authPath = path.join(codeHome, "auth.json");
+
+    if (!existsSync(authPath)) {
+      continue;
+    }
+
+    const auth = await readJsonOrNull(authPath);
+    const providerAccountId = firstString(
+      auth?.tokens?.account_id,
+      auth?.account_id,
+      auth?.account?.id
+    );
+    const email = firstString(
+      auth?.email,
+      auth?.account?.email,
+      auth?.user?.email
+    );
+    const label = email || providerAccountId || directory;
+
+    identities.push(normalizeIdentity({
+      id: buildIdentityId("codex", { email, providerAccountId, label }),
+      type: "codex",
+      label,
+      codeHome,
+      email,
+      providerAccountId
+    }));
+  }
+
+  return identities;
+}
+
+async function hydrateConfigFromStoredIdentities(config) {
+  const storedCodexIdentities = await loadStoredCodexIdentities();
+
+  return {
+    identities: mergeIdentities([
+      ...config.identities,
+      ...storedCodexIdentities
+    ])
+  };
+}
+
+async function ensureConfig() {
+  await fs.mkdir(appDataDir, { recursive: true });
+  let config;
+
+  if (!existsSync(configPath)) {
+    config = defaultConfig();
+  } else {
+    const raw = JSON.parse(await fs.readFile(configPath, "utf8"));
+    config = normalizeConfig(raw);
+  }
+
+  const normalized = await hydrateConfigFromStoredIdentities(config);
   await fs.writeFile(configPath, JSON.stringify(normalized, null, 2));
   return normalized;
 }
@@ -475,45 +581,173 @@ function cleanClaudeFieldValue(value) {
   return cleaned || null;
 }
 
-async function fetchCodexUsage(account) {
-  const authPath = path.join(account.codeHome, "auth.json");
-
-  if (!existsSync(authPath)) {
-    throw new Error(`No auth.json found at ${authPath}. Run login for this account first.`);
+function decodeBase64UrlJson(value) {
+  if (typeof value !== "string" || !value) {
+    return null;
   }
-
-  const auth = JSON.parse(await fs.readFile(authPath, "utf8"));
-  const accessToken = auth?.tokens?.access_token;
-  const accountId = auth?.tokens?.account_id;
-
-  if (!accessToken || !accountId) {
-    throw new Error("This Codex home does not have the access token and account id needed for usage lookup.");
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), codexUsageRequestTimeoutMs);
-  let response;
 
   try {
-    response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "ChatGPT-Account-ID": accountId
-      }
+    const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+    return JSON.parse(Buffer.from(`${base64}${padding}`, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function decodeJwtPayload(token) {
+  const parts = String(token || "").split(".");
+  return parts.length >= 2 ? decodeBase64UrlJson(parts[1]) : null;
+}
+
+function codexAccessTokenNeedsRefresh(accessToken, nowMs = Date.now()) {
+  if (!accessToken) {
+    return true;
+  }
+
+  const expiresAtSeconds = Number(decodeJwtPayload(accessToken)?.exp || 0);
+
+  if (!expiresAtSeconds) {
+    return false;
+  }
+
+  return expiresAtSeconds * 1000 <= nowMs + codexTokenRefreshSkewMs;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs, timeoutMessage) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
     });
   } catch (error) {
     if (error.name === "AbortError") {
-      throw new Error("Codex usage request timed out.");
+      throw new Error(timeoutMessage);
     }
 
     throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function codexUsageCredentials(auth) {
+  const accessToken = auth?.tokens?.access_token;
+  const accountId = auth?.tokens?.account_id;
+
+  if (!accessToken || !accountId) {
+    throw new Error("This saved Codex auth is incomplete. Re-run login for this account.");
+  }
+
+  return { accessToken, accountId };
+}
+
+function mergeRefreshedCodexAuth(auth, payload, now = new Date()) {
+  const tokens = auth?.tokens || {};
+  const refreshedTokens = payload?.tokens || {};
+  const nextTokens = {
+    ...tokens,
+    access_token: firstString(payload?.access_token, refreshedTokens.access_token, tokens.access_token),
+    refresh_token: firstString(payload?.refresh_token, refreshedTokens.refresh_token, tokens.refresh_token),
+    id_token: firstString(payload?.id_token, refreshedTokens.id_token, tokens.id_token),
+    account_id: firstString(
+      payload?.account_id,
+      payload?.account?.id,
+      refreshedTokens.account_id,
+      tokens.account_id
+    )
+  };
+
+  return {
+    ...auth,
+    tokens: nextTokens,
+    last_refresh: now.toISOString()
+  };
+}
+
+async function refreshCodexAuth(authPath, auth) {
+  const refreshToken = auth?.tokens?.refresh_token;
+
+  if (!refreshToken) {
+    throw new Error("Saved Codex auth is missing a refresh token. Re-run login for this account.");
+  }
+
+  const response = await fetchWithTimeout(
+    codexOAuthTokenEndpoint,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: codexOAuthClientId
+      })
+    },
+    codexAuthRefreshTimeoutMs,
+    "Codex auth refresh timed out."
+  );
+
+  if (response.status === 400 || response.status === 401 || response.status === 403) {
+    throw new Error("Saved Codex auth refresh was rejected. Re-run login for this account.");
+  }
+
+  if (!response.ok) {
+    throw new Error(`Codex auth refresh failed with ${response.status}.`);
+  }
+
+  const payload = await response.json();
+  const nextAuth = mergeRefreshedCodexAuth(auth, payload);
+  codexUsageCredentials(nextAuth);
+
+  await fs.writeFile(authPath, `${JSON.stringify(nextAuth, null, 2)}\n`);
+  return nextAuth;
+}
+
+async function requestCodexUsage(auth) {
+  const { accessToken, accountId } = codexUsageCredentials(auth);
+
+  return fetchWithTimeout(
+    codexUsageEndpoint,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "ChatGPT-Account-ID": accountId
+      }
+    },
+    codexUsageRequestTimeoutMs,
+    "Codex usage request timed out."
+  );
+}
+
+async function fetchCodexUsage(account) {
+  const authPath = path.join(account.codeHome, "auth.json");
+
+  if (!existsSync(authPath)) {
+    throw new Error(`No saved Codex auth found at ${authPath}. Run login for this account first.`);
+  }
+
+  let auth = JSON.parse(await fs.readFile(authPath, "utf8"));
+  let response;
+
+  if (codexAccessTokenNeedsRefresh(auth?.tokens?.access_token)) {
+    auth = await refreshCodexAuth(authPath, auth);
+  }
+
+  response = await requestCodexUsage(auth);
 
   if (response.status === 401 || response.status === 403) {
-    throw new Error("Codex auth was rejected. Re-run login for this account.");
+    auth = await refreshCodexAuth(authPath, auth);
+    response = await requestCodexUsage(auth);
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Codex auth was rejected after refresh. Re-run login for this account.");
   }
 
   if (!response.ok) {
@@ -521,6 +755,7 @@ async function fetchCodexUsage(account) {
   }
 
   const payload = await response.json();
+  const { accountId } = codexUsageCredentials(auth);
   const primary = payload?.rate_limit?.primary_window;
   const secondary = payload?.rate_limit?.secondary_window;
 
@@ -1546,6 +1781,11 @@ module.exports = {
     defaultConfig,
     normalizeConfig,
     serializeConfig,
+    createBrowserIndexHtml,
+    loadStoredCodexIdentities,
+    codexAccessTokenNeedsRefresh,
+    mergeRefreshedCodexAuth,
+    fetchCodexUsage,
     parseClaudeResetAt
   }
 };
