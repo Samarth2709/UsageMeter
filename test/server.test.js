@@ -114,6 +114,67 @@ test("stored Codex identity homes load dynamically", async () => {
   }
 });
 
+test("identity serialization preserves last successful usage", () => {
+  const normalized = _test.normalizeConfig({
+    identities: [
+      {
+        id: "codex-saved",
+        type: "codex",
+        label: "Saved Codex",
+        codeHome: path.join(os.homedir(), ".rate-limit-tool", "codex-identities", "saved"),
+        lastUsage: {
+          service: "codex",
+          providerAccountId: "acct_saved",
+          email: "saved@example.com",
+          windows: [
+            {
+              label: "5-hour",
+              remainingPercent: 64,
+              resetAt: "2026-05-05T20:00:00.000Z"
+            }
+          ],
+          fetchedAt: "2026-05-05T19:00:00.000Z"
+        }
+      }
+    ]
+  });
+  const serialized = _test.serializeConfig(normalized);
+
+  assert.equal(serialized.accounts[0].lastUsage.providerAccountId, "acct_saved");
+  assert.equal(serialized.accounts[0].lastUsage.windows[0].remainingPercent, 64);
+});
+
+test("refresh falls back to last successful usage when live auth is unavailable", async () => {
+  const config = { identities: [] };
+  const identity = _test.normalizeConfig({
+    identities: [
+      {
+        id: "codex-offline",
+        type: "codex",
+        label: "Offline Codex",
+        codeHome: path.join(os.tmpdir(), "usage-meter-missing-auth"),
+        lastUsage: {
+          service: "codex",
+          providerAccountId: "acct_offline",
+          windows: [
+            {
+              label: "5-hour",
+              remainingPercent: 42
+            }
+          ]
+        }
+      }
+    ]
+  }).identities[0];
+
+  const result = await _test.refreshIdentity(config, identity);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stale, true);
+  assert.equal(result.data.providerAccountId, "acct_offline");
+  assert.match(result.error, /No saved Codex auth/);
+});
+
 test("expired saved Codex auth refreshes before usage lookup", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-codex-auth-"));
   const authPath = path.join(root, "auth.json");
@@ -316,6 +377,10 @@ test("Codex access token refresh check respects JWT expiry", () => {
 
   assert.equal(_test.codexAccessTokenNeedsRefresh(fakeJwt({ exp: (now / 1000) - 1 }), now), true);
   assert.equal(_test.codexAccessTokenNeedsRefresh(fakeJwt({ exp: (now / 1000) + 120 }), now), false);
+});
+
+test("Codex usage requests allow normal network latency", () => {
+  assert.equal(_test.codexUsageRequestTimeoutMs >= 5000, true);
 });
 
 test("Claude reset text parses into a concrete future timestamp", () => {

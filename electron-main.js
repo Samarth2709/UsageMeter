@@ -18,6 +18,7 @@ const {
   getState,
   saveConfig,
   refreshAllAccounts,
+  saveUsageForAccount,
   getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById
@@ -745,7 +746,7 @@ async function mergeClaudeWebUsage(snapshot) {
       .map((account) => account.id)
   );
 
-  return {
+  const mergedSnapshot = {
     ...snapshot,
     results: snapshot.results.map((result) => {
       if (!claudeAccountIds.has(result.accountId)) {
@@ -767,6 +768,14 @@ async function mergeClaudeWebUsage(snapshot) {
       };
     })
   };
+
+  await Promise.all(
+    mergedSnapshot.results
+      .filter((result) => result.ok && claudeAccountIds.has(result.accountId) && result.data)
+      .map((result) => saveUsageForAccount(result.accountId, result.data).catch(() => false))
+  );
+
+  return mergedSnapshot;
 }
 
 async function refreshClaudeFallbackUsage() {

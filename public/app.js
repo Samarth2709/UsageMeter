@@ -383,7 +383,7 @@ function setIdle(accountId) {
   });
 }
 
-function renderConnected(accountId, data) {
+function renderConnected(accountId, data, metadata = {}) {
   const elements = accountElements.get(accountId);
   if (!elements) {
     return;
@@ -393,14 +393,16 @@ function renderConnected(accountId, data) {
   renderLimitWindows(elements, data);
   elements.limitGrid.classList.remove("hidden");
   elements.summary.textContent = "";
-  elements.summary.title = buildResetTitle(data);
+  elements.summary.title = metadata.stale
+    ? `Last known usage. Live refresh failed: ${metadata.error || "Unavailable"}`
+    : buildResetTitle(data);
   elements.summary.className = "account-summary hidden";
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
   updateAccountState(accountId, {
     kind: "ok",
-    detail: summary,
+    detail: metadata.stale ? `Last known: ${summary}` : summary,
     data
   });
 }
@@ -440,7 +442,10 @@ function renderError(accountId, error) {
 
 function renderResult(result) {
   if (result.ok) {
-    renderConnected(result.accountId, result.data);
+    renderConnected(result.accountId, result.data, {
+      stale: result.stale,
+      error: result.error
+    });
     return;
   }
 
@@ -653,6 +658,12 @@ countdownTimer = window.setInterval(updateCountdowns, 60000);
 
 for (const account of state.config.accounts) {
   setIdle(account.id);
+  if (account.lastUsage) {
+    renderConnected(account.id, account.lastUsage, {
+      stale: true,
+      error: "Waiting for live refresh"
+    });
+  }
 }
 
 if (nativeApi) {

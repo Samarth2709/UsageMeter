@@ -51,7 +51,7 @@ const scriptBin = resolveExecutable("script", ["/usr/bin/script"]);
 const codexUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
 const codexOAuthTokenEndpoint = "https://auth.openai.com/oauth/token";
 const codexOAuthClientId = "app_EMoamEEZ73f0CkXaXp7hrann";
-const codexUsageRequestTimeoutMs = 800;
+const codexUsageRequestTimeoutMs = 10000;
 const codexAuthRefreshTimeoutMs = 10000;
 const codexTokenRefreshSkewMs = 60000;
 
@@ -161,6 +161,22 @@ function timestampOrNull(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function normalizeLastUsage(raw, type) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+
+  const service = firstString(raw.service) || type;
+  if (service !== type) {
+    return null;
+  }
+
+  return {
+    ...raw,
+    service
+  };
+}
+
 function identityType(raw) {
   return raw?.provider === "claude" || raw?.type === "claude" ? "claude" : "codex";
 }
@@ -207,7 +223,8 @@ function normalizeIdentity(raw) {
       providerAccountId,
       firstSeenAt: timestampOrNull(base.firstSeenAt) || now,
       lastSeenAt: timestampOrNull(base.lastSeenAt),
-      lastSuccessfulRefreshAt: timestampOrNull(base.lastSuccessfulRefreshAt)
+      lastSuccessfulRefreshAt: timestampOrNull(base.lastSuccessfulRefreshAt),
+      lastUsage: normalizeLastUsage(base.lastUsage, type)
     };
   }
 
@@ -224,7 +241,8 @@ function normalizeIdentity(raw) {
       : null,
     firstSeenAt: timestampOrNull(base.firstSeenAt) || now,
     lastSeenAt: timestampOrNull(base.lastSeenAt),
-    lastSuccessfulRefreshAt: timestampOrNull(base.lastSuccessfulRefreshAt)
+    lastSuccessfulRefreshAt: timestampOrNull(base.lastSuccessfulRefreshAt),
+    lastUsage: normalizeLastUsage(base.lastUsage, type)
   };
 }
 
@@ -327,7 +345,8 @@ function serializeConfig(config) {
       "providerAccountId",
       "organization",
       "lastSeenAt",
-      "lastSuccessfulRefreshAt"
+      "lastSuccessfulRefreshAt",
+      "lastUsage"
     ]) {
       if (!serialized[key]) {
         delete serialized[key];
@@ -1191,6 +1210,7 @@ async function persistCodexAuthForIdentity(identity, sourceHome, data) {
 function updateIdentityFromUsage(identity, data) {
   let changed = false;
   const now = new Date().toISOString();
+  const lastUsage = normalizeLastUsage(data, identity.type);
 
   if (data?.email && identity.email !== data.email) {
     identity.email = data.email;
@@ -1227,6 +1247,11 @@ function updateIdentityFromUsage(identity, data) {
     changed = true;
   }
 
+  if (lastUsage && JSON.stringify(identity.lastUsage) !== JSON.stringify(lastUsage)) {
+    identity.lastUsage = lastUsage;
+    changed = true;
+  }
+
   return changed;
 }
 
@@ -1242,6 +1267,7 @@ function createIdentityFromUsage(type, data, extras = {}) {
     firstSeenAt: now,
     lastSeenAt: now,
     lastSuccessfulRefreshAt: now,
+    lastUsage: data,
     ...extras
   });
 
@@ -1356,6 +1382,20 @@ async function refreshIdentity(config, identity, cachedResult = null) {
       data
     };
   } catch (error) {
+    if (identity.lastUsage) {
+      return {
+        accountId: identity.id,
+        ok: true,
+        stale: true,
+        error: error.message,
+        data: {
+          ...identity.lastUsage,
+          stale: true,
+          staleReason: error.message
+        }
+      };
+    }
+
     return {
       accountId: identity.id,
       ok: false,
@@ -1375,6 +1415,22 @@ async function refreshAccountById(accountId) {
   const result = await refreshIdentity(config, identity);
   await saveConfig(config);
   return result;
+}
+
+async function saveUsageForAccount(accountId, data) {
+  const config = await ensureConfig();
+  const identity = config.identities.find((entry) => entry.id === accountId);
+
+  if (!identity) {
+    return false;
+  }
+
+  const changed = updateIdentityFromUsage(identity, data);
+  if (changed) {
+    await saveConfig(config);
+  }
+
+  return changed;
 }
 
 function rejectDuplicateCodexIdentities(results) {
@@ -1773,6 +1829,7 @@ module.exports = {
   saveConfig,
   refreshAccountById,
   refreshAllAccounts,
+  saveUsageForAccount,
   getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById,
@@ -1783,6 +1840,8 @@ module.exports = {
     serializeConfig,
     createBrowserIndexHtml,
     loadStoredCodexIdentities,
+    refreshIdentity,
+    codexUsageRequestTimeoutMs,
     codexAccessTokenNeedsRefresh,
     mergeRefreshedCodexAuth,
     fetchCodexUsage,
