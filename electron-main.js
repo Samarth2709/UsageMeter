@@ -29,6 +29,7 @@ const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
 const compactWindowHeight = 170;
 const expandedWindowHeight = 220;
+const minWindowHeight = 70;
 const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
@@ -238,7 +239,14 @@ function getPopoverBounds() {
   });
 }
 
-function getWindowHeight(expanded, rowCount = currentRowCount) {
+function getWindowHeight(expanded, rowCount = currentRowCount, contentHeight = null) {
+  // Prefer the renderer's measured content height so the window hugs the
+  // content with no dead space; fall back to the row-count estimate.
+  const measured = Number(contentHeight);
+  if (Number.isFinite(measured) && measured > 0) {
+    return Math.min(maxWindowHeight, Math.max(minWindowHeight, Math.ceil(measured)));
+  }
+
   const count = Math.max(1, Number(rowCount) || 1);
   const baseHeight = expanded ? expandedWindowHeight : compactWindowHeight;
   const rowHeight = expanded ? 57 : 43;
@@ -246,9 +254,9 @@ function getWindowHeight(expanded, rowCount = currentRowCount) {
   return Math.min(maxWindowHeight, Math.max(baseHeight, dynamicHeight));
 }
 
-function setExpandedView(expanded, rowCount = currentRowCount) {
+function setExpandedView(expanded, rowCount = currentRowCount, contentHeight = null) {
   currentRowCount = Math.max(1, Number(rowCount) || 1);
-  currentWindowHeight = getWindowHeight(expanded, currentRowCount);
+  currentWindowHeight = getWindowHeight(expanded, currentRowCount, contentHeight);
 
   if (!popover) {
     return;
@@ -261,6 +269,17 @@ function setExpandedView(expanded, rowCount = currentRowCount) {
     width: windowWidth,
     height: currentWindowHeight
   });
+  queueSavePopoverPosition();
+}
+
+function moveToTopRight() {
+  if (!popover || popover.isDestroyed()) {
+    return;
+  }
+
+  const bounds = getDefaultPopoverBounds();
+  popover.setBounds(bounds);
+  popoverPosition = { x: bounds.x, y: bounds.y };
   queueSavePopoverPosition();
 }
 
@@ -1165,9 +1184,10 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("rate-limit:refresh", () => refreshSnapshot());
   ipcMain.handle("rate-limit:toggle", togglePopover);
-  ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount) => {
-    setExpandedView(Boolean(expanded), rowCount);
+  ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount, contentHeight) => {
+    setExpandedView(Boolean(expanded), rowCount, contentHeight);
   });
+  ipcMain.on("rate-limit:move-top-right", moveToTopRight);
 }
 
 if (!gotSingleInstanceLock) {

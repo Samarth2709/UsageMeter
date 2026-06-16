@@ -7,7 +7,8 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
   openLogin: (accountId) => ipcRenderer.invoke("rate-limit:open-login", accountId),
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),
   toggle: () => ipcRenderer.invoke("rate-limit:toggle"),
-  setExpandedView: (expanded, rowCount) => ipcRenderer.send("rate-limit:set-expanded-view", expanded, rowCount),
+  moveToTopRight: () => ipcRenderer.send("rate-limit:move-top-right"),
+  setExpandedView: (expanded, rowCount, contentHeight) => ipcRenderer.send("rate-limit:set-expanded-view", expanded, rowCount, contentHeight),
   onSnapshot: (callback) => {
     const listener = (event, payload) => callback(payload);
     ipcRenderer.on("rate-limit:snapshot", listener);

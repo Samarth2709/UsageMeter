@@ -9,7 +9,7 @@
     />
     <title>Usage Meter</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=20260501b" />
+    <link rel="stylesheet" href="styles.css?v=20260615c" />
   </head>
   <body>
     <main class="widget-shell">
@@ -35,7 +35,10 @@
 
     <template id="account-template">
       <article class="account-row">
-        <p class="account-name"></p>
+        <div class="account-meta">
+          <span class="account-type"></span>
+          <p class="account-name"></p>
+        </div>
         <div class="account-right">
           <div class="limit-grid" aria-label="Usage limits">
             <div class="limit-window" data-window="5h">
@@ -67,6 +70,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=20260501c" type="module"></script>
+    <script src="app.js?v=20260615c" type="module"></script>
   </body>
 </html>

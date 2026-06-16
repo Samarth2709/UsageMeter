@@ -60,6 +60,8 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 7px;
+  /* no-drag so the renderer receives the double-click-to-reposition gesture */
+  -webkit-app-region: no-drag;
 }
 
 .title-group {
@@ -138,8 +140,24 @@ h1 {
 .account-row-claude .limit-countdown,
 .account-row-claude .limit-separator,
 .account-row-claude .limit-time,
-.account-row-claude .account-summary {
+.account-row-claude .account-summary,
+.account-row-claude .account-type {
   color: var(--fg);
+}
+
+.account-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.account-type {
+  color: var(--accent);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .account-name,

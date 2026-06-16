@@ -469,6 +469,8 @@ function applySnapshot(snapshot) {
   for (const result of snapshot.results) {
     renderResult(result);
   }
+
+  syncViewSize();
 }
 
 function syncAccountsFromConfig(config) {
@@ -512,11 +514,13 @@ function syncAccountsFromConfig(config) {
 function createAccountRow(account) {
   const node = accountTemplate.content.firstElementChild.cloneNode(true);
   const name = node.querySelector(".account-name");
+  const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
   const summary = node.querySelector(".account-summary");
   const connectButton = node.querySelector(".connect-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
+  typeTag.textContent = account.type === "claude" ? "Claude" : "Codex";
   name.textContent = buildAccountName(account);
   showStatusSummary(
     {
@@ -597,8 +601,22 @@ function updateCountdowns() {
   renderCurrentRows();
 }
 
+function measureContentHeight() {
+  const shell = document.querySelector(".widget-shell");
+  if (!shell) {
+    return null;
+  }
+
+  // +1 guards against a sub-pixel rounding scrollbar.
+  return Math.ceil(shell.getBoundingClientRect().height) + 1;
+}
+
 function syncViewSize(expanded = rowsExpanded) {
-  nativeApi?.setExpandedView?.(expanded, state?.config?.accounts?.length || 1);
+  nativeApi?.setExpandedView?.(
+    expanded,
+    state?.config?.accounts?.length || 1,
+    measureContentHeight()
+  );
 }
 
 async function loadState() {
@@ -652,6 +670,15 @@ refreshButton.addEventListener("click", () => {
   refreshAll();
 });
 
+document.querySelector(".widget-header")?.addEventListener("dblclick", (event) => {
+  // Ignore double-clicks on the refresh control itself.
+  if (event.target.closest("#refresh-button")) {
+    return;
+  }
+
+  nativeApi?.moveToTopRight?.();
+});
+
 await loadState();
 syncViewSize();
 countdownTimer = window.setInterval(updateCountdowns, 60000);
@@ -665,6 +692,8 @@ for (const account of state.config.accounts) {
     });
   }
 }
+
+syncViewSize();
 
 if (nativeApi) {
   unsubscribeSnapshot = nativeApi.onSnapshot((snapshot) => {
