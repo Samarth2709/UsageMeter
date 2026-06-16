@@ -26,10 +26,11 @@ function recordsToContribution(records) {
   return contribution;
 }
 
-function contributionForFile(filePath, text) {
-  const records = filePath.includes("/.codex/")
-    ? parseCodexTranscript(text)
-    : parseClaudeTranscript(text);
+function contributionForFile(filePath, text, cli) {
+  // Select the parser by the CLI the file was discovered under — NOT by a path
+  // substring. Codex sessions can live outside ~/.codex (e.g. a launcher's own
+  // CODEX_HOME), so a "/.codex/" path check silently misparses them as Claude.
+  const records = cli === "codex" ? parseCodexTranscript(text) : parseClaudeTranscript(text);
   return recordsToContribution(records);
 }
 
@@ -138,7 +139,7 @@ function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) continue;
     let text = "";
     try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
-    cache.files[p] = { mtimeMs: stat.mtimeMs, size: stat.size, cli, contribution: contributionForFile(p, text) };
+    cache.files[p] = { mtimeMs: stat.mtimeMs, size: stat.size, cli, contribution: contributionForFile(p, text, cli) };
   }
 
   saveCache(dataDir, cache);

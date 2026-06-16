@@ -16,14 +16,44 @@ function walkJsonl(dir, out) {
 
 function listClaudeFiles(homeDir) {
   const out = [];
-  walkJsonl(path.join(homeDir, ".claude", "projects"), out);
+  // Claude Code's default transcript location. CLAUDE_CONFIG_DIR overrides ~/.claude.
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir, ".claude");
+  walkJsonl(path.join(configDir, "projects"), out);
   return out;
+}
+
+// Codex sessions live under a "Codex home" that contains a sessions/ directory.
+// The same machine can have several: the default ~/.codex, a CODEX_HOME override,
+// per-account homes this app configures, and third-party launchers (e.g. Orca)
+// that run Codex under their own home. Scanning only ~/.codex misses everything an
+// external launcher produced — which can be the bulk of real usage.
+function codexHomeRoots(homeDir) {
+  const roots = [];
+  const add = (p) => { if (p && !roots.includes(p)) roots.push(p); };
+
+  add(path.join(homeDir, ".codex"));
+  if (process.env.CODEX_HOME) add(process.env.CODEX_HOME);
+
+  // App-configured Codex identities (each directory is itself a CODEX_HOME).
+  const identitiesDir = path.join(homeDir, ".rate-limit-tool", "codex-identities");
+  try {
+    for (const entry of fs.readdirSync(identitiesDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) add(path.join(identitiesDir, entry.name));
+    }
+  } catch { /* no configured identities */ }
+
+  // Orca runs Codex agents under a nested runtime home (sessions live in home/).
+  add(path.join(homeDir, "Library", "Application Support", "orca", "codex-runtime-home", "home"));
+
+  return roots;
 }
 
 function listCodexFiles(homeDir) {
   const out = [];
-  walkJsonl(path.join(homeDir, ".codex", "sessions"), out);
-  walkJsonl(path.join(homeDir, ".codex", "archived_sessions"), out);
+  for (const root of codexHomeRoots(homeDir)) {
+    walkJsonl(path.join(root, "sessions"), out);
+    walkJsonl(path.join(root, "archived_sessions"), out);
+  }
   return out;
 }
 
@@ -34,4 +64,4 @@ function listAllTranscriptFiles(homeDir) {
   ];
 }
 
-module.exports = { listClaudeFiles, listCodexFiles, listAllTranscriptFiles };
+module.exports = { listClaudeFiles, listCodexFiles, listAllTranscriptFiles, codexHomeRoots };

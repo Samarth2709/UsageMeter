@@ -16,10 +16,19 @@ test("recordsToContribution groups buckets by day and cli::model", () => {
   assert.deepEqual(c["2026-06-16"]["claude::claude-opus-4-8"], { inputTokens: 15, cachedReadTokens: 1, cacheWriteTokens: 2, outputTokens: 4 });
 });
 
-test("contributionForFile picks the parser from the path", () => {
+test("contributionForFile picks the parser from the cli tag", () => {
   const claudeText = JSON.stringify({ type: "assistant", timestamp: "2026-06-16T18:00:00.000Z", message: { id: "m1", model: "claude-haiku-4-5", usage: { input_tokens: 4, output_tokens: 2 } } });
-  const c = contributionForFile("/home/.claude/projects/p/s.jsonl", claudeText);
+  const c = contributionForFile("/anywhere/s.jsonl", claudeText, "claude");
   assert.ok(c["2026-06-16"]["claude::claude-haiku-4-5"]);
+
+  // Codex sessions outside ~/.codex must still parse as codex (the original bug:
+  // an Orca path like .../codex-runtime-home/... was misparsed as claude).
+  const codexText = [
+    JSON.stringify({ type: "session_meta", timestamp: "2026-06-16T18:00:00.000Z", payload: { model: "gpt-5.5-codex" } }),
+    JSON.stringify({ type: "event_msg", timestamp: "2026-06-16T18:00:01.000Z", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 } } } })
+  ].join("\n");
+  const cc = contributionForFile("/Library/Application Support/orca/codex-runtime-home/home/sessions/x.jsonl", codexText, "codex");
+  assert.ok(cc["2026-06-16"]["codex::gpt-5.5-codex"]);
 });
 
 test("mergeAndPrice sums a range and computes dollars + flags unknown models", () => {
