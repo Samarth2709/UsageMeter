@@ -16,6 +16,10 @@ function parseClaudeTranscript(text) {
     const usage = msg.usage;
     if (!usage) continue;
 
+    // Skip synthetic/interrupted assistant messages (model "<synthetic>"): they
+    // carry no real token usage and are not billable API calls.
+    if (msg.model === "<synthetic>") continue;
+
     const id = msg.id || obj.requestId;
     if (id) {
       if (seen.has(id)) continue;

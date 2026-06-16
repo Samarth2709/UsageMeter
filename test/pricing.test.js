@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const { rateKeyForModel, priceRecord, FALLBACK } = require("../usage-history/pricing");
 
 test("maps Claude/Codex model ids to rate keys", () => {
+  assert.equal(rateKeyForModel("claude", "claude-fable-5"), "claude-fable");
   assert.equal(rateKeyForModel("claude", "claude-opus-4-8"), "claude-opus");
   assert.equal(rateKeyForModel("claude", "claude-sonnet-4-6"), "claude-sonnet");
   assert.equal(rateKeyForModel("claude", "claude-haiku-4-5"), "claude-haiku");
@@ -18,7 +19,8 @@ test("prices a known model by bucket", () => {
   });
   assert.equal(r.modelKnown, true);
   assert.equal(r.rateKey, "claude-opus");
-  assert.ok(Math.abs(r.dollars - (15 + 1.5 + 18.75 + 75)) < 1e-9);
+  // Opus 4.x: $5 input + $0.50 cached read + $6.25 cache write + $25 output
+  assert.ok(Math.abs(r.dollars - (5 + 0.5 + 6.25 + 25)) < 1e-9);
 });
 
 test("unknown model uses fallback and flags modelKnown=false", () => {
