@@ -142,12 +142,17 @@ Codex rates via current OpenAI pricing at implementation time):
 
 | Rate key      | input | cached read | cache write | output |
 |---------------|-------|-------------|-------------|--------|
-| claude-opus   | 15.00 | 1.50        | 18.75       | 75.00  |
+| claude-fable  | 10.00 | 1.00        | 12.50       | 50.00  |
+| claude-opus   | 5.00  | 0.50        | 6.25        | 25.00  |
 | claude-sonnet | 3.00  | 0.30        | 3.75        | 15.00  |
 | claude-haiku  | 1.00  | 0.10        | 1.25        | 5.00   |
 | gpt-5.5       | 5.00  | 0.50        | —           | 30.00  |
 | gpt-5.4       | 2.50  | 0.25        | —           | 15.00  |
 | _fallback_    | 3.00  | 0.30        | 3.75        | 15.00  |
+
+Claude rates verified against the `claude-api` skill (Models table, 2026-06):
+Fable 5 $10/$50, Opus 4.x $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5; cache read
+= 0.1× input, cache write = 1.25× input (5-minute ephemeral default).
 
 Cost formulas (per record, reflecting the differing field semantics):
 - **Claude:** `input×in + cachedRead×cacheRead + cacheWrite×cacheWrite + output×out`
