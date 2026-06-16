@@ -30,9 +30,11 @@
     "files": [
       "assets/**",
       "public/**",
+      "usage-history/**",
       "electron-main.js",
       "preload.js",
       "server.js",
+      "usage-windows.js",
       "package.json"
     ]
   },
