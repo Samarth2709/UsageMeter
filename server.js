@@ -92,6 +92,14 @@ app.get(["/", "/index.html"], async (request, response) => {
     response.status(500).send(error.message);
   }
 });
+app.get("/history.html", async (request, response) => {
+  try {
+    const html = await fs.readFile(path.join(__dirname, "public", "history.html"), "utf8");
+    response.type("html").send(createBrowserIndexHtml(html, browserServerToken));
+  } catch (error) {
+    response.status(500).send(error.message);
+  }
+});
 app.use(express.static(path.join(__dirname, "public"), { index: false }));
 app.use("/api", requireBrowserServerToken);
 
@@ -1808,6 +1816,16 @@ app.post("/api/accounts/:id/login", async (request, response) => {
 app.post("/api/refresh", async (request, response) => {
   try {
     response.json(await refreshAllAccounts());
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/usage-history", (request, response) => {
+  try {
+    const { scanUsageHistory } = require("./usage-history/aggregate");
+    const rangeDays = [7, 30, 90].includes(Number(request.query.rangeDays)) ? Number(request.query.rangeDays) : 30;
+    response.json(scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays }));
   } catch (error) {
     response.status(500).json({ error: error.message });
   }

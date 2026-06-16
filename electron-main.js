@@ -24,6 +24,7 @@ const {
   openLoginForAccountById
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
+const { scanUsageHistory } = require("./usage-history/aggregate");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
@@ -44,6 +45,7 @@ const claudeUsageApiToken = crypto.randomBytes(32).toString("base64url");
 
 let tray = null;
 let popover = null;
+let historyWindow = null;
 let currentWindowHeight = expandedWindowHeight;
 let currentRowCount = 3;
 let popoverPosition = null;
@@ -281,6 +283,31 @@ function moveToTopRight() {
   popover.setBounds(bounds);
   popoverPosition = { x: bounds.x, y: bounds.y };
   queueSavePopoverPosition();
+}
+
+function openHistoryWindow() {
+  if (historyWindow && !historyWindow.isDestroyed()) {
+    historyWindow.show();
+    historyWindow.focus();
+    return;
+  }
+
+  historyWindow = new BrowserWindow({
+    width: 760,
+    height: 580,
+    title: "Usage History",
+    show: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  historyWindow.loadFile(path.join(__dirname, "public", "history.html"));
+  historyWindow.on("closed", () => {
+    historyWindow = null;
+  });
 }
 
 function showPopover() {
@@ -1188,6 +1215,11 @@ function registerIpcHandlers() {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
   });
   ipcMain.on("rate-limit:move-top-right", moveToTopRight);
+  ipcMain.handle("usage-history:get", (event, options = {}) => {
+    const rangeDays = [7, 30, 90].includes(Number(options.rangeDays)) ? Number(options.rangeDays) : 30;
+    return scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays });
+  });
+  ipcMain.on("usage-history:open", openHistoryWindow);
 }
 
 if (!gotSingleInstanceLock) {

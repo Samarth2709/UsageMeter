@@ -33,6 +33,7 @@ function parseCodexTranscript(text) {
     const input = Number(last.input_tokens) || 0;
     const cached = Number(last.cached_input_tokens) || 0;
     const output = Number(last.output_tokens) || 0;
+    if (input + output === 0) continue;
 
     records.push({
       timestampMs: ts,

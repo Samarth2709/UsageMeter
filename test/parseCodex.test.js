@@ -28,6 +28,15 @@ test("emits one record per token_count using per-turn delta and tracks model", (
   assert.equal(recs[1].outputTokens, 15);
 });
 
+test("skips zero-token token_count events", () => {
+  const text = [
+    meta("gpt-5.5"),
+    tc("2026-06-16T18:00:01.000Z", { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 },
+       { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 })
+  ].join("\n");
+  assert.equal(parseCodexTranscript(text).length, 0);
+});
+
 test("skips malformed lines without throwing", () => {
   const text = ["garbage", meta("gpt-5.4"), tc("2026-06-16T18:00:01.000Z", { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1 }, { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1 })].join("\n");
   const recs = parseCodexTranscript(text);

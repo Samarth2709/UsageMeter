@@ -326,3 +326,129 @@ h1 {
 .hidden {
   display: none;
 }
+
+.history-button {
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 9px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.72rem;
+  -webkit-app-region: no-drag;
+}
+
+.history-button:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+/* ===== Usage History dashboard window ===== */
+.history-body {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: "Avenir Next", "DIN Alternate", "Helvetica Neue", sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.history-header h1 {
+  font-size: 1rem;
+}
+
+.range-toggle button {
+  margin-left: 4px;
+}
+
+.range-toggle button.active {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.history-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.card-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.card-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.card-sub {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.history-chart {
+  margin: 8px 0;
+}
+
+.history-chart .legend {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.history-chart .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin: 0 4px 0 10px;
+}
+
+.history-chart .dot.claude {
+  background: #f4ab5e;
+}
+
+.history-chart .dot.codex {
+  background: #74c278;
+}
+
+.history-models table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.history-models th,
+.history-models td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.history-models td.num,
+.history-models th.num {
+  text-align: right;
+}
+
+.history-note {
+  font-size: 0.7rem;
+  color: var(--muted);
+}

@@ -670,6 +670,10 @@ refreshButton.addEventListener("click", () => {
   refreshAll();
 });
 
+document.querySelector("#history-button")?.addEventListener("click", () => {
+  nativeApi?.openHistory?.();
+});
+
 document.querySelector(".widget-header")?.addEventListener("dblclick", (event) => {
   // Ignore double-clicks on the refresh control itself.
   if (event.target.closest("#refresh-button")) {

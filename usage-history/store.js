@@ -4,7 +4,7 @@ const path = require("node:path");
 const FILE_NAME = "usage-history.json";
 // Bump whenever parser/aggregation logic changes so cached contributions from an
 // older version are discarded and transcripts are re-parsed with the new logic.
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 function freshCache() {
   return { version: CACHE_VERSION, files: {} };

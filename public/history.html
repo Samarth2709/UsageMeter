@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
+    <title>Usage History</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="styles.css?v=20260616a" />
+  </head>
+  <body class="history-body">
+    <header class="history-header">
+      <h1>Usage History</h1>
+      <div class="range-toggle">
+        <button data-range="7">7d</button>
+        <button data-range="30" class="active">30d</button>
+        <button data-range="90">90d</button>
+      </div>
+    </header>
+
+    <section class="history-summary">
+      <div class="card">
+        <span class="card-label">Today</span>
+        <span id="today-tokens" class="card-value">–</span>
+        <span id="today-dollars" class="card-sub">–</span>
+      </div>
+      <div class="card">
+        <span class="card-label">Range total</span>
+        <span id="range-tokens" class="card-value">–</span>
+        <span id="range-dollars" class="card-sub">–</span>
+      </div>
+      <div class="card">
+        <span class="card-label">Claude / Codex</span>
+        <span id="cli-split" class="card-value">–</span>
+        <span id="cli-split-dollars" class="card-sub">–</span>
+      </div>
+    </section>
+
+    <section id="chart" class="history-chart" aria-label="Tokens per day"></section>
+
+    <section class="history-models">
+      <table id="model-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>CLI</th>
+            <th class="num">Tokens</th>
+            <th class="num">$ API-value</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <p id="history-note" class="history-note"></p>
+
+    <script src="history.js?v=20260616a" type="module"></script>
+  </body>
+</html>

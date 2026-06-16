@@ -29,15 +29,21 @@ function parseClaudeTranscript(text) {
     const ts = Date.parse(obj.timestamp);
     if (!Number.isFinite(ts)) continue;
 
+    const inputTokens = Number(usage.input_tokens) || 0;
+    const cachedReadTokens = Number(usage.cache_read_input_tokens) || 0;
+    const cacheWriteTokens = Number(usage.cache_creation_input_tokens) || 0;
+    const outputTokens = Number(usage.output_tokens) || 0;
+    if (inputTokens + cachedReadTokens + cacheWriteTokens + outputTokens === 0) continue;
+
     records.push({
       timestampMs: ts,
       day: localDay(ts),
       cli: "claude",
       model: msg.model || "unknown",
-      inputTokens: Number(usage.input_tokens) || 0,
-      cachedReadTokens: Number(usage.cache_read_input_tokens) || 0,
-      cacheWriteTokens: Number(usage.cache_creation_input_tokens) || 0,
-      outputTokens: Number(usage.output_tokens) || 0,
+      inputTokens,
+      cachedReadTokens,
+      cacheWriteTokens,
+      outputTokens,
       isSidechain: Boolean(obj.isSidechain)
     });
   }

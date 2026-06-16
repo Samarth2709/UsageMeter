@@ -25,6 +25,12 @@ test("dedups repeated lines sharing message.id", () => {
   assert.equal(parseClaudeTranscript(text).length, 1);
 });
 
+test("skips synthetic and zero-token assistant messages", () => {
+  const synthetic = line({ type: "assistant", timestamp: "2026-06-16T18:00:00.000Z", message: { id: "syn", model: "<synthetic>", usage: { input_tokens: 5, output_tokens: 0 } } });
+  const zero = assistant("z", { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
+  assert.equal(parseClaudeTranscript([synthetic, zero].join("\n")).length, 0);
+});
+
 test("skips non-assistant lines and malformed JSON", () => {
   const text = ["not json", line({ type: "user", message: {} }), assistant("ok", { input_tokens: 1, output_tokens: 1 })].join("\n");
   assert.equal(parseClaudeTranscript(text).length, 1);
