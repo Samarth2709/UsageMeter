@@ -1,0 +1,148 @@
+const fs = require("node:fs");
+const { localDay } = require("./day");
+const { parseClaudeTranscript } = require("./parseClaude");
+const { parseCodexTranscript } = require("./parseCodex");
+const { priceRecord } = require("./pricing");
+const { listAllTranscriptFiles } = require("./sources");
+const { loadCache, saveCache } = require("./store");
+
+const EMPTY = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 });
+
+function addBuckets(target, src) {
+  target.inputTokens += src.inputTokens || 0;
+  target.cachedReadTokens += src.cachedReadTokens || 0;
+  target.cacheWriteTokens += src.cacheWriteTokens || 0;
+  target.outputTokens += src.outputTokens || 0;
+  return target;
+}
+
+function recordsToContribution(records) {
+  const contribution = {};
+  for (const r of records) {
+    const dayMap = (contribution[r.day] = contribution[r.day] || {});
+    const key = `${r.cli}::${r.model}`;
+    dayMap[key] = addBuckets(dayMap[key] || EMPTY(), r);
+  }
+  return contribution;
+}
+
+function contributionForFile(filePath, text) {
+  const records = filePath.includes("/.codex/")
+    ? parseCodexTranscript(text)
+    : parseClaudeTranscript(text);
+  return recordsToContribution(records);
+}
+
+function rangeDaysList(rangeDays, nowMs) {
+  const days = [];
+  for (let i = rangeDays - 1; i >= 0; i--) {
+    days.push(localDay(nowMs - i * 86_400_000));
+  }
+  return days;
+}
+
+function bucketsWithTotal(b) {
+  return {
+    input: b.inputTokens, cachedRead: b.cachedReadTokens, cacheWrite: b.cacheWriteTokens,
+    output: b.outputTokens, total: b.inputTokens + b.cachedReadTokens + b.cacheWriteTokens + b.outputTokens
+  };
+}
+
+function mergeAndPrice(files, { rangeDays, nowMs }) {
+  const wantDays = new Set(rangeDaysList(rangeDays, nowMs));
+  const todayKey = localDay(nowMs);
+  const unknownModels = new Set();
+
+  // dayKey -> "cli::model" -> buckets
+  const byDay = {};
+  for (const entry of Object.values(files)) {
+    for (const [day, models] of Object.entries(entry.contribution || {})) {
+      if (!wantDays.has(day)) continue;
+      const into = (byDay[day] = byDay[day] || {});
+      for (const [key, buckets] of Object.entries(models)) {
+        into[key] = addBuckets(into[key] || EMPTY(), buckets);
+      }
+    }
+  }
+
+  const priceKey = (key, buckets) => {
+    const [cli, ...rest] = key.split("::");
+    const model = rest.join("::");
+    const p = priceRecord(cli, model, buckets);
+    if (!p.modelKnown) unknownModels.add(model);
+    return { cli, model, ...p };
+  };
+
+  const dayRows = rangeDaysList(rangeDays, nowMs).map((day) => {
+    const models = byDay[day] || {};
+    const dayTotals = EMPTY();
+    const byCli = { claude: { buckets: EMPTY(), dollars: 0 }, codex: { buckets: EMPTY(), dollars: 0 } };
+    let dollars = 0;
+    for (const [key, buckets] of Object.entries(models)) {
+      const priced = priceKey(key, buckets);
+      addBuckets(dayTotals, buckets);
+      dollars += priced.dollars;
+      if (byCli[priced.cli]) { addBuckets(byCli[priced.cli].buckets, buckets); byCli[priced.cli].dollars += priced.dollars; }
+    }
+    return {
+      day, tokens: bucketsWithTotal(dayTotals), dollars,
+      byCli: { claude: { tokens: bucketsWithTotal(byCli.claude.buckets), dollars: byCli.claude.dollars },
+               codex: { tokens: bucketsWithTotal(byCli.codex.buckets), dollars: byCli.codex.dollars } }
+    };
+  });
+
+  // range model breakdown
+  const modelAcc = {};
+  const rangeTotals = EMPTY();
+  let rangeDollars = 0;
+  for (const day of rangeDaysList(rangeDays, nowMs)) {
+    for (const [key, buckets] of Object.entries(byDay[day] || {})) {
+      const priced = priceKey(key, buckets);
+      addBuckets(rangeTotals, buckets);
+      rangeDollars += priced.dollars;
+      const m = (modelAcc[key] = modelAcc[key] || { cli: priced.cli, model: priced.model, buckets: EMPTY(), dollars: 0, modelKnown: priced.modelKnown });
+      addBuckets(m.buckets, buckets); m.dollars += priced.dollars;
+    }
+  }
+  const byModel = Object.values(modelAcc)
+    .map((m) => ({ cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars, modelKnown: m.modelKnown }))
+    .sort((a, b) => b.dollars - a.dollars);
+
+  const todayRow = dayRows.find((d) => d.day === todayKey) || {
+    tokens: bucketsWithTotal(EMPTY()), dollars: 0,
+    byCli: { claude: { tokens: bucketsWithTotal(EMPTY()), dollars: 0 }, codex: { tokens: bucketsWithTotal(EMPTY()), dollars: 0 } }
+  };
+
+  return {
+    today: { tokens: todayRow.tokens, dollars: todayRow.dollars, byCli: todayRow.byCli },
+    range: { tokens: bucketsWithTotal(rangeTotals), dollars: rangeDollars, days: dayRows, byModel },
+    flags: { unknownModels: Array.from(unknownModels) },
+    scannedAt: new Date(nowMs).toISOString()
+  };
+}
+
+function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30 }) {
+  const cache = loadCache(dataDir);
+  const found = listAllTranscriptFiles(homeDir);
+  const foundPaths = new Set(found.map((f) => f.path));
+
+  // drop deleted files
+  for (const p of Object.keys(cache.files)) {
+    if (!foundPaths.has(p)) delete cache.files[p];
+  }
+
+  for (const { path: p, cli } of found) {
+    let stat;
+    try { stat = fs.statSync(p); } catch { continue; }
+    const cached = cache.files[p];
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) continue;
+    let text = "";
+    try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
+    cache.files[p] = { mtimeMs: stat.mtimeMs, size: stat.size, cli, contribution: contributionForFile(p, text) };
+  }
+
+  saveCache(dataDir, cache);
+  return mergeAndPrice(cache.files, { rangeDays, nowMs });
+}
+
+module.exports = { recordsToContribution, contributionForFile, mergeAndPrice, scanUsageHistory };
