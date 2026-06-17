@@ -500,3 +500,64 @@ h1 {
 .hm-legend .hm-cell {
   display: inline-block;
 }
+
+.hm-cell[data-idx] {
+  cursor: pointer;
+}
+
+.hm-cell[data-idx]:hover {
+  outline: 1px solid var(--fg);
+  outline-offset: -1px;
+}
+
+/* Bar-chart hover hit columns: invisible, but highlight the column on hover. */
+.bar-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.bar-hit:hover {
+  fill: rgba(244, 240, 231, 0.07);
+}
+
+.chart-tooltip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  min-width: 156px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--fg);
+  font-size: 0.72rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.tt-date {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 1.5;
+}
+
+.tt-row > span:first-child {
+  color: var(--muted);
+}
+
+.tt-claude > span:first-child::before {
+  content: "●";
+  color: #f4ab5e;
+  margin-right: 4px;
+}
+
+.tt-codex > span:first-child::before {
+  content: "●";
+  color: #74c278;
+  margin-right: 4px;
+}

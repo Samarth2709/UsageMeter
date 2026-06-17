@@ -18,6 +18,81 @@ function fmtPerPrompt(n) {
   return "$" + (Number(n) || 0).toFixed(4);
 }
 
+// Days for the current range, shared so chart/heatmap hover handlers can look up
+// full detail by index without re-deriving it.
+let currentDays = [];
+let tooltipEl = null;
+
+function ensureTooltip() {
+  if (!tooltipEl) {
+    tooltipEl = document.createElement("div");
+    tooltipEl.className = "chart-tooltip hidden";
+    document.body.appendChild(tooltipEl);
+  }
+  return tooltipEl;
+}
+
+function moveTooltip(x, y) {
+  const t = ensureTooltip();
+  const r = t.getBoundingClientRect();
+  const pad = 14;
+  let left = x + pad;
+  let top = y + pad;
+  if (left + r.width > window.innerWidth) left = x - r.width - pad;
+  if (top + r.height > window.innerHeight) top = y - r.height - pad;
+  t.style.left = `${Math.max(4, left)}px`;
+  t.style.top = `${Math.max(4, top)}px`;
+}
+
+function showTooltip(html, x, y) {
+  const t = ensureTooltip();
+  t.innerHTML = html;
+  t.classList.remove("hidden");
+  moveTooltip(x, y);
+}
+
+function hideTooltip() {
+  if (tooltipEl) tooltipEl.classList.add("hidden");
+}
+
+function dayTooltipHtml(d, kind) {
+  const dt = new Date(d.day + "T00:00:00");
+  const date = dt.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  const c = d.byCli.claude;
+  const x = d.byCli.codex;
+  const rows = [];
+  if (kind === "tokens") {
+    rows.push(`<div class="tt-row"><span>Total</span><b>${fmtTokens(d.tokens.total)} tok</b></div>`);
+    rows.push(`<div class="tt-row tt-claude"><span>Claude</span><span>${fmtTokens(c.tokens.total)} · ${fmtDollars(c.dollars)}</span></div>`);
+    rows.push(`<div class="tt-row tt-codex"><span>Codex</span><span>${fmtTokens(x.tokens.total)} · ${fmtDollars(x.dollars)}</span></div>`);
+    rows.push(`<div class="tt-row"><span>Cost</span><b>${fmtDollars(d.dollars)}</b></div>`);
+  } else {
+    rows.push(`<div class="tt-row"><span>Cost</span><b>${fmtDollars(d.dollars)}</b></div>`);
+    rows.push(`<div class="tt-row tt-claude"><span>Claude</span><span>${fmtDollars(c.dollars)}</span></div>`);
+    rows.push(`<div class="tt-row tt-codex"><span>Codex</span><span>${fmtDollars(x.dollars)}</span></div>`);
+    rows.push(`<div class="tt-row"><span>Prompts</span><b>${d.tokens.prompts.toLocaleString()}</b></div>`);
+  }
+  return `<div class="tt-date">${date}</div>${rows.join("")}`;
+}
+
+// Delegate hover for any container holding elements with a data-idx into currentDays.
+function attachDayHover(container, hitSelector, kind) {
+  container.addEventListener("mousemove", (event) => {
+    const hit = event.target.closest(hitSelector);
+    if (!hit || hit.dataset.idx === undefined) {
+      hideTooltip();
+      return;
+    }
+    const day = currentDays[Number(hit.dataset.idx)];
+    if (!day) {
+      hideTooltip();
+      return;
+    }
+    showTooltip(dayTooltipHtml(day, kind), event.clientX, event.clientY);
+  });
+  container.addEventListener("mouseleave", hideTooltip);
+}
+
 async function fetchUsageHistory() {
   if (nativeApi?.getUsageHistory) {
     return nativeApi.getUsageHistory({ rangeDays });
@@ -52,9 +127,20 @@ function renderChart(days) {
     })
     .join("");
 
-  document.querySelector("#chart").innerHTML =
-    `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${bars}</svg>` +
+  // Full-height transparent hit columns per day → large hover targets (covers
+  // zero-usage days too, so there are no dead zones).
+  const hits = days
+    .map((d, i) => {
+      const x = pad + i * bw;
+      return `<rect class="bar-hit" data-idx="${i}" x="${x.toFixed(1)}" y="${pad}" width="${bw.toFixed(1)}" height="${(H - pad * 2).toFixed(1)}"></rect>`;
+    })
+    .join("");
+
+  const chart = document.querySelector("#chart");
+  chart.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${bars}${hits}</svg>` +
     `<div class="legend"><span class="dot claude"></span>Claude<span class="dot codex"></span>Codex</div>`;
+  attachDayHover(chart, ".bar-hit", "tokens");
 }
 
 // GitHub-activity-style calendar: one cell per day, colored by that day's cost.
@@ -78,10 +164,8 @@ function renderHeatmap(days) {
   for (let i = 0; i < first.getDay(); i++) {
     cells.push('<div class="hm-cell hm-empty"></div>');
   }
-  for (const d of days) {
-    const dt = new Date(d.day + "T00:00:00");
-    const label = dt.toLocaleDateString([], { month: "short", day: "numeric" });
-    cells.push(`<div class="hm-cell hm-l${level(d.dollars)}" title="${label}: ${fmtDollars(d.dollars)} · ${d.tokens.prompts} prompts"></div>`);
+  for (let i = 0; i < days.length; i++) {
+    cells.push(`<div class="hm-cell hm-l${level(days[i].dollars)}" data-idx="${i}"></div>`);
   }
 
   el.innerHTML =
@@ -89,6 +173,7 @@ function renderHeatmap(days) {
     `<div class="hm-legend">Less` +
     `<span class="hm-cell hm-l0"></span><span class="hm-cell hm-l1"></span><span class="hm-cell hm-l2"></span><span class="hm-cell hm-l3"></span><span class="hm-cell hm-l4"></span>` +
     `More</div>`;
+  attachDayHover(el, ".hm-cell[data-idx]", "cost");
 }
 
 function render(data) {
@@ -113,6 +198,8 @@ function render(data) {
   document.querySelector("#avg-per-prompt").textContent = fmtPerPrompt(data.range.avgCostPerPrompt);
   document.querySelector("#avg-per-prompt-sub").textContent = `${data.range.tokens.prompts.toLocaleString()} prompts`;
 
+  currentDays = data.range.days;
+  hideTooltip();
   renderChart(data.range.days);
   renderHeatmap(data.range.days);
 
