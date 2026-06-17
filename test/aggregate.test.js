@@ -13,7 +13,7 @@ test("recordsToContribution groups buckets by day and cli::model", () => {
     { day: "2026-06-16", cli: "claude", model: "claude-opus-4-8", inputTokens: 5, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1 }
   ];
   const c = recordsToContribution(recs);
-  assert.deepEqual(c["2026-06-16"]["claude::claude-opus-4-8"], { inputTokens: 15, cachedReadTokens: 1, cacheWriteTokens: 2, outputTokens: 4 });
+  assert.deepEqual(c["2026-06-16"]["claude::claude-opus-4-8"], { inputTokens: 15, cachedReadTokens: 1, cacheWriteTokens: 2, outputTokens: 4, prompts: 2 });
 });
 
 test("contributionForFile picks the parser from the cli tag", () => {
@@ -29,6 +29,22 @@ test("contributionForFile picks the parser from the cli tag", () => {
   ].join("\n");
   const cc = contributionForFile("/Library/Application Support/orca/codex-runtime-home/home/sessions/x.jsonl", codexText, "codex");
   assert.ok(cc["2026-06-16"]["codex::gpt-5.5-codex"]);
+});
+
+test("counts prompts (turns) and computes cost-per-prompt averages", () => {
+  // 3 turns of the same model on one day: total $X over 3 prompts.
+  const files = {
+    "/f1": { cli: "codex", contribution: { "2026-06-16": { "codex::gpt-5.5": { inputTokens: 3_000_000, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, prompts: 3 } } } }
+  };
+  const now = new Date(2026, 5, 16, 12, 0, 0).getTime();
+  const res = mergeAndPrice(files, { rangeDays: 7, nowMs: now });
+  // 3M input @ $5/M = $15 over 3 prompts = $5/prompt
+  assert.equal(res.range.tokens.prompts, 3);
+  assert.ok(Math.abs(res.range.avgCostPerPrompt - 5) < 1e-9);
+  const model = res.range.byModel[0];
+  assert.equal(model.prompts, 3);
+  assert.ok(Math.abs(model.costPerPrompt - 5) < 1e-9);
+  assert.ok(Math.abs(res.today.costPerPrompt - 5) < 1e-9);
 });
 
 test("mergeAndPrice sums a range and computes dollars + flags unknown models", () => {

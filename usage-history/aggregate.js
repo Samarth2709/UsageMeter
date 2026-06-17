@@ -6,13 +6,14 @@ const { priceRecord } = require("./pricing");
 const { listAllTranscriptFiles } = require("./sources");
 const { loadCache, saveCache } = require("./store");
 
-const EMPTY = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 });
+const EMPTY = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, prompts: 0 });
 
 function addBuckets(target, src) {
   target.inputTokens += src.inputTokens || 0;
   target.cachedReadTokens += src.cachedReadTokens || 0;
   target.cacheWriteTokens += src.cacheWriteTokens || 0;
   target.outputTokens += src.outputTokens || 0;
+  target.prompts += src.prompts || 0;
   return target;
 }
 
@@ -21,7 +22,10 @@ function recordsToContribution(records) {
   for (const r of records) {
     const dayMap = (contribution[r.day] = contribution[r.day] || {});
     const key = `${r.cli}::${r.model}`;
-    dayMap[key] = addBuckets(dayMap[key] || EMPTY(), r);
+    const bucket = dayMap[key] || EMPTY();
+    addBuckets(bucket, r);
+    bucket.prompts += 1; // each record is one model turn (one prompt)
+    dayMap[key] = bucket;
   }
   return contribution;
 }
@@ -45,8 +49,13 @@ function rangeDaysList(rangeDays, nowMs) {
 function bucketsWithTotal(b) {
   return {
     input: b.inputTokens, cachedRead: b.cachedReadTokens, cacheWrite: b.cacheWriteTokens,
-    output: b.outputTokens, total: b.inputTokens + b.cachedReadTokens + b.cacheWriteTokens + b.outputTokens
+    output: b.outputTokens, total: b.inputTokens + b.cachedReadTokens + b.cacheWriteTokens + b.outputTokens,
+    prompts: b.prompts
   };
+}
+
+function perPrompt(dollars, prompts) {
+  return prompts > 0 ? dollars / prompts : 0;
 }
 
 function mergeAndPrice(files, { rangeDays, nowMs }) {
@@ -106,7 +115,10 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     }
   }
   const byModel = Object.values(modelAcc)
-    .map((m) => ({ cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars, modelKnown: m.modelKnown }))
+    .map((m) => ({
+      cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars,
+      prompts: m.buckets.prompts, costPerPrompt: perPrompt(m.dollars, m.buckets.prompts), modelKnown: m.modelKnown
+    }))
     .sort((a, b) => b.dollars - a.dollars);
 
   const todayRow = dayRows.find((d) => d.day === todayKey) || {
@@ -114,9 +126,17 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     byCli: { claude: { tokens: bucketsWithTotal(EMPTY()), dollars: 0 }, codex: { tokens: bucketsWithTotal(EMPTY()), dollars: 0 } }
   };
 
+  const rangeTotalsOut = bucketsWithTotal(rangeTotals);
+
   return {
-    today: { tokens: todayRow.tokens, dollars: todayRow.dollars, byCli: todayRow.byCli },
-    range: { tokens: bucketsWithTotal(rangeTotals), dollars: rangeDollars, days: dayRows, byModel },
+    today: {
+      tokens: todayRow.tokens, dollars: todayRow.dollars, byCli: todayRow.byCli,
+      costPerPrompt: perPrompt(todayRow.dollars, todayRow.tokens.prompts)
+    },
+    range: {
+      tokens: rangeTotalsOut, dollars: rangeDollars, days: dayRows, byModel,
+      avgCostPerPrompt: perPrompt(rangeDollars, rangeTotalsOut.prompts)
+    },
     flags: { unknownModels: Array.from(unknownModels) },
     scannedAt: new Date(nowMs).toISOString()
   };

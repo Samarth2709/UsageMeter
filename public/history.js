@@ -13,6 +13,11 @@ function fmtDollars(n) {
   return "$" + (Number(n) || 0).toFixed(2);
 }
 
+// Per-prompt costs are small; show more precision.
+function fmtPerPrompt(n) {
+  return "$" + (Number(n) || 0).toFixed(4);
+}
+
 async function fetchUsageHistory() {
   if (nativeApi?.getUsageHistory) {
     return nativeApi.getUsageHistory({ rangeDays });
@@ -52,6 +57,40 @@ function renderChart(days) {
     `<div class="legend"><span class="dot claude"></span>Claude<span class="dot codex"></span>Codex</div>`;
 }
 
+// GitHub-activity-style calendar: one cell per day, colored by that day's cost.
+function renderHeatmap(days) {
+  const el = document.querySelector("#heatmap");
+  if (!days || !days.length) { el.innerHTML = ""; return; }
+
+  const max = Math.max(0, ...days.map((d) => d.dollars));
+  const level = (cost) => {
+    if (cost <= 0 || max <= 0) return 0;
+    const f = cost / max;
+    if (f <= 0.25) return 1;
+    if (f <= 0.5) return 2;
+    if (f <= 0.75) return 3;
+    return 4;
+  };
+
+  // Pad the front so the first column aligns to the day of week (Sun-first).
+  const first = new Date(days[0].day + "T00:00:00");
+  const cells = [];
+  for (let i = 0; i < first.getDay(); i++) {
+    cells.push('<div class="hm-cell hm-empty"></div>');
+  }
+  for (const d of days) {
+    const dt = new Date(d.day + "T00:00:00");
+    const label = dt.toLocaleDateString([], { month: "short", day: "numeric" });
+    cells.push(`<div class="hm-cell hm-l${level(d.dollars)}" title="${label}: ${fmtDollars(d.dollars)} · ${d.tokens.prompts} prompts"></div>`);
+  }
+
+  el.innerHTML =
+    `<div class="hm-grid">${cells.join("")}</div>` +
+    `<div class="hm-legend">Less` +
+    `<span class="hm-cell hm-l0"></span><span class="hm-cell hm-l1"></span><span class="hm-cell hm-l2"></span><span class="hm-cell hm-l3"></span><span class="hm-cell hm-l4"></span>` +
+    `More</div>`;
+}
+
 function render(data) {
   document.querySelector("#today-tokens").textContent = fmtTokens(data.today.tokens.total) + " tok";
   document.querySelector("#today-dollars").textContent = fmtDollars(data.today.dollars);
@@ -71,13 +110,24 @@ function render(data) {
   document.querySelector("#cli-split").textContent = `${fmtTokens(claudeTokens)} / ${fmtTokens(codexTokens)}`;
   document.querySelector("#cli-split-dollars").textContent = `${fmtDollars(claudeDollars)} / ${fmtDollars(codexDollars)}`;
 
+  document.querySelector("#avg-per-prompt").textContent = fmtPerPrompt(data.range.avgCostPerPrompt);
+  document.querySelector("#avg-per-prompt-sub").textContent = `${data.range.tokens.prompts.toLocaleString()} prompts`;
+
   renderChart(data.range.days);
+  renderHeatmap(data.range.days);
 
   const tbody = document.querySelector("#model-table tbody");
   tbody.innerHTML = "";
   for (const m of data.range.byModel) {
     const tr = document.createElement("tr");
-    const cells = [m.model + (m.modelKnown ? "" : " *"), m.cli, fmtTokens(m.tokens.total), fmtDollars(m.dollars)];
+    const cells = [
+      m.model + (m.modelKnown ? "" : " *"),
+      m.cli,
+      m.prompts.toLocaleString(),
+      fmtTokens(m.tokens.total),
+      fmtDollars(m.dollars),
+      fmtPerPrompt(m.costPerPrompt)
+    ];
     cells.forEach((text, i) => {
       const td = document.createElement("td");
       if (i >= 2) td.className = "num";
