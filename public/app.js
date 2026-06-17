@@ -11,7 +11,14 @@ let accountStates = new Map();
 let refreshInFlight = null;
 let unsubscribeSnapshot = null;
 let countdownTimer = null;
+let statusHeartbeat = null;
+let lastSnapshotAt = null;
 let rowsExpanded = true;
+
+// Background usage refresh runs every 60s. If no live snapshot has arrived in
+// ~2.5 cycles, the data source is effectively down — the status dot must show
+// that rather than staying on the last (now stale) green.
+const STALE_MS = 150000;
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
@@ -327,6 +334,15 @@ function syncOverallStatus() {
     headline = "Refreshing usage";
   }
 
+  // Live-health guard: a healthy (green) status is only true if fresh data is
+  // still arriving. If the last snapshot is older than STALE_MS, the source is
+  // down — surface that instead of a stale green.
+  if (className === "status-ok" && lastSnapshotAt && Date.now() - lastSnapshotAt > STALE_MS) {
+    const ageSeconds = Math.round((Date.now() - lastSnapshotAt) / 1000);
+    headline = `No live data — last update ${ageSeconds}s ago`;
+    className = "status-error";
+  }
+
   setOverallStatus(headline, className);
 }
 
@@ -461,6 +477,8 @@ function applySnapshot(snapshot) {
   if (!snapshot?.results) {
     return;
   }
+
+  lastSnapshotAt = Date.now();
 
   if (snapshot.config?.accounts) {
     syncAccountsFromConfig(snapshot.config);
@@ -686,6 +704,14 @@ document.querySelector(".widget-header")?.addEventListener("dblclick", (event) =
 await loadState();
 syncViewSize();
 countdownTimer = window.setInterval(updateCountdowns, 60000);
+// Re-evaluate live health independently of incoming snapshots so the dot flips
+// to "down" when fresh data stops arriving.
+statusHeartbeat = window.setInterval(syncOverallStatus, 15000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    syncOverallStatus();
+  }
+});
 
 for (const account of state.config.accounts) {
   setIdle(account.id);
@@ -713,6 +739,10 @@ if (snapshot) {
 window.addEventListener("beforeunload", () => {
   if (countdownTimer) {
     window.clearInterval(countdownTimer);
+  }
+
+  if (statusHeartbeat) {
+    window.clearInterval(statusHeartbeat);
   }
 
   if (typeof unsubscribeSnapshot === "function") {
