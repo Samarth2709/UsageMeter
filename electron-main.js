@@ -308,6 +308,18 @@ function openHistoryWindow() {
   historyWindow.on("closed", () => {
     historyWindow = null;
   });
+
+  // Auto-hide when focus moves to another window/app (same behavior as the
+  // popover). The window is reused — reopening shows it again.
+  historyWindow.on("blur", () => {
+    if (process.env.RATE_LIMIT_TOOL_KEEP_OPEN) {
+      return;
+    }
+
+    if (!isQuitting && !historyWindow.webContents.isDevToolsOpened()) {
+      historyWindow.hide();
+    }
+  });
 }
 
 function showPopover() {
