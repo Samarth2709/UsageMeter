@@ -858,11 +858,22 @@ function parseClaudeUsageScreen(screenText) {
     /Current\s*ses{1,2}(?:ion)?/gi,
     [/Current\s*we+k(?:\s*\(all\s*models\))?/i]
   );
-  const weekBlock = getLastBlock(
-    compact,
-    /Current\s*we+k(?:\s*\(all\s*models\))?/gi,
-    [/Approximate/i, /Last\s*24h/i, /Extra\s*usage/i]
-  );
+  // Claude's /status now shows multiple weekly limits — "Current week (all models)"
+  // plus model-specific ones like "(Sonnet only)". The all-models limit is the real
+  // weekly cap; the model-only sub-limits are often 0%. Target the all-models block
+  // (ending it before the next "Current week" so it can't bleed into a 0% sub-limit),
+  // and fall back to a generic "Current week" block for older single-weekly formats.
+  const weekBlock =
+    getLastBlock(
+      compact,
+      /Current\s*we+k\s*\(\s*all\s*models\s*\)/gi,
+      [/Current\s*we+k/i, /Approximate/i, /Last\s*24h/i, /Extra\s*usage/i]
+    ) ||
+    getLastBlock(
+      compact,
+      /Current\s*we+k(?:\s*\(all\s*models\))?/gi,
+      [/Approximate/i, /Last\s*24h/i, /Extra\s*usage/i]
+    );
   const extraUsageMatch = getLastMatch(
     compact,
     /Extra\s*usage[\s\S]{0,180}?\$([\d.,]+)\s*\/\s*\$([\d.,]+)\s*spent[\s\S]{0,160}?Resets\s*([^\n]+)/g
@@ -1863,6 +1874,7 @@ module.exports = {
     codexAccessTokenNeedsRefresh,
     mergeRefreshedCodexAuth,
     fetchCodexUsage,
-    parseClaudeResetAt
+    parseClaudeResetAt,
+    parseClaudeUsageScreen
   }
 };

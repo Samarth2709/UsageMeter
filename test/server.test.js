@@ -415,3 +415,27 @@ test("Electron toggle path does not create implicit globals", async () => {
 
   assert.equal(electronSource.includes("lastPopoverBounds"), false);
 });
+
+test("parseClaudeUsageScreen uses the all-models weekly limit, not a 0% model-only sub-limit", () => {
+  // Mimics the current /status Usage screen, which lists several weekly limits.
+  const screen = [
+    "Current session",
+    "█████████ 19% used",
+    "Resets 3:30pm (America/New_York)",
+    "Current week (all models)",
+    "███████ 14% used",
+    "Resets Jun 22 at 2am (America/New_York)",
+    "Current week (Sonnet only)",
+    "0% used",
+    "Approximate, based on local sessions on this machine"
+  ].join("\n");
+
+  const { windows } = _test.parseClaudeUsageScreen(screen);
+  const week = windows.find((w) => w.label === "weekly");
+  assert.ok(week, "weekly window should be parsed");
+  assert.equal(week.usedPercent, 14);
+  assert.equal(week.remainingPercent, 86);
+
+  const session = windows.find((w) => w.label === "5-hour");
+  assert.equal(session.usedPercent, 19);
+});
