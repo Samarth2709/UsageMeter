@@ -561,3 +561,168 @@ h1 {
   color: #74c278;
   margin-right: 4px;
 }
+
+.tt-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: baseline;
+}
+
+/* ===== multi-page dashboard ===== */
+.history-body {
+  overflow-y: auto;
+}
+
+.page-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.page-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: 7px;
+}
+
+.page-tabs button:hover {
+  color: var(--fg);
+}
+
+.page-tabs button.active {
+  color: var(--fg);
+  background: var(--surface-strong);
+}
+
+.page h2 {
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.mini-toggle button {
+  margin-left: 4px;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+}
+
+.mini-toggle button.active {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+/* horizontal bars */
+.hbar {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0;
+  font-size: 0.74rem;
+}
+
+.hbar-label {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hbar-track {
+  height: 12px;
+  background: rgba(244, 240, 231, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.hbar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.hbar-val {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mini-models .hbar-label {
+  width: 120px;
+}
+
+/* donut */
+.donut-wrap {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.donut-c1 {
+  fill: var(--fg);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.donut-c2 {
+  fill: var(--muted);
+  font-size: 9px;
+}
+
+.donut-legend,
+.mix-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.72rem;
+}
+
+.mix-legend {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.lg-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-name {
+  flex: 1;
+}
+
+.lg-val {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lg-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}

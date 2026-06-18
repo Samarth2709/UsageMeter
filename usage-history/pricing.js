@@ -40,4 +40,24 @@ function priceRecord(cli, model, buckets) {
   return { dollars, rateKey: key, modelKnown: key !== null };
 }
 
-module.exports = { RATES, FALLBACK, rateKeyForModel, priceRecord };
+// Dollars saved by cache reads vs paying the full input rate for the same tokens.
+function cacheSavings(cli, model, cachedReadTokens) {
+  const key = rateKeyForModel(cli, model);
+  const rate = key ? RATES[key] : FALLBACK;
+  return ((Number(cachedReadTokens) || 0) * (rate.input - rate.cachedRead)) / 1_000_000;
+}
+
+// Dollars attributable to each token type, for spend-by-type breakdowns.
+function priceBreakdown(cli, model, buckets) {
+  const key = rateKeyForModel(cli, model);
+  const rate = key ? RATES[key] : FALLBACK;
+  const per = (tokens, r) => ((Number(tokens) || 0) * r) / 1_000_000;
+  return {
+    input: per(buckets.inputTokens, rate.input),
+    cachedRead: per(buckets.cachedReadTokens, rate.cachedRead),
+    cacheWrite: per(buckets.cacheWriteTokens, rate.cacheWrite),
+    output: per(buckets.outputTokens, rate.output)
+  };
+}
+
+module.exports = { RATES, FALLBACK, rateKeyForModel, priceRecord, cacheSavings, priceBreakdown };

@@ -293,8 +293,8 @@ function openHistoryWindow() {
   }
 
   historyWindow = new BrowserWindow({
-    width: 760,
-    height: 580,
+    width: 880,
+    height: 660,
     title: "Usage History",
     show: true,
     webPreferences: {

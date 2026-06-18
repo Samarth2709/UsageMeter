@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const { localDay } = require("./day");
 const { parseClaudeTranscript } = require("./parseClaude");
 const { parseCodexTranscript } = require("./parseCodex");
-const { priceRecord } = require("./pricing");
+const { priceRecord, cacheSavings, priceBreakdown } = require("./pricing");
 const { listAllTranscriptFiles } = require("./sources");
 const { loadCache, saveCache } = require("./store");
 
@@ -87,17 +87,20 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     const models = byDay[day] || {};
     const dayTotals = EMPTY();
     const byCli = { claude: { buckets: EMPTY(), dollars: 0 }, codex: { buckets: EMPTY(), dollars: 0 } };
+    const perModel = {}; // "cli::model" -> { tokens, dollars } for the model-mix chart
     let dollars = 0;
     for (const [key, buckets] of Object.entries(models)) {
       const priced = priceKey(key, buckets);
       addBuckets(dayTotals, buckets);
       dollars += priced.dollars;
       if (byCli[priced.cli]) { addBuckets(byCli[priced.cli].buckets, buckets); byCli[priced.cli].dollars += priced.dollars; }
+      perModel[key] = { tokens: buckets.inputTokens + buckets.cachedReadTokens + buckets.cacheWriteTokens + buckets.outputTokens, dollars: priced.dollars };
     }
     return {
       day, tokens: bucketsWithTotal(dayTotals), dollars,
       byCli: { claude: { tokens: bucketsWithTotal(byCli.claude.buckets), dollars: byCli.claude.dollars },
-               codex: { tokens: bucketsWithTotal(byCli.codex.buckets), dollars: byCli.codex.dollars } }
+               codex: { tokens: bucketsWithTotal(byCli.codex.buckets), dollars: byCli.codex.dollars } },
+      models: perModel
     };
   });
 
@@ -117,9 +120,22 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
   const byModel = Object.values(modelAcc)
     .map((m) => ({
       cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars,
-      prompts: m.buckets.prompts, costPerPrompt: perPrompt(m.dollars, m.buckets.prompts), modelKnown: m.modelKnown
+      prompts: m.buckets.prompts, costPerPrompt: perPrompt(m.dollars, m.buckets.prompts),
+      cacheSavings: cacheSavings(m.cli, m.model, m.buckets.cachedReadTokens), modelKnown: m.modelKnown
     }))
     .sort((a, b) => b.dollars - a.dollars);
+
+  const rangeCacheSavings = byModel.reduce((s, m) => s + m.cacheSavings, 0);
+
+  // Dollars by token type across the range (for the Economics page).
+  const costByType = { input: 0, cachedRead: 0, cacheWrite: 0, output: 0 };
+  for (const m of Object.values(modelAcc)) {
+    const b = priceBreakdown(m.cli, m.model, m.buckets);
+    costByType.input += b.input;
+    costByType.cachedRead += b.cachedRead;
+    costByType.cacheWrite += b.cacheWrite;
+    costByType.output += b.output;
+  }
 
   const todayRow = dayRows.find((d) => d.day === todayKey) || {
     tokens: bucketsWithTotal(EMPTY()), dollars: 0,
@@ -135,7 +151,9 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     },
     range: {
       tokens: rangeTotalsOut, dollars: rangeDollars, days: dayRows, byModel,
-      avgCostPerPrompt: perPrompt(rangeDollars, rangeTotalsOut.prompts)
+      avgCostPerPrompt: perPrompt(rangeDollars, rangeTotalsOut.prompts),
+      cacheSavings: rangeCacheSavings,
+      costByType
     },
     flags: { unknownModels: Array.from(unknownModels) },
     scannedAt: new Date(nowMs).toISOString()
