@@ -173,6 +173,28 @@ function formatCountdown(targetDate) {
   return `${hours}:${String(minutes).padStart(2, "0")}`;
 }
 
+// Two-unit countdown to a reset. Shows the largest non-zero unit plus the next
+// one down: days+hours, else hours+minutes, else minutes+seconds (always two).
+function formatResetCountdown(targetDate) {
+  if (!targetDate) {
+    return null;
+  }
+
+  const totalSeconds = Math.max(0, Math.floor((targetDate.getTime() - Date.now()) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m ${seconds}s`;
+}
+
 function buildResetDetailParts(window, includeDate = false, includeCountdown = true) {
   const resetDate = getResetDate(window);
   const countdown = includeCountdown ? formatCountdown(resetDate) : null;
@@ -181,6 +203,11 @@ function buildResetDetailParts(window, includeDate = false, includeCountdown = t
 }
 
 function buildResetDetail(window, includeDate = false) {
+  // The weekly window (includeDate) shows a countdown to reset, not the date.
+  if (includeDate) {
+    const countdown = formatResetCountdown(getResetDate(window));
+    return countdown || getWindowReset(window, true) || "";
+  }
   const detail = buildResetDetailParts(window, includeDate, !includeDate);
   return [detail.countdown, detail.reset].filter(Boolean).join(" · ");
 }
@@ -239,12 +266,24 @@ function setLimitWindow(elements, kind, window) {
     return;
   }
 
-  const reset = buildResetDetailParts(window, kind === "week", kind !== "week");
+  // Weekly shows a countdown to reset; the 5-hour keeps countdown + reset time.
+  let countdown;
+  let resetText;
+  if (kind === "week") {
+    const resetDate = getResetDate(window);
+    countdown = resetDate ? formatResetCountdown(resetDate) : "";
+    resetText = countdown ? "" : getWindowReset(window, true);
+  } else {
+    const reset = buildResetDetailParts(window, false, true);
+    countdown = reset.countdown;
+    resetText = reset.reset;
+  }
+
   limit.value.textContent = `${Math.round(window.remainingPercent)}%`;
-  limit.countdown.textContent = reset.countdown || "";
-  limit.time.textContent = reset.reset || "";
-  limit.separator.classList.toggle("hidden", !reset.countdown || !reset.reset);
-  limit.reset.classList.toggle("hidden", !reset.countdown && !reset.reset);
+  limit.countdown.textContent = countdown || "";
+  limit.time.textContent = resetText || "";
+  limit.separator.classList.toggle("hidden", !countdown || !resetText);
+  limit.reset.classList.toggle("hidden", !countdown && !resetText);
   limit.root.classList.remove("empty");
 }
 
