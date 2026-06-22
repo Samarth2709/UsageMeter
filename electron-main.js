@@ -318,11 +318,15 @@ function openHistoryWindow() {
 
 function showPopover() {
   const bounds = getPopoverBounds();
+  // Re-assert all-Spaces membership, then show WITHOUT activating the app.
+  // Calling show()/focus() activates the window, which makes macOS jump to
+  // whichever Space the window was last shown on. showInactive() simply orders
+  // it onto the desktop you're currently looking at — the behavior we want for a
+  // pinned top-right widget.
   popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  popover.setAlwaysOnTop(true, "floating");
   popover.setBounds(bounds);
-  popover.show();
-  popover.moveTop();
-  popover.focus();
+  popover.showInactive();
   queueSavePopoverPosition();
   if (process.env.RATE_LIMIT_TOOL_DEBUG) {
     console.log("Popover visible:", popover.isVisible(), popover.getBounds());
