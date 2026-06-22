@@ -52,7 +52,7 @@
       .topbar a:hover { color: var(--fg); }
 
       /* hero */
-      .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 72px; align-items: center; padding: 80px 0 116px; }
+      .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 72px; align-items: center; padding: 80px 0 40px; }
       .hero h1 { font-size: clamp(2.2rem, 5vw, 3.3rem); line-height: 1.05; font-weight: 700; letter-spacing: -0.025em; margin: 16px 0 16px; }
       .hero p.lead { font-size: 1.05rem; color: var(--muted); max-width: 26em; }
       .cta-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-top: 38px; }
@@ -96,13 +96,6 @@
       .acct.codex .meter span { background: var(--green); }
       .pop-foot { width: 100%; margin-top: 9px; text-align: center; font-size: 0.74rem; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 7px; }
       @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(116, 194, 120, 0.5); } 50% { box-shadow: 0 0 0 5px rgba(116, 194, 120, 0); } }
-
-      /* strip */
-      .strip { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--bg2); }
-      .strip .cell { padding: 26px 24px; border-left: 1px solid var(--line); }
-      .strip .cell:first-child { border-left: 0; }
-      .strip .k { font-family: var(--mono); font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
-      .strip .l { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
 
       section { padding: 120px 0; position: relative; z-index: 1; }
       .sec-head h2 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 700; letter-spacing: -0.02em; margin: 14px 0 40px; }
@@ -149,9 +142,6 @@
       @media (max-width: 860px) {
         .hero { grid-template-columns: 1fr; gap: 40px; padding: 28px 0 48px; }
         .device { justify-content: flex-start; }
-        .strip { grid-template-columns: repeat(2, 1fr); }
-        .strip .cell:nth-child(3) { border-left: 0; }
-        .strip .cell:nth-child(3), .strip .cell:nth-child(4) { border-top: 1px solid var(--line); }
         .feats { grid-template-columns: repeat(2, 1fr); }
         .steps, .os { grid-template-columns: 1fr; }
       }
@@ -205,15 +195,6 @@
         </div>
       </div>
     </header>
-
-    <div class="wrap">
-      <div class="strip">
-        <div class="cell"><div class="k amber" style="color:var(--amber)">2</div><div class="l">providers</div></div>
-        <div class="cell"><div class="k">5</div><div class="l">dashboard views</div></div>
-        <div class="cell"><div class="k green" style="color:var(--green)">100%</div><div class="l">on-device</div></div>
-        <div class="cell"><div class="k">MIT</div><div class="l">open source</div></div>
-      </div>
-    </div>
 
     <section class="wrap">
       <div class="sec-head"><span class="eyebrow">Dashboard</span><h2>Usage history.</h2></div>
