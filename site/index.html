@@ -272,6 +272,13 @@
           document.querySelectorAll(".win .meter span").forEach((el) => { el.style.width = el.dataset.w + "%"; });
         });
       });
+      // Grow the demo iframe to fit its content (no internal scrolling).
+      window.addEventListener("message", (e) => {
+        if (e.data && e.data.type === "um-demo-height" && e.data.height) {
+          const f = document.querySelector("iframe.demo");
+          if (f) f.style.height = e.data.height + "px";
+        }
+      });
     </script>
   </body>
 </html>

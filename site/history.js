@@ -17,7 +17,7 @@ function fmtTokens(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
   return String(Math.round(n));
 }
-const fmtDollars = (n) => "$" + (Number(n) || 0).toFixed(2);
+const fmtDollars = (n) => "$" + (Number(n) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDollars0 = (n) => "$" + Math.round(Number(n) || 0).toLocaleString();
 const fmtPerPrompt = (n) => "$" + (Number(n) || 0).toFixed(4);
 const fmtPct = (n) => (Number(n) || 0).toFixed(0) + "%";
