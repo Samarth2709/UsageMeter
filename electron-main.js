@@ -121,16 +121,10 @@ function createPopover() {
   popover.on("move", queueSavePopoverPosition);
   popover.on("moved", queueSavePopoverPosition);
 
-  popover.on("blur", () => {
-    if (process.env.RATE_LIMIT_TOOL_KEEP_OPEN) {
-      return;
-    }
-
-    if (!isQuitting && !popover.webContents.isDevToolsOpened()) {
-      queueSavePopoverPosition();
-      popover.hide();
-    }
-  });
+  // Intentionally NOT hiding on blur: combined with setVisibleOnAllWorkspaces,
+  // this keeps the popover pinned to the top-right and visible on every Space /
+  // desktop (it would otherwise auto-hide when a Space switch steals focus).
+  // Use the menu-bar icon or Control+Option+L to hide/show it manually.
 }
 
 async function loadPopoverPosition() {
