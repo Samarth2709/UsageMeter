@@ -108,7 +108,9 @@
       .sec-head h2 { font-size: clamp(1.5rem, 3vw, 2rem); font-weight: 700; letter-spacing: -0.02em; margin: 10px 0 28px; }
 
       .shot { border: 1px solid var(--line-strong); border-radius: 13px; overflow: hidden; box-shadow: 0 40px 80px -40px rgba(0, 0, 0, 0.85); background: #0a0907; }
-      .shot img { display: block; width: 100%; height: auto; }
+      .shot .demo { display: block; width: 100%; height: 600px; border: 0; }
+      .demo-cap { font-family: var(--mono); font-size: 0.72rem; color: var(--dim); margin-top: 12px; }
+      .demo-cap::before { content: "▸ "; color: var(--green); }
 
       .feats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; margin-top: 40px; }
       .feat { background: var(--bg); padding: 22px 20px 26px; }
@@ -215,7 +217,8 @@
 
     <section class="wrap">
       <div class="sec-head"><span class="eyebrow">Dashboard</span><h2>Usage history.</h2></div>
-      <div class="shot"><img src="assets/dashboard.png" alt="Usage Meter dashboard — Models view." width="900" /></div>
+      <div class="shot"><iframe class="demo" src="demo.html" title="Usage Meter dashboard — interactive demo" loading="lazy"></iframe></div>
+      <p class="demo-cap">Live demo — sample data. Switch tabs, change the range, hover the charts.</p>
       <div class="feats">
         <div class="feat"><div class="bar" style="background:var(--amber)"></div><h3>Live limits</h3><p>Both providers, every desktop.</p></div>
         <div class="feat"><div class="bar" style="background:var(--green)"></div><h3>Real cost</h3><p>Tokens priced at API rates.</p></div>

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
+    <title>Usage History</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="styles-dash.css" />
+  </head>
+  <body class="history-body">
+    <header class="history-header">
+      <h1>Usage History</h1>
+      <div class="range-toggle">
+        <button data-range="7">7d</button>
+        <button data-range="30" class="active">30d</button>
+        <button data-range="90">90d</button>
+      </div>
+    </header>
+
+    <nav class="page-tabs">
+      <button data-page="overview" class="active">Overview</button>
+      <button data-page="overtime">Over Time</button>
+      <button data-page="models">Models</button>
+      <button data-page="economics">Economics</button>
+      <button data-page="efficiency">Efficiency</button>
+    </nav>
+
+    <main id="pages">
+      <!-- Overview -->
+      <section id="page-overview" class="page">
+        <div id="ov-cards" class="history-summary"></div>
+        <div class="chart-head">
+          <h2>Daily usage</h2>
+          <div class="mini-toggle" id="ov-metric">
+            <button data-metric="tokens" class="active">Tokens</button>
+            <button data-metric="cost">Cost</button>
+          </div>
+        </div>
+        <div id="ov-chart" class="history-chart"></div>
+        <h2>Top models</h2>
+        <div id="ov-top-models" class="mini-models"></div>
+      </section>
+
+      <!-- Over Time -->
+      <section id="page-overtime" class="page hidden">
+        <div id="ot-stats" class="history-summary"></div>
+        <h2>Cost per day</h2>
+        <div id="ot-cost-chart" class="history-chart"></div>
+        <h2>Cumulative spend</h2>
+        <div id="ot-cumulative" class="history-chart"></div>
+        <div class="two-col">
+          <div>
+            <h2>By day of week</h2>
+            <div id="ot-weekday"></div>
+          </div>
+          <div>
+            <h2>Daily cost calendar</h2>
+            <div id="ot-heatmap"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Models -->
+      <section id="page-models" class="page hidden">
+        <div class="two-col">
+          <div>
+            <h2>Cost share</h2>
+            <div id="md-donut"></div>
+          </div>
+          <div>
+            <h2>Model mix over time</h2>
+            <div id="md-mix" class="history-chart"></div>
+            <div id="md-mix-legend" class="mix-legend"></div>
+          </div>
+        </div>
+        <h2>All models</h2>
+        <div class="history-models">
+          <table id="md-table">
+            <thead>
+              <tr>
+                <th>Model</th><th>CLI</th>
+                <th class="num">Prompts</th><th class="num">Tokens</th>
+                <th class="num">$ value</th><th class="num">$ / prompt</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Economics -->
+      <section id="page-economics" class="page hidden">
+        <div id="ec-cards" class="history-summary"></div>
+        <div class="two-col">
+          <div>
+            <h2>Spend by token type</h2>
+            <div id="ec-type"></div>
+          </div>
+          <div>
+            <h2>Claude vs Codex</h2>
+            <div id="ec-cli"></div>
+          </div>
+        </div>
+        <h2>Most expensive days</h2>
+        <div id="ec-top-days"></div>
+      </section>
+
+      <!-- Efficiency -->
+      <section id="page-efficiency" class="page hidden">
+        <div id="ef-cards" class="history-summary"></div>
+        <h2>Cache hit rate by model</h2>
+        <div id="ef-cache"></div>
+        <p class="history-note">Cache hit rate = cache-read tokens ÷ (cache-read + fresh input). Savings = what those cache reads would cost at the full input rate.</p>
+      </section>
+    </main>
+
+    <p id="history-note" class="history-note"></p>
+
+    <script src="mock.js"></script>
+    <script src="history.js" type="module"></script>
+  </body>
+</html>
