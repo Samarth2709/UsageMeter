@@ -1,5 +1,9 @@
 # Usage Meter
 
+**[⬇ Download for macOS](https://github.com/Samarth2709/UsageMeter/releases/latest/download/UsageMeter-0.1.0-arm64.dmg)** · **[Website](https://usage-meter-five.vercel.app)** · MIT licensed · Apple Silicon
+
+> New here or not a GitHub user? The [website](https://usage-meter-five.vercel.app) has a one-click download and a short "how to open it" guide.
+
 A small macOS menu bar app that shows:
 
 - saved Codex account usage windows
