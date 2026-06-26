@@ -1,6 +1,6 @@
 {
   "name": "usage-meter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local Mac app for checking Codex and Claude usage limits.",
   "author": "Samarth Kumbla",
@@ -26,6 +26,9 @@
         "dmg",
         "zip"
       ]
+    },
+    "dmg": {
+      "artifactName": "UsageMeter-${arch}.dmg"
     },
     "files": [
       "assets/**",

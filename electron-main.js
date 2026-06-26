@@ -11,7 +11,8 @@ const {
   globalShortcut,
   ipcMain,
   nativeImage,
-  screen
+  screen,
+  shell
 } = require("electron");
 
 const {
@@ -36,6 +37,9 @@ const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
 const backgroundRefreshMs = 60000;
+const updateRepo = process.env.USAGE_METER_UPDATE_REPO || "Samarth2709/UsageMeter";
+const updateCheckMs = 6 * 60 * 60 * 1000; // every 6 hours
+const releasesPageUrl = `https://github.com/${updateRepo}/releases/latest`;
 const claudeUsageApiPort = Number(process.env.CLAUDE_USAGE_API_PORT || 4555);
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
 const claudeWebRefreshMs = 30000;
@@ -69,6 +73,8 @@ let claudeWebOrgId = null;
 let historyCache = new Map();
 let historyRecomputeQueued = false;
 let historyFingerprint = null;
+let availableUpdate = null; // { available, version, url } once a newer release is seen
+let updateCheckTimer = null;
 let claudeWebUsageCache = {
   ok: false,
   status: "starting",
@@ -920,6 +926,47 @@ function liveLimitWindows() {
   return limits;
 }
 
+// Compare dotted versions (e.g. "0.2.0" vs "0.1.0"). Returns >0 if a > b.
+function compareSemver(a, b) {
+  const pa = String(a).replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+// Check GitHub Releases for a version newer than the running app. No code signing
+// involved: when a newer release exists we flag it and the popover shows an "Update"
+// pill that opens the download page (the user re-installs). Failures are silent.
+async function checkForUpdate() {
+  try {
+    const response = await fetch(`https://api.github.com/repos/${updateRepo}/releases/latest`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "UsageMeter" }
+    });
+    if (!response.ok) return;
+    const release = await response.json();
+    if (release.draft || release.prerelease) return;
+    const latest = String(release.tag_name || release.name || "").replace(/^v/, "");
+    if (!latest) return;
+
+    if (compareSemver(latest, app.getVersion()) > 0) {
+      availableUpdate = { available: true, version: latest, url: release.html_url || releasesPageUrl };
+      if (popover && !popover.isDestroyed()) {
+        popover.webContents.send("update:available", availableUpdate);
+      }
+    }
+  } catch {
+    // offline / rate-limited / parse error — try again on the next tick
+  }
+}
+
+function startUpdateChecks() {
+  checkForUpdate();
+  updateCheckTimer = setInterval(checkForUpdate, updateCheckMs);
+}
+
 function computeHistoryPayload(rangeDays) {
   const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays });
   payload.windowValues = computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows() });
@@ -1334,6 +1381,10 @@ function registerIpcHandlers() {
     return getHistoryPayload(rangeDays);
   });
   ipcMain.on("usage-history:open", openHistoryWindow);
+  ipcMain.handle("update:get", () => availableUpdate);
+  ipcMain.on("update:open", () => {
+    shell.openExternal(availableUpdate?.url || releasesPageUrl);
+  });
 }
 
 if (!gotSingleInstanceLock) {
@@ -1361,6 +1412,7 @@ if (!gotSingleInstanceLock) {
     startBackgroundRefresh();
     startClaudeUsageApiServer();
     startClaudeWebUsageRefresh();
+    startUpdateChecks();
 
     const registered = globalShortcut.register(toggleShortcut, togglePopover);
     if (process.env.RATE_LIMIT_TOOL_DEBUG) {

@@ -15,5 +15,12 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
     const listener = (event, payload) => callback(payload);
     ipcRenderer.on("rate-limit:snapshot", listener);
     return () => ipcRenderer.removeListener("rate-limit:snapshot", listener);
+  },
+  getUpdate: () => ipcRenderer.invoke("update:get"),
+  openUpdate: () => ipcRenderer.send("update:open"),
+  onUpdateAvailable: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on("update:available", listener);
+    return () => ipcRenderer.removeListener("update:available", listener);
   }
 });

@@ -732,13 +732,33 @@ document.querySelector("#history-button")?.addEventListener("click", () => {
 });
 
 document.querySelector(".widget-header")?.addEventListener("dblclick", (event) => {
-  // Ignore double-clicks on the refresh control itself.
-  if (event.target.closest("#refresh-button")) {
+  // Ignore double-clicks on the header controls themselves.
+  if (event.target.closest("#refresh-button") || event.target.closest("#update-pill")) {
     return;
   }
 
   nativeApi?.moveToTopRight?.();
 });
+
+const updatePill = document.querySelector("#update-pill");
+
+function showUpdatePill(update) {
+  if (!updatePill || !update?.available) {
+    return;
+  }
+  if (update.version) {
+    updatePill.title = `Version ${update.version} is available — click to download`;
+  }
+  updatePill.classList.remove("hidden");
+}
+
+updatePill?.addEventListener("click", () => {
+  nativeApi?.openUpdate?.();
+});
+
+if (nativeApi?.onUpdateAvailable) {
+  nativeApi.onUpdateAvailable(showUpdatePill);
+}
 
 await loadState();
 syncViewSize();
@@ -773,6 +793,11 @@ if (nativeApi) {
 const snapshot = await loadSnapshot();
 if (snapshot) {
   applySnapshot(snapshot);
+}
+
+// An update may have been detected before this renderer subscribed.
+if (nativeApi?.getUpdate) {
+  nativeApi.getUpdate().then((update) => showUpdatePill(update)).catch(() => {});
 }
 
 window.addEventListener("beforeunload", () => {
