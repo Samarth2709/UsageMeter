@@ -25,6 +25,7 @@ const {
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { scanUsageHistory } = require("./usage-history/aggregate");
+const { computeWindowValues, transcriptFingerprint } = require("./usage-history/windows");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
@@ -63,6 +64,11 @@ let claudeWebRefreshPromise = null;
 let claudeFallbackRefreshPromise = null;
 let lastClaudeFallbackRefreshAt = 0;
 let claudeWebOrgId = null;
+// Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
+// "View usage history" window opens instantly instead of scanning transcripts on click.
+let historyCache = new Map();
+let historyRecomputeQueued = false;
+let historyFingerprint = null;
 let claudeWebUsageCache = {
   ok: false,
   status: "starting",
@@ -852,7 +858,25 @@ async function refreshClaudeFallbackUsage() {
         ...latestSnapshot,
         config: snapshot.config || latestSnapshot.config,
         results: [
-          ...latestSnapshot.results.map((result) => resultsByAccountId.get(result.accountId) || result),
+          ...latestSnapshot.results.map((prev) => {
+            const fresh = resultsByAccountId.get(prev.accountId);
+            if (!fresh) {
+              return prev;
+            }
+            // The CLI parse can transiently drop a window's reset (a partial /status
+            // redraw). Merge the fresh windows onto the previous ones so a reset that
+            // momentarily went missing carries over instead of wiping the countdown.
+            if (fresh.ok && fresh.data && prev.ok && prev.data) {
+              return {
+                ...fresh,
+                data: {
+                  ...fresh.data,
+                  windows: mergeUsageWindows(prev.data.windows, fresh.data.windows)
+                }
+              };
+            }
+            return fresh;
+          }),
           ...results.filter((result) => !existingResultIds.has(result.accountId))
         ]
       };
@@ -874,6 +898,83 @@ async function refreshClaudeFallbackUsage() {
   } finally {
     claudeFallbackRefreshPromise = null;
   }
+}
+
+// Flatten the live snapshot's per-account limit windows into the shape
+// computeWindowValues wants: { cli, label, usedPercent, resetAt }. One account per
+// service is the norm; take the first OK result per service to avoid double rows.
+function liveLimitWindows() {
+  const results = latestSnapshot?.results || [];
+  const seenServices = new Set();
+  const limits = [];
+  for (const result of results) {
+    const service = result?.data?.service;
+    if (!result.ok || !service || seenServices.has(service)) continue;
+    const windows = result.data.windows || [];
+    if (!windows.length) continue;
+    seenServices.add(service);
+    for (const w of windows) {
+      limits.push({ cli: service, label: w.label, usedPercent: w.usedPercent, resetAt: w.resetAt });
+    }
+  }
+  return limits;
+}
+
+function computeHistoryPayload(rangeDays) {
+  const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays });
+  payload.windowValues = computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows() });
+  payload.computedAt = new Date().toISOString();
+  return payload;
+}
+
+// Recompute every range that's currently cached, plus the default 30d so the first
+// open is instant. Runs on the limit-refresh cadence (via broadcastSnapshot), keeping
+// the history payload exactly as fresh as the usage-limit percentages.
+function recomputeHistoryCache() {
+  // Skip the expensive scan/parse only when BOTH the transcripts AND the live limit
+  // windows are unchanged. windowValues is derived from the limit %/resetAt, which
+  // move on the refresh cadence independently of transcript writes — gating on the
+  // transcript fingerprint alone would freeze the Subscription-value rows.
+  const limitsSignature = JSON.stringify(
+    liveLimitWindows().map((w) => [w.cli, w.label, w.usedPercent, w.resetAt])
+  );
+  const fingerprint = `${transcriptFingerprint(os.homedir())}|${limitsSignature}`;
+  if (fingerprint === historyFingerprint && historyCache.size) {
+    return;
+  }
+  historyFingerprint = fingerprint;
+
+  const ranges = new Set(historyCache.keys());
+  ranges.add(30);
+  for (const rangeDays of ranges) {
+    try {
+      historyCache.set(rangeDays, computeHistoryPayload(rangeDays));
+    } catch (error) {
+      logRefreshMetric({ event: "history_cache_error", rangeDays, error: error.message });
+    }
+  }
+}
+
+// Debounce: a single refresh cycle can broadcast more than once (web + background).
+// Defer to the next tick so the recompute never blocks the broadcast itself.
+function scheduleHistoryRecompute() {
+  if (historyRecomputeQueued) {
+    return;
+  }
+  historyRecomputeQueued = true;
+  setImmediate(() => {
+    historyRecomputeQueued = false;
+    recomputeHistoryCache();
+  });
+}
+
+function getHistoryPayload(rangeDays) {
+  if (!historyCache.has(rangeDays)) {
+    // First request for this range before the cache warmed — compute once, then it
+    // rides the broadcast cadence from here on.
+    historyCache.set(rangeDays, computeHistoryPayload(rangeDays));
+  }
+  return historyCache.get(rangeDays);
 }
 
 function shouldRefreshClaudeFallback() {
@@ -1034,6 +1135,9 @@ function startClaudeWebUsageRefresh() {
 }
 
 function broadcastSnapshot(snapshot) {
+  // Refresh the cached usage-history payload on the same cadence as the limits.
+  scheduleHistoryRecompute();
+
   if (!popover || popover.isDestroyed()) {
     return;
   }
@@ -1227,7 +1331,7 @@ function registerIpcHandlers() {
   ipcMain.on("rate-limit:move-top-right", moveToTopRight);
   ipcMain.handle("usage-history:get", (event, options = {}) => {
     const rangeDays = [7, 30, 90].includes(Number(options.rangeDays)) ? Number(options.rangeDays) : 30;
-    return scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays });
+    return getHistoryPayload(rangeDays);
   });
   ipcMain.on("usage-history:open", openHistoryWindow);
 }

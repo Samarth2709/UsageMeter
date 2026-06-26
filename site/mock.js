@@ -146,7 +146,13 @@
         cacheSavings, costByType
       },
       flags: { unknownModels: [] },
-      scannedAt: new Date(now).toISOString()
+      scannedAt: new Date(now).toISOString(),
+      windowValues: [
+        { cli: "claude", kind: "fiveHour", label: "5-hour", usedPercent: 102, usedDollars: 9.8, projectedDollars: 9.8, full: true, resetAt: new Date(now + 1.3 * 3600e3).toISOString() },
+        { cli: "claude", kind: "week", label: "weekly", usedPercent: 35, usedDollars: 120, projectedDollars: 342.86, full: false, resetAt: new Date(now + 4 * 86400e3).toISOString() },
+        { cli: "codex", kind: "fiveHour", label: "5-hour", usedPercent: 100, usedDollars: 4.2, projectedDollars: 4.2, full: true, resetAt: new Date(now + 2 * 3600e3).toISOString() },
+        { cli: "codex", kind: "week", label: "weekly", usedPercent: 40, usedDollars: 52, projectedDollars: 130, full: false, resetAt: new Date(now + 1.6 * 86400e3).toISOString() }
+      ]
     };
   }
 

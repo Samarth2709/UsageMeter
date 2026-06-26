@@ -255,8 +255,42 @@ function renderModels(d) {
   }
 }
 
+const WINDOW_ORDER = { fiveHour: 0, week: 1 };
+const CLI_ORDER = { claude: 0, codex: 1 };
+const CLI_LABEL = { claude: "Claude", codex: "Codex" };
+const WINDOW_LABEL = { fiveHour: "5H", week: "Week" };
+
+function windowValueText(w) {
+  const used = fmtDollars(w.usedDollars) + " used";
+  if (w.full) return used + " · full";
+  if (w.projectedDollars != null) return used + " · ~" + fmtDollars0(w.projectedDollars) + " full value";
+  return used;
+}
+
+function renderWindowValues(rows) {
+  const el = document.querySelector("#ec-value");
+  if (!el) return;
+  if (!rows || !rows.length) {
+    el.innerHTML = `<p class="history-note">Live limit data isn't available yet — open the menu-bar popover to refresh limits, then reopen this window.</p>`;
+    return;
+  }
+  const sorted = [...rows].sort((a, b) =>
+    (CLI_ORDER[a.cli] - CLI_ORDER[b.cli]) || (WINDOW_ORDER[a.kind] - WINDOW_ORDER[b.kind]));
+  el.innerHTML = sorted.map((w) => {
+    const pct = Math.min(100, Math.max(0, w.usedPercent));
+    const label = `${CLI_LABEL[w.cli] || w.cli} · ${WINDOW_LABEL[w.kind] || w.label}`;
+    return `
+    <div class="hbar">
+      <span class="hbar-label">${label}</span>
+      <span class="hbar-track"><span class="hbar-fill" style="width:${pct.toFixed(1)}%;background:${CLI_COLORS[w.cli] || "var(--accent)"}"></span></span>
+      <span class="hbar-val">${Math.round(w.usedPercent)}%&nbsp;·&nbsp;${windowValueText(w)}</span>
+    </div>`;
+  }).join("");
+}
+
 function renderEconomics(d) {
   const r = d.range;
+  renderWindowValues(d.windowValues);
   const effRate = r.tokens.total ? r.dollars / (r.tokens.total / 1e6) : 0;
   document.querySelector("#ec-cards").innerHTML =
     card("Total spend", fmtDollars(r.dollars), rangeDays + "d window") +

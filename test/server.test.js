@@ -439,3 +439,28 @@ test("parseClaudeUsageScreen uses the all-models weekly limit, not a 0% model-on
   const session = windows.find((w) => w.label === "5-hour");
   assert.equal(session.usedPercent, 19);
 });
+
+test("parseClaudeUsageScreen recovers the 5-hour reset from a partial trailing redraw", () => {
+  // The PTY /status capture caught a fresh redraw mid-paint: a trailing "Current
+  // session" header + percent with no "Resets" line yet, after a complete block.
+  // The parser must prefer the earlier block that still has the reset, not the
+  // partial last one (which would drop the countdown).
+  const screen = [
+    "Current session",
+    "█████████ 73% used",
+    "Resets 1:50am (America/New_York)",
+    "Current week (all models)",
+    "███████ 31% used",
+    "Resets Jun 24 at 2am (America/New_York)",
+    "",
+    "Current session",
+    "█████████ 73% used"
+  ].join("\n");
+
+  const { windows } = _test.parseClaudeUsageScreen(screen);
+  const session = windows.find((w) => w.label === "5-hour");
+  assert.ok(session, "5-hour window should be parsed");
+  assert.equal(session.usedPercent, 73);
+  assert.ok(session.resetText, "5-hour reset text should be recovered");
+  assert.ok(session.resetAt, "5-hour resetAt should be recovered");
+});

@@ -856,7 +856,8 @@ function parseClaudeUsageScreen(screenText) {
   const sessionBlock = getLastBlock(
     compact,
     /Current\s*ses{1,2}(?:ion)?/gi,
-    [/Current\s*we+k(?:\s*\(all\s*models\))?/i]
+    [/Current\s*we+k(?:\s*\(all\s*models\))?/i],
+    /(?:Resets?|Rests?)\s*\S/i
   );
   // Claude's /status now shows multiple weekly limits — "Current week (all models)"
   // plus model-specific ones like "(Sonnet only)". The all-models limit is the real
@@ -867,12 +868,14 @@ function parseClaudeUsageScreen(screenText) {
     getLastBlock(
       compact,
       /Current\s*we+k\s*\(\s*all\s*models\s*\)/gi,
-      [/Current\s*we+k/i, /Approximate/i, /Last\s*24h/i, /Extra\s*usage/i]
+      [/Current\s*we+k/i, /Approximate/i, /Last\s*24h/i, /Extra\s*usage/i],
+      /(?:Resets?|Rests?)\s*\S/i
     ) ||
     getLastBlock(
       compact,
       /Current\s*we+k(?:\s*\(all\s*models\))?/gi,
-      [/Approximate/i, /Last\s*24h/i, /Extra\s*usage/i]
+      [/Approximate/i, /Last\s*24h/i, /Extra\s*usage/i],
+      /(?:Resets?|Rests?)\s*\S/i
     );
   const extraUsageMatch = getLastMatch(
     compact,
@@ -902,25 +905,41 @@ function parseClaudeUsageScreen(screenText) {
   };
 }
 
-function getLastBlock(text, startRegex, endRegexes = []) {
+function getLastBlock(text, startRegex, endRegexes = [], preferRegex = null) {
   const starts = Array.from(text.matchAll(startRegex));
 
   if (!starts.length) {
     return "";
   }
 
-  const startIndex = starts.at(-1).index;
-  const tail = text.slice(startIndex);
-  let endIndex = tail.length;
+  const blockAt = (startIndex) => {
+    const tail = text.slice(startIndex);
+    let endIndex = tail.length;
+    for (const endRegex of endRegexes) {
+      const endMatch = endRegex.exec(tail.slice(1));
+      if (endMatch?.index !== undefined) {
+        endIndex = Math.min(endIndex, endMatch.index + 1);
+      }
+    }
+    return tail.slice(0, endIndex);
+  };
 
-  for (const endRegex of endRegexes) {
-    const endMatch = endRegex.exec(tail.slice(1));
-    if (endMatch?.index !== undefined) {
-      endIndex = Math.min(endIndex, endMatch.index + 1);
+  // Claude's /status renders over a PTY in several redraws. A flaky capture can end
+  // on a partial trailing block — the header and percent are present but the "Resets"
+  // line hasn't been drawn yet. Taking the literal last block then yields a window
+  // with no reset, making the countdown disappear. When a preferRegex is given,
+  // pick the last block that actually contains it (e.g. a "Resets" line), and only
+  // fall back to the last block if none qualify.
+  if (preferRegex) {
+    for (let i = starts.length - 1; i >= 0; i--) {
+      const block = blockAt(starts[i].index);
+      if (preferRegex.test(block)) {
+        return block;
+      }
     }
   }
 
-  return tail.slice(0, endIndex);
+  return blockAt(starts.at(-1).index);
 }
 
 function extractClaudeWindow(label, block) {
