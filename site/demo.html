@@ -26,11 +26,13 @@
       <button data-page="models">Models</button>
       <button data-page="economics">Economics</button>
       <button data-page="efficiency">Efficiency</button>
+      <button data-page="diagnostics">Diagnostics</button>
     </nav>
 
     <main id="pages">
       <!-- Overview -->
       <section id="page-overview" class="page">
+        <div id="ov-empty"></div>
         <div id="ov-cards" class="history-summary"></div>
         <div class="chart-head">
           <h2>Daily usage</h2>
@@ -117,6 +119,16 @@
         <h2>Cache hit rate by model</h2>
         <div id="ef-cache"></div>
         <p class="history-note">Cache hit rate = cache-read tokens ÷ (cache-read + fresh input). Savings = what those cache reads would cost at the full input rate.</p>
+      </section>
+
+      <!-- Diagnostics -->
+      <section id="page-diagnostics" class="page hidden">
+        <div class="chart-head">
+          <h2>Diagnostics</h2>
+          <button id="diag-copy" class="mini-toggle">Copy diagnostics</button>
+        </div>
+        <div id="diag-body"></div>
+        <p class="history-note">Usage history is built only from local Claude Code and Codex CLI transcripts — API/SDK and IDE usage isn't counted. This shows where the app looked and what it found. If your history is empty, copy this and send it over.</p>
       </section>
     </main>
 

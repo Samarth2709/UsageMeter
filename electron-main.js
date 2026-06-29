@@ -27,6 +27,7 @@ const {
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { scanUsageHistory } = require("./usage-history/aggregate");
 const { computeWindowValues, transcriptFingerprint } = require("./usage-history/windows");
+const { buildDiagnostics } = require("./usage-history/diagnostics");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
@@ -970,6 +971,8 @@ function startUpdateChecks() {
 function computeHistoryPayload(rangeDays) {
   const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays });
   payload.windowValues = computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows() });
+  payload.diagnostics = buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir });
+  payload.appVersion = app.getVersion();
   payload.computedAt = new Date().toISOString();
   return payload;
 }

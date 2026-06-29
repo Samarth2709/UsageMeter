@@ -152,7 +152,19 @@
         { cli: "claude", kind: "week", label: "weekly", usedPercent: 35, usedDollars: 120, projectedDollars: 342.86, full: false, resetAt: new Date(now + 4 * 86400e3).toISOString() },
         { cli: "codex", kind: "fiveHour", label: "5-hour", usedPercent: 100, usedDollars: 4.2, projectedDollars: 4.2, full: true, resetAt: new Date(now + 2 * 3600e3).toISOString() },
         { cli: "codex", kind: "week", label: "weekly", usedPercent: 40, usedDollars: 52, projectedDollars: 130, full: false, resetAt: new Date(now + 1.6 * 86400e3).toISOString() }
-      ]
+      ],
+      appVersion: "0.2.1",
+      diagnostics: {
+        homeDir: "/Users/you",
+        env: { CLAUDE_CONFIG_DIR: null, CODEX_HOME: null },
+        cache: { path: "/Users/you/.rate-limit-tool/usage-history.json", version: 5 },
+        claude: { dir: "/Users/you/.claude/projects", exists: true, readable: true, files: 218 },
+        codex: [
+          { root: "/Users/you/.codex", exists: true, readable: true, sessionsFiles: 642 },
+          { root: "/Users/you/Library/Application Support/orca/codex-runtime-home/home", exists: false, readable: true, sessionsFiles: 0 }
+        ],
+        totals: { claudeFiles: 218, codexFiles: 642 }
+      }
     };
   }
 

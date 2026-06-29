@@ -155,6 +155,12 @@ function dayCostHover(d) {
 /* ---------- pages ---------- */
 function renderOverview(d) {
   const r = d.range;
+  const empty = document.querySelector("#ov-empty");
+  if (empty) {
+    empty.innerHTML = r.tokens.total === 0
+      ? `<div style="border:1px solid var(--accent);border-radius:8px;padding:12px 14px;margin-bottom:12px;color:var(--fg);font-size:0.82rem;line-height:1.45">No CLI usage found in the last ${rangeDays} days. Usage history is built only from local <b>Claude Code</b> &amp; <b>Codex</b> CLI transcripts — API/SDK or IDE usage isn't counted. Open the <b>Diagnostics</b> tab to see exactly what was scanned.</div>`
+      : "";
+  }
   let cT = 0, xT = 0, cD = 0, xD = 0;
   for (const day of r.days) { cT += day.byCli.claude.tokens.total; xT += day.byCli.codex.tokens.total; cD += day.byCli.claude.dollars; xD += day.byCli.codex.dollars; }
   document.querySelector("#ov-cards").innerHTML =
@@ -339,7 +345,84 @@ function renderEfficiency(d) {
   hBars(document.querySelector("#ef-cache"), rows);
 }
 
-const RENDERERS = { overview: renderOverview, overtime: renderOverTime, models: renderModels, economics: renderEconomics, efficiency: renderEfficiency };
+function diagnosticsReport(d) {
+  const dg = d.diagnostics;
+  const r = d.range;
+  const lines = [
+    "Usage Meter diagnostics",
+    `app version: ${d.appVersion || "?"}`,
+    `scanned: ${d.computedAt || d.scannedAt || "?"}`,
+    `home: ${dg.homeDir}`,
+    `env: CLAUDE_CONFIG_DIR=${dg.env.CLAUDE_CONFIG_DIR || "(unset)"}, CODEX_HOME=${dg.env.CODEX_HOME || "(unset)"}`,
+    `cache: ${dg.cache.path} (v${dg.cache.version})`,
+    "",
+    `Claude projects: ${dg.claude.dir}`,
+    `  exists=${dg.claude.exists} readable=${dg.claude.readable} files=${dg.claude.files}`,
+    "Codex homes:"
+  ];
+  for (const c of dg.codex) {
+    lines.push(`  ${c.root}`);
+    lines.push(`    exists=${c.exists} readable=${c.readable} sessionFiles=${c.sessionsFiles}`);
+  }
+  lines.push("");
+  lines.push(`Found: claude ${dg.totals.claudeFiles} files, codex ${dg.totals.codexFiles} files`);
+  lines.push(`Parsed (${rangeDays}d): ${r.tokens.prompts.toLocaleString()} prompts, ${r.tokens.total.toLocaleString()} tokens, ${fmtDollars(r.dollars)}`);
+  return lines.join("\n");
+}
+
+function renderDiagnostics(d) {
+  const body = document.querySelector("#diag-body");
+  const copyBtn = document.querySelector("#diag-copy");
+  if (!body) return;
+  const dg = d.diagnostics;
+  if (!dg) {
+    body.innerHTML = `<p class="history-note">Diagnostics aren't available in this build. Re-download the latest version.</p>`;
+    if (copyBtn) copyBtn.style.display = "none";
+    return;
+  }
+  if (copyBtn) copyBtn.style.display = "";
+
+  const mark = (b) => (b ? "✓" : "✗");
+  const row = (label, val) =>
+    `<div style="display:flex;justify-content:space-between;gap:16px;padding:4px 0;border-bottom:1px solid rgba(244,240,231,0.08);font-size:0.8rem"><span style="color:var(--muted);word-break:break-all">${label}</span><b style="color:var(--fg);text-align:right;white-space:nowrap">${val}</b></div>`;
+  const head = (t) => `<div style="margin-top:14px;margin-bottom:4px;font-weight:600;font-size:0.82rem;color:var(--fg)">${t}</div>`;
+  const r = d.range;
+
+  const out = [];
+  out.push(row("App version", d.appVersion || "?"));
+  out.push(row("Home", dg.homeDir));
+  out.push(row("CLAUDE_CONFIG_DIR", dg.env.CLAUDE_CONFIG_DIR || "(unset)"));
+  out.push(row("CODEX_HOME", dg.env.CODEX_HOME || "(unset)"));
+
+  out.push(head("Claude transcripts"));
+  out.push(row(`${mark(dg.claude.exists)} ${dg.claude.dir}`, `${dg.claude.files} files${dg.claude.readable ? "" : " · NOT READABLE"}`));
+
+  out.push(head("Codex homes"));
+  for (const c of dg.codex) {
+    out.push(row(`${mark(c.exists)} ${c.root}`, `${c.sessionsFiles} files${c.readable ? "" : " · NOT READABLE"}`));
+  }
+
+  out.push(head("Found / parsed"));
+  out.push(row("Transcripts found", `Claude ${dg.totals.claudeFiles} · Codex ${dg.totals.codexFiles}`));
+  out.push(row(`Parsed (${rangeDays}d)`, `${r.tokens.prompts.toLocaleString()} prompts · ${r.tokens.total.toLocaleString()} tok · ${fmtDollars(r.dollars)}`));
+  body.innerHTML = out.join("");
+
+  if (copyBtn && !copyBtn.dataset.wired) {
+    copyBtn.dataset.wired = "1";
+    copyBtn.addEventListener("click", async () => {
+      const orig = copyBtn.textContent;
+      try {
+        await navigator.clipboard.writeText(diagnosticsReport(data));
+        copyBtn.textContent = "Copied!";
+      } catch {
+        copyBtn.textContent = "Copy failed";
+      }
+      setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    });
+  }
+}
+
+const RENDERERS = { overview: renderOverview, overtime: renderOverTime, models: renderModels, economics: renderEconomics, efficiency: renderEfficiency, diagnostics: renderDiagnostics };
 
 function renderCurrent() {
   hideTooltip();
