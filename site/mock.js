@@ -159,10 +159,12 @@
         env: { CLAUDE_CONFIG_DIR: null, CODEX_HOME: null },
         cache: { path: "/Users/you/.rate-limit-tool/usage-history.json", version: 5 },
         claude: { dir: "/Users/you/.claude/projects", exists: true, readable: true, files: 218 },
+        configuredClaude: [],
         codex: [
-          { root: "/Users/you/.codex", exists: true, readable: true, sessionsFiles: 642 },
-          { root: "/Users/you/Library/Application Support/orca/codex-runtime-home/home", exists: false, readable: true, sessionsFiles: 0 }
+          { root: "/Users/you/.codex", exists: true, readable: true, sessionsFiles: 642, configured: false },
+          { root: "/Users/you/Library/Application Support/orca/codex-runtime-home/home", exists: false, readable: true, sessionsFiles: 0, configured: false }
         ],
+        configured: { claude: [], codex: [] },
         totals: { claudeFiles: 218, codexFiles: 642 }
       }
     };

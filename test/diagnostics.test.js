@@ -76,3 +76,60 @@ test("buildDiagnostics honors CODEX_HOME and surfaces it", () => {
     fs.rmSync(codexHome, { recursive: true, force: true });
   }
 });
+
+test("buildDiagnostics lists a configured Claude folder with its file count", () => {
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-cc-"));
+  try {
+    touch(path.join(extra, "nested", "a.jsonl"));
+    withTempHome((home) => {
+      const d = buildDiagnostics({ homeDir: home, dataDir: home, extraRoots: { claude: [extra] } });
+      const entry = (d.configuredClaude || []).find((c) => c.dir === extra);
+      assert.ok(entry, "configured claude root should be listed");
+      assert.equal(entry.exists, true);
+      assert.equal(entry.files, 1);
+    });
+  } finally {
+    fs.rmSync(extra, { recursive: true, force: true });
+  }
+});
+
+test("buildDiagnostics marks a configured Codex root with configured:true", () => {
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-cx-"));
+  try {
+    touch(path.join(extra, "r.jsonl"));
+    withTempHome((home) => {
+      const d = buildDiagnostics({ homeDir: home, dataDir: home, extraRoots: { codex: [extra] } });
+      const entry = d.codex.find((c) => c.root === extra);
+      assert.ok(entry, "configured codex root should appear in codex[]");
+      assert.equal(entry.configured, true);
+      assert.equal(entry.sessionsFiles, 1);
+    });
+  } finally {
+    fs.rmSync(extra, { recursive: true, force: true });
+  }
+});
+
+test("buildDiagnostics echoes configured paths under .configured", () => {
+  withTempHome((home) => {
+    const d = buildDiagnostics({
+      homeDir: home,
+      dataDir: home,
+      extraRoots: { claude: ["/x/claude"], codex: ["/x/codex"] }
+    });
+    assert.deepEqual(d.configured, { claude: ["/x/claude"], codex: ["/x/codex"] });
+  });
+});
+
+test("buildDiagnostics totals include configured roots", () => {
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-ct-"));
+  try {
+    touch(path.join(extra, "a.jsonl"));
+    touch(path.join(extra, "b.jsonl"));
+    withTempHome((home) => {
+      const d = buildDiagnostics({ homeDir: home, dataDir: home, extraRoots: { claude: [extra] } });
+      assert.equal(d.totals.claudeFiles, 2);
+    });
+  } finally {
+    fs.rmSync(extra, { recursive: true, force: true });
+  }
+});

@@ -37,11 +37,12 @@ function dirJsonlCount(dir) {
 // Surfaced in the dashboard's Diagnostics tab so a user with empty history can
 // copy it back to us — it distinguishes "no CLI transcripts" from "wrong location"
 // from "permission denied" without us needing access to their machine.
-function buildDiagnostics({ homeDir, dataDir } = {}) {
+function buildDiagnostics({ homeDir, dataDir, extraRoots = {} } = {}) {
   const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir, ".claude");
   const claudeProjects = path.join(claudeConfigDir, "projects");
   const claude = { dir: claudeProjects, ...dirJsonlCount(claudeProjects) };
 
+  // Default Codex homes (existing behavior) + any user-configured roots, flagged.
   const codex = codexHomeRoots(homeDir).map((root) => {
     const sessions = dirJsonlCount(path.join(root, "sessions"));
     const archived = dirJsonlCount(path.join(root, "archived_sessions"));
@@ -49,11 +50,19 @@ function buildDiagnostics({ homeDir, dataDir } = {}) {
       root,
       exists: sessions.exists || archived.exists,
       readable: sessions.readable && archived.readable,
-      sessionsFiles: sessions.files + archived.files
+      sessionsFiles: sessions.files + archived.files,
+      configured: false
     };
   });
 
-  const all = listAllTranscriptFiles(homeDir);
+  // User-configured extra folders are scanned recursively (whatever they point at).
+  const configuredClaude = (extraRoots.claude || []).map((dir) => ({ dir, ...dirJsonlCount(dir) }));
+  for (const dir of extraRoots.codex || []) {
+    const c = dirJsonlCount(dir);
+    codex.push({ root: dir, exists: c.exists, readable: c.readable, sessionsFiles: c.files, configured: true });
+  }
+
+  const all = listAllTranscriptFiles(homeDir, extraRoots);
   return {
     homeDir,
     env: {
@@ -62,7 +71,9 @@ function buildDiagnostics({ homeDir, dataDir } = {}) {
     },
     cache: { path: path.join(dataDir || "", FILE_NAME), version: CACHE_VERSION },
     claude,
+    configuredClaude,
     codex,
+    configured: { claude: extraRoots.claude || [], codex: extraRoots.codex || [] },
     totals: {
       claudeFiles: all.filter((f) => f.cli === "claude").length,
       codexFiles: all.filter((f) => f.cli === "codex").length

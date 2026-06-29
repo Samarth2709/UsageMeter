@@ -75,3 +75,26 @@ test("scanUsageHistory skips unchanged files and recomputes changed ones", () =>
   const second = scanUsageHistory({ homeDir: home, dataDir, nowMs: now, rangeDays: 7 });
   assert.equal(second.today.tokens.input, 100);
 });
+
+test("scanUsageHistory counts usage from a configured extra Codex root", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "um-scan-home-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "um-scan-data-"));
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-extra-codex-"));
+  const now = Date.now();
+  const ts = new Date(now).toISOString();
+  fs.writeFileSync(path.join(extra, "r.jsonl"), [
+    JSON.stringify({ type: "session_meta", timestamp: ts, payload: { model: "gpt-5.5" } }),
+    JSON.stringify({ type: "event_msg", timestamp: ts, payload: { type: "token_count", info: { last_token_usage: { input_tokens: 1000000, cached_input_tokens: 0, output_tokens: 100000 } } } })
+  ].join("\n"));
+
+  // Without the extra root: nothing found. With it: the session is parsed and priced.
+  const without = scanUsageHistory({ homeDir: home, dataDir, nowMs: now, rangeDays: 7 });
+  assert.equal(without.range.tokens.total, 0);
+
+  const dataDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "um-scan-data2-"));
+  const withRoot = scanUsageHistory({ homeDir: home, dataDir: dataDir2, nowMs: now, rangeDays: 7, extraRoots: { codex: [extra] } });
+  assert.ok(withRoot.range.tokens.total > 0, "extra-root usage should be counted");
+  assert.ok(withRoot.range.dollars > 0, "extra-root usage should be priced");
+  const codexModel = withRoot.range.byModel.find((m) => m.cli === "codex");
+  assert.ok(codexModel && codexModel.dollars > 0, "extra-root codex usage should be priced");
+});

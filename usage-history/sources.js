@@ -57,11 +57,32 @@ function listCodexFiles(homeDir) {
   return out;
 }
 
-function listAllTranscriptFiles(homeDir) {
-  return [
-    ...listClaudeFiles(homeDir).map((p) => ({ path: p, cli: "claude" })),
-    ...listCodexFiles(homeDir).map((p) => ({ path: p, cli: "codex" }))
-  ];
+// Walk each user-configured extra root recursively for .jsonl files.
+function walkRoots(roots) {
+  const out = [];
+  for (const root of roots || []) walkJsonl(root, out);
+  return out;
 }
 
-module.exports = { listClaudeFiles, listCodexFiles, listAllTranscriptFiles, codexHomeRoots };
+// extraRoots: { claude?: string[], codex?: string[] } — additional user-configured
+// folders, scanned recursively and tagged with the given CLI (in addition to the
+// defaults). Deduped by path so a configured folder overlapping a default isn't
+// counted twice.
+function listAllTranscriptFiles(homeDir, extraRoots = {}) {
+  const tagged = [
+    ...listClaudeFiles(homeDir).map((p) => ({ path: p, cli: "claude" })),
+    ...walkRoots(extraRoots.claude).map((p) => ({ path: p, cli: "claude" })),
+    ...listCodexFiles(homeDir).map((p) => ({ path: p, cli: "codex" })),
+    ...walkRoots(extraRoots.codex).map((p) => ({ path: p, cli: "codex" }))
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const file of tagged) {
+    if (seen.has(file.path)) continue;
+    seen.add(file.path);
+    out.push(file);
+  }
+  return out;
+}
+
+module.exports = { listClaudeFiles, listCodexFiles, listAllTranscriptFiles, codexHomeRoots, walkRoots };

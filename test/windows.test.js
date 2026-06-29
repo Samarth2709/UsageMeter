@@ -114,6 +114,20 @@ test("transcriptFingerprint changes when usage is written", () => {
   });
 });
 
+test("transcriptFingerprint reflects files in a configured extra root", () => {
+  withTempHome((home) => {
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-fp-extra-"));
+    try {
+      const fp1 = transcriptFingerprint(home, { codex: [extra] });
+      fs.writeFileSync(path.join(extra, "r.jsonl"), "{}\n");
+      const fp2 = transcriptFingerprint(home, { codex: [extra] });
+      assert.notEqual(fp1, fp2);
+    } finally {
+      fs.rmSync(extra, { recursive: true, force: true });
+    }
+  });
+});
+
 test("computeWindowValues skips windows with no resetAt or unknown label", () => {
   withTempHome((home) => {
     writeCodexFixture(home, [codexTurn(NOW - 3600000)]);

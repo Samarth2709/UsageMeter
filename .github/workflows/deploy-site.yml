@@ -1,0 +1,36 @@
+name: Deploy site to Vercel
+
+# Auto-deploys the marketing site (site/) to Vercel production on every push to main
+# that touches it. Requires ONE repo secret: VERCEL_TOKEN (a Vercel access token).
+# The org/project IDs below are public identifiers, not secrets. If VERCEL_TOKEN is
+# absent, the job no-ops gracefully instead of failing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: team_h2ZAxxc2kSwSUJOY9n52rtuy
+      VERCEL_PROJECT_ID: prj_waRaAnKJrbyG60pFJlTL3QXHsx4m
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Deploy site/ to Vercel production
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN secret is not set — skipping deploy."
+            echo "Add it under repo Settings → Secrets and variables → Actions to enable auto-deploy."
+            exit 0
+          fi
+          npm i -g vercel@latest
+          vercel deploy --prod --yes --token="$VERCEL_TOKEN" --cwd site

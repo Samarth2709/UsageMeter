@@ -6,6 +6,9 @@ let metric = "tokens"; // Overview daily chart: tokens | cost
 let currentPage = "overview";
 let data = null;
 
+const esc = (s) =>
+  String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 const CLI_COLORS = { claude: "#f4ab5e", codex: "#74c278" };
 const MODEL_PALETTE = ["#74c278", "#f4ab5e", "#d7c56f", "#5fa8d3", "#c98bdb", "#e0796a"];
 const OTHER_COLOR = "rgba(244,240,231,0.28)";
@@ -389,23 +392,29 @@ function renderDiagnostics(d) {
   const r = d.range;
 
   const out = [];
-  out.push(row("App version", d.appVersion || "?"));
-  out.push(row("Home", dg.homeDir));
-  out.push(row("CLAUDE_CONFIG_DIR", dg.env.CLAUDE_CONFIG_DIR || "(unset)"));
-  out.push(row("CODEX_HOME", dg.env.CODEX_HOME || "(unset)"));
+  out.push(row("App version", esc(d.appVersion || "?")));
+  out.push(row("Home", esc(dg.homeDir)));
+  out.push(row("CLAUDE_CONFIG_DIR", esc(dg.env.CLAUDE_CONFIG_DIR || "(unset)")));
+  out.push(row("CODEX_HOME", esc(dg.env.CODEX_HOME || "(unset)")));
 
   out.push(head("Claude transcripts"));
-  out.push(row(`${mark(dg.claude.exists)} ${dg.claude.dir}`, `${dg.claude.files} files${dg.claude.readable ? "" : " · NOT READABLE"}`));
+  out.push(row(`${mark(dg.claude.exists)} ${esc(dg.claude.dir)}`, `${dg.claude.files} files${dg.claude.readable ? "" : " · NOT READABLE"}`));
+  for (const c of dg.configuredClaude || []) {
+    out.push(row(`${mark(c.exists)} ${esc(c.dir)} (added)`, `${c.files} files${c.readable ? "" : " · NOT READABLE"}`));
+  }
 
   out.push(head("Codex homes"));
   for (const c of dg.codex) {
-    out.push(row(`${mark(c.exists)} ${c.root}`, `${c.sessionsFiles} files${c.readable ? "" : " · NOT READABLE"}`));
+    out.push(row(`${mark(c.exists)} ${esc(c.root)}${c.configured ? " (added)" : ""}`, `${c.sessionsFiles} files${c.readable ? "" : " · NOT READABLE"}`));
   }
 
   out.push(head("Found / parsed"));
   out.push(row("Transcripts found", `Claude ${dg.totals.claudeFiles} · Codex ${dg.totals.codexFiles}`));
   out.push(row(`Parsed (${rangeDays}d)`, `${r.tokens.prompts.toLocaleString()} prompts · ${r.tokens.total.toLocaleString()} tok · ${fmtDollars(r.dollars)}`));
   body.innerHTML = out.join("");
+
+  renderHelp(dg);
+  renderFolderEditor(dg);
 
   if (copyBtn && !copyBtn.dataset.wired) {
     copyBtn.dataset.wired = "1";
@@ -420,6 +429,73 @@ function renderDiagnostics(d) {
       setTimeout(() => { copyBtn.textContent = orig; }, 1500);
     });
   }
+}
+
+// Help panel content is regenerated from the current diagnostics state every render.
+function renderHelp(dg) {
+  const panel = document.querySelector("#diag-help-panel");
+  const btn = document.querySelector("#diag-help");
+  if (!panel) return;
+  const items = window.UMHelp ? window.UMHelp.buildHelp(dg) : [];
+  const color = (lvl) => (lvl === "ok" ? "#74c278" : lvl === "warn" ? "#e0796a" : "var(--muted)");
+  panel.innerHTML = items
+    .map((it) => `<div style="border-left:3px solid ${color(it.level)};padding:6px 10px;margin:6px 0;font-size:0.8rem;line-height:1.45;color:var(--fg)">${esc(it.text)}</div>`)
+    .join("");
+  if (btn && !btn.dataset.wired) {
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", () => panel.classList.toggle("hidden"));
+  }
+}
+
+function renderFolderEditor(dg) {
+  const host = document.querySelector("#diag-folders");
+  if (!host) return;
+  if (!nativeApi?.saveConfig || !nativeApi?.getState) {
+    host.innerHTML = `<p class="history-note">Folder editing is available in the app.</p>`;
+    return;
+  }
+  const conf = dg.configured || { claude: [], codex: [] };
+  const group = (cli, label, paths) => {
+    const rows = (paths || []).length
+      ? (paths || [])
+          .map(
+            (p) =>
+              `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:4px 0;font-size:0.8rem"><span style="color:var(--fg);word-break:break-all">${esc(p)}</span><button class="mini-toggle diag-remove" data-cli="${cli}" data-path="${encodeURIComponent(p)}">Remove</button></div>`
+          )
+          .join("")
+      : `<div style="color:var(--muted);font-size:0.8rem;padding:4px 0">No extra folders — scanning defaults only.</div>`;
+    return `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:0.82rem">${label}</b><button class="mini-toggle diag-add" data-cli="${cli}">+ Add folder</button></div>${rows}</div>`;
+  };
+  host.innerHTML = group("claude", "Claude folders", conf.claude) + group("codex", "Codex folders", conf.codex);
+  wireFolderEditor();
+}
+
+function wireFolderEditor() {
+  const host = document.querySelector("#diag-folders");
+  if (!host || host.dataset.wired) return;
+  host.dataset.wired = "1";
+  host.addEventListener("click", async (e) => {
+    const add = e.target.closest(".diag-add");
+    const rem = e.target.closest(".diag-remove");
+    if (add) {
+      const picked = await nativeApi.pickFolder?.();
+      if (picked) await mutateScanRoots(add.dataset.cli, picked, "add");
+    } else if (rem) {
+      await mutateScanRoots(rem.dataset.cli, decodeURIComponent(rem.dataset.path), "remove");
+    }
+  });
+}
+
+async function mutateScanRoots(cli, folder, op) {
+  const state = await nativeApi.getState();
+  const config = state.config;
+  config.scanRoots = config.scanRoots || { claude: [], codex: [] };
+  const list = config.scanRoots[cli] || [];
+  config.scanRoots[cli] = op === "add"
+    ? (list.includes(folder) ? list : [...list, folder])
+    : list.filter((x) => x !== folder);
+  await nativeApi.saveConfig(config);
+  await load(); // history is recomputed with the new folders; re-render Diagnostics
 }
 
 const RENDERERS = { overview: renderOverview, overtime: renderOverTime, models: renderModels, economics: renderEconomics, efficiency: renderEfficiency, diagnostics: renderDiagnostics };

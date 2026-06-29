@@ -112,8 +112,23 @@ function defaultConfig() {
         label: "Claude Code",
         workspace: defaultWorkspace
       }
-    ]
+    ],
+    scanRoots: { claude: [], codex: [] }
   };
+}
+
+// User-configured extra folders to scan for transcripts, per CLI. Coerces to two
+// string arrays, expands ~, trims, and dedupes. Unknown keys are dropped.
+function normalizeScanRoots(raw) {
+  const pick = (value) =>
+    Array.isArray(value)
+      ? [...new Set(
+          value
+            .filter((entry) => typeof entry === "string" && entry.trim())
+            .map((entry) => expandHome(entry.trim()))
+        )]
+      : [];
+  return { claude: pick(raw?.claude), codex: pick(raw?.codex) };
 }
 
 function expandHome(input) {
@@ -332,7 +347,8 @@ function normalizeConfig(raw) {
     .filter((identity) => !isLegacyDefaultCodexPlaceholder(identity));
 
   return {
-    identities: mergeIdentities(normalized)
+    identities: mergeIdentities(normalized),
+    scanRoots: normalizeScanRoots(raw?.scanRoots)
   };
 }
 
@@ -364,9 +380,14 @@ function serializeConfig(config) {
     return serialized;
   });
 
+  const scanRoots = config.scanRoots || { claude: [], codex: [] };
   return {
     identities,
-    accounts: identities
+    accounts: identities,
+    scanRoots: {
+      claude: (scanRoots.claude || []).map(compactHome),
+      codex: (scanRoots.codex || []).map(compactHome)
+    }
   };
 }
 
@@ -445,6 +466,7 @@ async function hydrateConfigFromStoredIdentities(config) {
   const storedCodexIdentities = await loadStoredCodexIdentities();
 
   return {
+    ...config,
     identities: mergeIdentities([
       ...config.identities,
       ...storedCodexIdentities
@@ -1851,11 +1873,14 @@ app.post("/api/refresh", async (request, response) => {
   }
 });
 
-app.get("/api/usage-history", (request, response) => {
+app.get("/api/usage-history", async (request, response) => {
   try {
     const { scanUsageHistory } = require("./usage-history/aggregate");
     const rangeDays = [7, 30, 90].includes(Number(request.query.rangeDays)) ? Number(request.query.rangeDays) : 30;
-    response.json(scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays }));
+    const config = await ensureConfig();
+    const sr = config.scanRoots || { claude: [], codex: [] };
+    const extraRoots = { claude: (sr.claude || []).map(expandHome), codex: (sr.codex || []).map(expandHome) };
+    response.json(scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays, extraRoots }));
   } catch (error) {
     response.status(500).json({ error: error.message });
   }
@@ -1875,6 +1900,8 @@ if (require.main === module) {
 module.exports = {
   getState,
   saveConfig,
+  expandHome,
+  compactHome,
   refreshAccountById,
   refreshAllAccounts,
   saveUsageForAccount,
@@ -1885,6 +1912,7 @@ module.exports = {
   _test: {
     defaultConfig,
     normalizeConfig,
+    normalizeScanRoots,
     serializeConfig,
     createBrowserIndexHtml,
     loadStoredCodexIdentities,

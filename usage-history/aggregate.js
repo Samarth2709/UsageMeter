@@ -160,9 +160,9 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
   };
 }
 
-function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30 }) {
+function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30, extraRoots = {} }) {
   const cache = loadCache(dataDir);
-  const found = listAllTranscriptFiles(homeDir);
+  const found = listAllTranscriptFiles(homeDir, extraRoots);
   const foundPaths = new Set(found.map((f) => f.path));
 
   // drop deleted files

@@ -12,12 +12,14 @@ const {
   ipcMain,
   nativeImage,
   screen,
-  shell
+  shell,
+  dialog
 } = require("electron");
 
 const {
   getState,
   saveConfig,
+  expandHome,
   refreshAllAccounts,
   saveUsageForAccount,
   getClaudeAuthStatus,
@@ -76,6 +78,9 @@ let historyRecomputeQueued = false;
 let historyFingerprint = null;
 let availableUpdate = null; // { available, version, url } once a newer release is seen
 let updateCheckTimer = null;
+// User-configured extra transcript folders (absolute paths), mirrored from config so
+// the synchronous history path can read them without an async config load each time.
+let scanRoots = { claude: [], codex: [] };
 let claudeWebUsageCache = {
   ok: false,
   status: "starting",
@@ -968,10 +973,26 @@ function startUpdateChecks() {
   updateCheckTimer = setInterval(checkForUpdate, updateCheckMs);
 }
 
+// Mirror the user's configured scan folders from config into the module-level cache
+// (as absolute paths) so the synchronous history path can use them. Called at startup
+// and whenever the config is saved.
+async function refreshScanRoots() {
+  try {
+    const state = await getState();
+    const sr = state.config.scanRoots || { claude: [], codex: [] };
+    scanRoots = {
+      claude: (sr.claude || []).map((p) => expandHome(p)),
+      codex: (sr.codex || []).map((p) => expandHome(p))
+    };
+  } catch {
+    scanRoots = { claude: [], codex: [] };
+  }
+}
+
 function computeHistoryPayload(rangeDays) {
-  const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays });
-  payload.windowValues = computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows() });
-  payload.diagnostics = buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir });
+  const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays, extraRoots: scanRoots });
+  payload.windowValues = computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows(), extraRoots: scanRoots });
+  payload.diagnostics = buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir, extraRoots: scanRoots });
   payload.appVersion = app.getVersion();
   payload.computedAt = new Date().toISOString();
   return payload;
@@ -988,7 +1009,7 @@ function recomputeHistoryCache() {
   const limitsSignature = JSON.stringify(
     liveLimitWindows().map((w) => [w.cli, w.label, w.usedPercent, w.resetAt])
   );
-  const fingerprint = `${transcriptFingerprint(os.homedir())}|${limitsSignature}`;
+  const fingerprint = `${transcriptFingerprint(os.homedir(), scanRoots)}|${limitsSignature}`;
   if (fingerprint === historyFingerprint && historyCache.size) {
     return;
   }
@@ -1360,6 +1381,10 @@ function registerIpcHandlers() {
   ipcMain.handle("rate-limit:get-snapshot", async () => latestSnapshot);
   ipcMain.handle("rate-limit:save-config", async (event, config) => {
     await saveConfig(config);
+    await refreshScanRoots();
+    // Configured folders changed — drop the cached history so it rescans next fetch.
+    historyCache.clear();
+    historyFingerprint = null;
     return getState();
   });
   ipcMain.handle("rate-limit:open-login", async (event, accountId) => {
@@ -1384,6 +1409,13 @@ function registerIpcHandlers() {
     return getHistoryPayload(rangeDays);
   });
   ipcMain.on("usage-history:open", openHistoryWindow);
+  ipcMain.handle("usage-history:pick-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "Choose a session folder to scan",
+      properties: ["openDirectory"]
+    });
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
   ipcMain.handle("update:get", () => availableUpdate);
   ipcMain.on("update:open", () => {
     shell.openExternal(availableUpdate?.url || releasesPageUrl);
@@ -1407,6 +1439,7 @@ if (!gotSingleInstanceLock) {
     }
 
     await loadPopoverPosition();
+    await refreshScanRoots();
     registerIpcHandlers();
     createPopover();
     createTray();

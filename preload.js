@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
   moveToTopRight: () => ipcRenderer.send("rate-limit:move-top-right"),
   openHistory: () => ipcRenderer.send("usage-history:open"),
   getUsageHistory: (options) => ipcRenderer.invoke("usage-history:get", options),
+  pickFolder: () => ipcRenderer.invoke("usage-history:pick-folder"),
   setExpandedView: (expanded, rowCount, contentHeight) => ipcRenderer.send("rate-limit:set-expanded-view", expanded, rowCount, contentHeight),
   onSnapshot: (callback) => {
     const listener = (event, payload) => callback(payload);

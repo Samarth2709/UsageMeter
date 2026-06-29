@@ -21,11 +21,11 @@ function windowDurationMs(kind) {
 // A cheap signature of all transcript files (count + total size + newest mtime).
 // If it's unchanged, no usage has been written, so a cached history payload is still
 // current and an expensive recompute can be skipped.
-function transcriptFingerprint(homeDir) {
+function transcriptFingerprint(homeDir, extraRoots = {}) {
   let count = 0;
   let totalSize = 0;
   let maxMtime = 0;
-  for (const { path: filePath } of listAllTranscriptFiles(homeDir)) {
+  for (const { path: filePath } of listAllTranscriptFiles(homeDir, extraRoots)) {
     let stat;
     try { stat = fs.statSync(filePath); } catch { continue; }
     count += 1;
@@ -44,10 +44,10 @@ function recordTokens(r) {
 // large history doesn't get fully re-parsed on every dashboard load. Each point is
 // priced per token type (input/output/cache at their own rates), so a point's dollars
 // already reflect its real input:output mix — no blended ratio is assumed here.
-function recentPricedPoints(homeDir, nowMs) {
+function recentPricedPoints(homeDir, nowMs, extraRoots = {}) {
   const cutoff = nowMs - LOOKBACK_MS;
   const points = [];
-  for (const { path: filePath, cli } of listAllTranscriptFiles(homeDir)) {
+  for (const { path: filePath, cli } of listAllTranscriptFiles(homeDir, extraRoots)) {
     let stat;
     try { stat = fs.statSync(filePath); } catch { continue; }
     if (stat.mtimeMs < cutoff) continue;
@@ -77,13 +77,13 @@ function projectFull(usedDollars, usedTokens, usedPercent, blendedRate) {
 
 // limits: [{ cli, label, usedPercent, resetAt }] from the live snapshot.
 // Returns one row per resolvable window with the API-dollar value used in it.
-function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [] } = {}) {
+function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [], extraRoots = {} } = {}) {
   const resolvable = limits
     .map((w) => ({ ...w, kind: usageWindowKey(w), durationMs: windowDurationMs(usageWindowKey(w)) }))
     .filter((w) => w.cli && w.durationMs && w.resetAt && Number.isFinite(Date.parse(w.resetAt)));
   if (!resolvable.length) return [];
 
-  const points = recentPricedPoints(homeDir, nowMs);
+  const points = recentPricedPoints(homeDir, nowMs, extraRoots);
 
   // Per-CLI blended $/token over the whole lookback baseline — the stable rate used
   // to value each window's unspent remainder.
