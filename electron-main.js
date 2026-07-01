@@ -28,7 +28,7 @@ const {
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { scanUsageHistory } = require("./usage-history/aggregate");
-const { computeWindowValues, transcriptFingerprint } = require("./usage-history/windows");
+const { computeWindowValues, transcriptFingerprint, clearPointsCache } = require("./usage-history/windows");
 const { buildDiagnostics } = require("./usage-history/diagnostics");
 
 const toggleShortcut = "Control+Option+L";
@@ -45,7 +45,10 @@ const updateCheckMs = 6 * 60 * 60 * 1000; // every 6 hours
 const releasesPageUrl = `https://github.com/${updateRepo}/releases/latest`;
 const claudeUsageApiPort = Number(process.env.CLAUDE_USAGE_API_PORT || 4555);
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
-const claudeWebRefreshMs = 30000;
+// The claude.ai web scrape recreates a full renderer each time, so keep it infrequent.
+// It's supplementary — the CLI fallback covers shorter intervals, and the popover also
+// refreshes on show.
+const claudeWebRefreshMs = 300000;
 const claudeCliFallbackRefreshMs = 120000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -70,6 +73,7 @@ let claudeWebRefreshTimer = null;
 let claudeWebRefreshPromise = null;
 let claudeFallbackRefreshPromise = null;
 let lastClaudeFallbackRefreshAt = 0;
+let lastClaudeWebScrapeAt = 0;
 let claudeWebOrgId = null;
 // Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
 // "View usage history" window opens instantly instead of scanning transcripts on click.
@@ -312,24 +316,28 @@ function openHistoryWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: true
     }
   });
 
   historyWindow.loadFile(path.join(__dirname, "public", "history.html"));
   historyWindow.on("closed", () => {
     historyWindow = null;
+    // Free the ~payload + points caches now that nobody is viewing history.
+    releaseHistoryMemory();
   });
 
-  // Auto-hide when focus moves to another window/app (same behavior as the
-  // popover). The window is reused — reopening shows it again.
+  // Destroy (not just hide) when focus moves away, so the renderer process and its
+  // heap are reclaimed instead of staying resident. Reopening recreates it — the
+  // per-file points cache makes the reparse cheap within a session.
   historyWindow.on("blur", () => {
     if (process.env.RATE_LIMIT_TOOL_KEEP_OPEN) {
       return;
     }
 
     if (!isQuitting && !historyWindow.webContents.isDevToolsOpened()) {
-      historyWindow.hide();
+      historyWindow.destroy();
     }
   });
 }
@@ -678,6 +686,8 @@ function getOrCreateClaudeUsageWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: true,
       partition: "persist:claude-usage"
     }
   });
@@ -713,7 +723,8 @@ function showClaudeUsageLogin() {
   claudeLoginWindow.loadURL(claudeUsageUrl);
   claudeLoginWindow.on("closed", () => {
     claudeLoginWindow = null;
-    refreshClaudeWebUsage().catch(() => {});
+    // Just logged in — bypass the throttle to pick up fresh usage immediately.
+    refreshClaudeWebUsage({ force: true }).catch(() => {});
   });
 }
 
@@ -753,10 +764,19 @@ async function readClaudeUsageApi() {
   );
 }
 
-async function refreshClaudeWebUsage() {
+async function refreshClaudeWebUsage({ force = false } = {}) {
   if (claudeWebRefreshPromise) {
     return claudeWebRefreshPromise;
   }
+
+  // The scrape spins up a full claude.ai renderer, so throttle it: no matter how often
+  // callers ask (the 60s snapshot loop does), actually scrape at most once per
+  // claudeWebRefreshMs and otherwise return the cached result. CLI fallback still runs
+  // on its own cadence when web usage isn't OK.
+  if (!force && Date.now() - lastClaudeWebScrapeAt < claudeWebRefreshMs) {
+    return claudeWebUsageCache;
+  }
+  lastClaudeWebScrapeAt = Date.now();
 
   claudeWebRefreshPromise = (async () => {
     try {
@@ -805,6 +825,12 @@ async function refreshClaudeWebUsage() {
     return await claudeWebRefreshPromise;
   } finally {
     claudeWebRefreshPromise = null;
+    // Don't keep a full claude.ai renderer resident between scrapes — it's the biggest
+    // idle memory holder and grows over time. Recreated on the next refresh.
+    if (claudeUsageWindow && !claudeUsageWindow.isDestroyed()) {
+      claudeUsageWindow.destroy();
+      claudeUsageWindow = null;
+    }
   }
 }
 
@@ -989,23 +1015,42 @@ async function refreshScanRoots() {
   }
 }
 
-function computeHistoryPayload(rangeDays) {
+// windowValues and diagnostics are range-independent (they scan the recent window and
+// the current limits, not the N-day range), so compute them once per recompute and
+// share across ranges instead of redoing the scan per range.
+function computeSharedHistoryParts() {
+  return {
+    windowValues: computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows(), extraRoots: scanRoots }),
+    diagnostics: buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir, extraRoots: scanRoots }),
+    appVersion: app.getVersion(),
+    computedAt: new Date().toISOString()
+  };
+}
+
+function computeHistoryPayload(rangeDays, shared) {
+  const s = shared || computeSharedHistoryParts();
   const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays, extraRoots: scanRoots });
-  payload.windowValues = computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows(), extraRoots: scanRoots });
-  payload.diagnostics = buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir, extraRoots: scanRoots });
-  payload.appVersion = app.getVersion();
-  payload.computedAt = new Date().toISOString();
+  payload.windowValues = s.windowValues;
+  payload.diagnostics = s.diagnostics;
+  payload.appVersion = s.appVersion;
+  payload.computedAt = s.computedAt;
   return payload;
 }
 
-// Recompute every range that's currently cached, plus the default 30d so the first
-// open is instant. Runs on the limit-refresh cadence (via broadcastSnapshot), keeping
-// the history payload exactly as fresh as the usage-limit percentages.
+function historyWindowOpen() {
+  return Boolean(historyWindow && !historyWindow.isDestroyed());
+}
+
+// Refresh the cached payload on the limit-refresh cadence — but ONLY while the history
+// window is actually open. When it's closed there's nobody to show it to, so we skip
+// the expensive scan entirely (the window's caches are also freed on close). This is
+// what keeps the app idle-cheap; the ~1.4 GB re-parse no longer runs every ~60s.
 function recomputeHistoryCache() {
-  // Skip the expensive scan/parse only when BOTH the transcripts AND the live limit
-  // windows are unchanged. windowValues is derived from the limit %/resetAt, which
-  // move on the refresh cadence independently of transcript writes — gating on the
-  // transcript fingerprint alone would freeze the Subscription-value rows.
+  if (!historyWindowOpen()) {
+    return;
+  }
+  // Skip when BOTH transcripts AND live limits are unchanged. windowValues derives from
+  // the limit %/resetAt, which move independently of transcript writes.
   const limitsSignature = JSON.stringify(
     liveLimitWindows().map((w) => [w.cli, w.label, w.usedPercent, w.resetAt])
   );
@@ -1015,15 +1060,22 @@ function recomputeHistoryCache() {
   }
   historyFingerprint = fingerprint;
 
-  const ranges = new Set(historyCache.keys());
-  ranges.add(30);
-  for (const rangeDays of ranges) {
+  const shared = computeSharedHistoryParts();
+  for (const rangeDays of historyCache.keys()) {
     try {
-      historyCache.set(rangeDays, computeHistoryPayload(rangeDays));
+      historyCache.set(rangeDays, computeHistoryPayload(rangeDays, shared));
     } catch (error) {
       logRefreshMetric({ event: "history_cache_error", rangeDays, error: error.message });
     }
   }
+}
+
+// Drop the cached payloads and the per-file points cache when the history window closes,
+// so nothing heavy stays resident while nobody's viewing history.
+function releaseHistoryMemory() {
+  historyCache.clear();
+  historyFingerprint = null;
+  clearPointsCache();
 }
 
 // Debounce: a single refresh cycle can broadcast more than once (web + background).
@@ -1150,12 +1202,12 @@ function startClaudeUsageApiServer() {
 
     if (request.method === "GET" && url.pathname === "/api/claude-web-usage") {
       const shouldRefresh = url.searchParams.get("refresh") === "1";
-      sendJson(response, 200, shouldRefresh ? await refreshClaudeWebUsage() : claudeWebUsageCache);
+      sendJson(response, 200, shouldRefresh ? await refreshClaudeWebUsage({ force: true }) : claudeWebUsageCache);
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/claude-web-usage/refresh") {
-      sendJson(response, 200, await refreshClaudeWebUsage());
+      sendJson(response, 200, await refreshClaudeWebUsage({ force: true }));
       return;
     }
 

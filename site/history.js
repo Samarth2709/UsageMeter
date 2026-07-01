@@ -50,9 +50,17 @@ function showTooltip(html, x, y) {
 }
 function hideTooltip() { if (tooltipEl) tooltipEl.classList.add("hidden"); }
 function attachHover(container, selector, getHtml) {
+  // Charts re-render into persistent containers (#ov-chart, etc.) on every render.
+  // Store the current selector/handler on the element and bind the listeners only
+  // once, so repeated renders don't stack duplicate listeners (a slow leak).
+  container._hover = { selector, getHtml };
+  if (container._hoverBound) return;
+  container._hoverBound = true;
   container.addEventListener("mousemove", (e) => {
-    const hit = e.target.closest(selector);
-    const html = hit ? getHtml(hit) : null;
+    const h = container._hover;
+    if (!h) return;
+    const hit = e.target.closest(h.selector);
+    const html = hit ? h.getHtml(hit) : null;
     if (html) showTooltip(html, e.clientX, e.clientY);
     else hideTooltip();
   });

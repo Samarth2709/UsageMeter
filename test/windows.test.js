@@ -4,7 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { computeWindowValues, projectFull, windowDurationMs, transcriptFingerprint } = require("../usage-history/windows");
+const { computeWindowValues, projectFull, windowDurationMs, transcriptFingerprint, recentPricedPoints, clearPointsCache, _lastParseCount } = require("../usage-history/windows");
 
 const NOW = Date.parse("2026-06-25T12:00:00.000Z");
 const iso = (ms) => new Date(ms).toISOString();
@@ -111,6 +111,42 @@ test("transcriptFingerprint changes when usage is written", () => {
     writeCodexFixture(home, [codexTurn(NOW - 3600000), codexTurn(NOW - 1800000)]);
     const fp2 = transcriptFingerprint(home);
     assert.notEqual(fp1, fp2);
+  });
+});
+
+test("recentPricedPoints caches per file — unchanged files aren't re-parsed", () => {
+  withTempHome((home) => {
+    clearPointsCache();
+    writeCodexFixture(home, [codexTurn(NOW - 3600000)]);
+    const first = recentPricedPoints(home, NOW);
+    assert.ok(_lastParseCount() >= 1, "first call parses the file");
+    const second = recentPricedPoints(home, NOW);
+    assert.equal(_lastParseCount(), 0, "second call reuses the cache");
+    assert.equal(second.length, first.length);
+  });
+});
+
+test("recentPricedPoints re-parses only a file that changed", () => {
+  withTempHome((home) => {
+    clearPointsCache();
+    writeCodexFixture(home, [codexTurn(NOW - 3600000)]);
+    const before = recentPricedPoints(home, NOW);
+    // Append a turn — file size changes, so just this file is re-parsed.
+    writeCodexFixture(home, [codexTurn(NOW - 3600000), codexTurn(NOW - 1800000)]);
+    const after = recentPricedPoints(home, NOW);
+    assert.equal(_lastParseCount(), 1, "only the changed file re-parses");
+    assert.ok(after.length > before.length, "new turn is picked up");
+  });
+});
+
+test("recentPricedPoints evicts files that leave the lookback window", () => {
+  withTempHome((home) => {
+    clearPointsCache();
+    writeCodexFixture(home, [codexTurn(NOW - 3600000)]);
+    recentPricedPoints(home, NOW);
+    // A much later 'now' pushes the file's mtime outside the ~8-day lookback.
+    const points = recentPricedPoints(home, NOW + 30 * 86400000);
+    assert.equal(points.length, 0, "stale file drops out");
   });
 });
 

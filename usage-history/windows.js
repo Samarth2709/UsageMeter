@@ -39,24 +39,52 @@ function recordTokens(r) {
   return (r.inputTokens || 0) + (r.cachedReadTokens || 0) + (r.cacheWriteTokens || 0) + (r.outputTokens || 0);
 }
 
-// Parse only the transcripts touched within the lookback window into priced,
-// timestamped points: { timestampMs, cli, dollars, tokens }. Bounded by mtime so a
-// large history doesn't get fully re-parsed on every dashboard load. Each point is
-// priced per token type (input/output/cache at their own rates), so a point's dollars
-// already reflect its real input:output mix — no blended ratio is assumed here.
+function parseFilePoints(filePath, cli) {
+  let text = "";
+  try { text = fs.readFileSync(filePath, "utf8"); } catch { return []; }
+  const records = cli === "codex" ? parseCodexTranscript(text) : parseClaudeTranscript(text);
+  const points = [];
+  for (const r of records) {
+    points.push({ timestampMs: r.timestampMs, cli, dollars: priceRecord(cli, r.model, r).dollars, tokens: recordTokens(r) });
+  }
+  return points;
+}
+
+// Per-file cache of parsed+priced points, keyed by path -> { mtimeMs, size, points }.
+// Reused across recomputes so only files whose (mtimeMs,size) actually changed get
+// re-read+parsed — the same incremental strategy scanUsageHistory uses. Without this,
+// every ~60s recompute re-parsed the entire recent window (~GB), spiking CPU/RSS.
+const pointsCache = new Map();
+let lastParseCount = 0; // test seam: files (re)parsed on the most recent call
+
+// Parse the transcripts touched within the lookback window into priced, timestamped
+// points: { timestampMs, cli, dollars, tokens }. Each point is priced per token type
+// (input/output/cache at their own rates), so a point's dollars reflect its real mix.
 function recentPricedPoints(homeDir, nowMs, extraRoots = {}) {
   const cutoff = nowMs - LOOKBACK_MS;
+  const livePaths = new Set();
   const points = [];
+  lastParseCount = 0;
+
   for (const { path: filePath, cli } of listAllTranscriptFiles(homeDir, extraRoots)) {
     let stat;
     try { stat = fs.statSync(filePath); } catch { continue; }
     if (stat.mtimeMs < cutoff) continue;
-    let text = "";
-    try { text = fs.readFileSync(filePath, "utf8"); } catch { continue; }
-    const records = cli === "codex" ? parseCodexTranscript(text) : parseClaudeTranscript(text);
-    for (const r of records) {
-      points.push({ timestampMs: r.timestampMs, cli, dollars: priceRecord(cli, r.model, r).dollars, tokens: recordTokens(r) });
+    livePaths.add(filePath);
+
+    let entry = pointsCache.get(filePath);
+    if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
+      entry = { mtimeMs: stat.mtimeMs, size: stat.size, points: parseFilePoints(filePath, cli) };
+      pointsCache.set(filePath, entry);
+      lastParseCount += 1;
     }
+    for (const p of entry.points) points.push(p);
+  }
+
+  // Evict files that dropped out of the recent window or were deleted, so the cache
+  // stays bounded to the current lookback set.
+  for (const key of pointsCache.keys()) {
+    if (!livePaths.has(key)) pointsCache.delete(key);
   }
   return points;
 }
@@ -120,4 +148,15 @@ function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [], extraRo
   });
 }
 
-module.exports = { computeWindowValues, projectFull, windowDurationMs, recentPricedPoints, transcriptFingerprint };
+module.exports = {
+  computeWindowValues,
+  projectFull,
+  windowDurationMs,
+  recentPricedPoints,
+  transcriptFingerprint,
+  // Free the per-file points cache (e.g. when the history window closes) so it isn't
+  // held resident while nobody is viewing history.
+  clearPointsCache: () => pointsCache.clear(),
+  // test seam: files (re)parsed on the most recent recentPricedPoints call
+  _lastParseCount: () => lastParseCount
+};
