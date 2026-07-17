@@ -1,4 +1,10 @@
 const { localDay } = require("./day");
+const path = require("node:path");
+
+function structuralCwd(obj) {
+  const cwd = typeof obj?.cwd === "string" ? obj.cwd : obj?.payload?.cwd;
+  return typeof cwd === "string" && path.isAbsolute(cwd) ? cwd : null;
+}
 
 // Model name appears in session_meta / turn_context payloads (not in token_count).
 function extractModel(obj) {
@@ -12,6 +18,7 @@ function extractModel(obj) {
 function parseCodexTranscript(text) {
   const records = [];
   let currentModel = "unknown";
+  let currentProjectPath = null;
 
   for (const rawLine of String(text || "").split("\n")) {
     const trimmed = rawLine.trim();
@@ -19,6 +26,7 @@ function parseCodexTranscript(text) {
 
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
+    currentProjectPath = structuralCwd(obj) || currentProjectPath;
 
     const model = extractModel(obj);
     if (model) currentModel = model;
@@ -35,7 +43,7 @@ function parseCodexTranscript(text) {
     const output = Number(last.output_tokens) || 0;
     if (input + output === 0) continue;
 
-    records.push({
+    const record = {
       timestampMs: ts,
       day: localDay(ts),
       cli: "codex",
@@ -44,7 +52,9 @@ function parseCodexTranscript(text) {
       cachedReadTokens: cached,
       cacheWriteTokens: 0,
       outputTokens: output
-    });
+    };
+    if (currentProjectPath) record.projectPath = currentProjectPath;
+    records.push(record);
   }
 
   return records;

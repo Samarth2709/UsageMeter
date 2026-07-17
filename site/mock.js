@@ -5,16 +5,17 @@
   const RATES = {
     "claude-fable": { input: 10.0, cachedRead: 1.0, cacheWrite: 12.5, output: 50.0 },
     "claude-opus": { input: 5.0, cachedRead: 0.5, cacheWrite: 6.25, output: 25.0 },
+    "claude-sonnet": { input: 3.0, cachedRead: 0.3, cacheWrite: 3.75, output: 15.0 },
     "claude-haiku": { input: 1.0, cachedRead: 0.1, cacheWrite: 1.25, output: 5.0 },
     "gpt-5.5": { input: 5.0, cachedRead: 0.5, cacheWrite: 0, output: 30.0 },
     "gpt-5.4": { input: 2.5, cachedRead: 0.25, cacheWrite: 0, output: 15.0 }
   };
   const MODELS = [
-    { cli: "codex", model: "gpt-5.5", rate: "gpt-5.5", weight: 0.6 },
-    { cli: "codex", model: "gpt-5.4", rate: "gpt-5.4", weight: 0.09 },
-    { cli: "claude", model: "claude-opus-4-8", rate: "claude-opus", weight: 0.17 },
-    { cli: "claude", model: "claude-fable-5", rate: "claude-fable", weight: 0.1 },
-    { cli: "claude", model: "claude-haiku-4-5", rate: "claude-haiku", weight: 0.04 }
+    { cli: "codex", model: "gpt-5.5", rate: "gpt-5.5", weight: 0.6, project: ["path:/Users/you/Projects/usage-meter", "usage-meter", "Projects", "/Users/you/Projects/usage-meter"] },
+    { cli: "codex", model: "gpt-5.4", rate: "gpt-5.4", weight: 0.09, project: ["path:/Users/you/Projects/kernel", "kernel", "Projects", "/Users/you/Projects/kernel"] },
+    { cli: "claude", model: "claude-opus-4-8", rate: "claude-opus", weight: 0.17, project: ["path:/Users/you/Projects/fixreview", "fixreview", "Projects", "/Users/you/Projects/fixreview"] },
+    { cli: "claude", model: "claude-fable-5", rate: "claude-fable", weight: 0.1, project: ["path:/Users/you/Projects/usage-meter", "usage-meter", "Projects", "/Users/you/Projects/usage-meter"] },
+    { cli: "claude", model: "claude-haiku-4-5", rate: "claude-haiku", weight: 0.04, project: ["unattributed", "Unattributed", null, null] }
   ];
 
   function mulberry32(seed) {
@@ -52,7 +53,7 @@
     const now = Date.now();
     const days = [];
     const modelAcc = {}; // rate-keyed accumulators across the range
-    for (const m of MODELS) modelAcc[`${m.cli}::${m.model}`] = { cli: m.cli, model: m.model, rate: m.rate, b: emptyBuckets() };
+    for (const m of MODELS) modelAcc[`${m.cli}::${m.model}`] = { cli: m.cli, model: m.model, rate: m.rate, project: m.project, b: emptyBuckets() };
 
     for (let i = rangeDays - 1; i >= 0; i--) {
       const dayMs = now - i * 86400000;
@@ -124,13 +125,60 @@
       costByType.output += (acc.b.outputTokens * r.output) / 1e6;
       const save = (acc.b.cachedReadTokens * (r.input - r.cachedRead)) / 1e6;
       cacheSavings += save;
+      const modelCostByType = {
+        input: (acc.b.inputTokens * r.input) / 1e6,
+        cachedRead: (acc.b.cachedReadTokens * r.cachedRead) / 1e6,
+        cacheWrite: (acc.b.cacheWriteTokens * r.cacheWrite) / 1e6,
+        output: (acc.b.outputTokens * r.output) / 1e6
+      };
+      const costDriver = Object.entries(modelCostByType).sort((a, b) => b[1] - a[1])[0][0];
       byModel.push({
         cli: acc.cli, model: acc.model, tokens: withTotal(acc.b), dollars,
         prompts: acc.b.prompts, costPerPrompt: perPrompt(dollars, acc.b.prompts),
-        cacheSavings: save, modelKnown: true
+        cacheSavings: save, modelKnown: true, rateKey: acc.rate, costByType: modelCostByType, costDriver
       });
     }
     byModel.sort((a, b) => b.dollars - a.dollars);
+
+    const projectAcc = {};
+    for (const acc of Object.values(modelAcc)) {
+      if (!acc.b.prompts) continue;
+      const [key, label, parentLabel, projectPath] = acc.project;
+      const project = projectAcc[key] || (projectAcc[key] = {
+        key, label, parentLabel, path: projectPath, buckets: emptyBuckets(), dollars: 0, models: {}
+      });
+      const dollars = priceOf(acc.rate, acc.b);
+      add(project.buckets, acc.b);
+      project.dollars += dollars;
+      const modelKey = `${acc.cli}::${acc.model}`;
+      project.models[modelKey] = { cli: acc.cli, model: acc.model, dollars };
+    }
+    const byProject = Object.values(projectAcc).map((project) => {
+      const primaryModel = Object.values(project.models).sort((a, b) => b.dollars - a.dollars)[0];
+      return {
+        key: project.key, label: project.label, parentLabel: project.parentLabel, path: project.path,
+        tokens: withTotal(project.buckets), dollars: project.dollars, prompts: project.buckets.prompts,
+        share: rangeDollars > 0 ? project.dollars / rangeDollars : 0,
+        primaryModel: primaryModel && { cli: primaryModel.cli, model: primaryModel.model }
+      };
+    }).sort((a, b) => b.dollars - a.dollars);
+
+    const scenarioTargets = {
+      "claude-fable": ["claude-sonnet", "Claude Sonnet"],
+      "claude-opus": ["claude-sonnet", "Claude Sonnet"],
+      "gpt-5.5": ["gpt-5.4", "GPT-5.4"]
+    };
+    const scenarios = byModel.flatMap((model) => {
+      const target = scenarioTargets[model.rateKey];
+      if (!target) return [];
+      const source = modelAcc[`${model.cli}::${model.model}`];
+      const scenarioDollars = priceOf(target[0], source.b);
+      const savings = model.dollars - scenarioDollars;
+      return savings > 0 ? [{
+        cli: model.cli, model: model.model, targetRateKey: target[0], targetLabel: target[1],
+        currentDollars: model.dollars, scenarioDollars, savings
+      }] : [];
+    });
 
     const last = days[days.length - 1];
     const today = {
@@ -141,9 +189,14 @@
     return {
       today,
       range: {
-        tokens: withTotal(rangeB), dollars: rangeDollars, days, byModel,
+        tokens: withTotal(rangeB), dollars: rangeDollars, days, byModel, byProject,
         avgCostPerPrompt: perPrompt(rangeDollars, rangeB.prompts),
-        cacheSavings, costByType
+        cacheSavings, costByType,
+        modelInsights: {
+          topModel: byModel[0] && { cli: byModel[0].cli, model: byModel[0].model, dollars: byModel[0].dollars, share: byModel[0].dollars / rangeDollars },
+          totalCacheSavings: cacheSavings,
+          scenarios
+        }
       },
       flags: { unknownModels: [] },
       scannedAt: new Date(now).toISOString(),
@@ -157,7 +210,7 @@
       diagnostics: {
         homeDir: "/Users/you",
         env: { CLAUDE_CONFIG_DIR: null, CODEX_HOME: null },
-        cache: { path: "/Users/you/.rate-limit-tool/usage-history.json", version: 5 },
+        cache: { path: "/Users/you/.rate-limit-tool/usage-history.json", version: 6 },
         claude: { dir: "/Users/you/.claude/projects", exists: true, readable: true, files: 218 },
         configuredClaude: [],
         codex: [

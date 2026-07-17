@@ -623,6 +623,58 @@ function unixSecondsToIso(value) {
   return new Date(Number(value) * 1000).toISOString();
 }
 
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function codexWindowDurationSeconds(window) {
+  return positiveNumber(window?.limit_window_seconds)
+    || positiveNumber(window?.window_seconds)
+    || (positiveNumber(window?.window_minutes) ? positiveNumber(window.window_minutes) * 60 : null);
+}
+
+function codexWindowLabel(window, source) {
+  const provided = firstString(window?.limit_name, window?.name, window?.label);
+  if (provided) {
+    return provided;
+  }
+
+  const durationSeconds = codexWindowDurationSeconds(window);
+  if (durationSeconds === 5 * 60 * 60) {
+    return "5-hour";
+  }
+  if (durationSeconds === 7 * 24 * 60 * 60) {
+    return "weekly";
+  }
+
+  return source === "primary_window" ? "Current allowance" : "Secondary allowance";
+}
+
+function normalizeCodexRateWindows(rateLimit) {
+  return [
+    ["primary_window", rateLimit?.primary_window],
+    ["secondary_window", rateLimit?.secondary_window]
+  ].flatMap(([source, window]) => {
+    if (!window || typeof window !== "object") {
+      return [];
+    }
+
+    const durationSeconds = codexWindowDurationSeconds(window);
+    const usedPercent = Number(window.used_percent || 0);
+    return [{
+      id: source,
+      label: codexWindowLabel(window, source),
+      usedPercent,
+      remainingPercent: Math.max(0, 100 - usedPercent),
+      resetAt: unixSecondsToIso(window.reset_at || window.resets_at),
+      resetAfterSeconds: Number(window.reset_after_seconds || 0),
+      durationSeconds,
+      source
+    }];
+  });
+}
+
 function toCurrencyNumber(value) {
   const normalized = String(value || "0").replace(/[^0-9.]/g, "");
   return normalized ? Number(normalized) : 0;
@@ -631,30 +683,6 @@ function toCurrencyNumber(value) {
 function getLastMatch(text, regex) {
   const matches = Array.from(text.matchAll(regex));
   return matches.length ? matches.at(-1) : null;
-}
-
-function labelPattern(label) {
-  return label.trim().split(/\s+/).join("\\s*");
-}
-
-function extractClaudeField(screenText, label, nextLabels = []) {
-  const stops = nextLabels.map((entry) => `${labelPattern(entry)}:`);
-  const regex = new RegExp(
-    `${labelPattern(label)}:\\s*([\\s\\S]{0,240}?)(?=${stops.join("|")}|\\n|$)`,
-    "gi"
-  );
-  const value = getLastMatch(screenText, regex)?.[1];
-  return cleanClaudeFieldValue(value);
-}
-
-function cleanClaudeFieldValue(value) {
-  const cleaned = String(value || "")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/\b(Pro|Max|Team|Enterprise|Free)(account|subscription)\b/gi, "$1 $2")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return cleaned || null;
 }
 
 function decodeBase64UrlJson(value) {
@@ -832,36 +860,12 @@ async function fetchCodexUsage(account) {
 
   const payload = await response.json();
   const { accountId } = codexUsageCredentials(auth);
-  const primary = payload?.rate_limit?.primary_window;
-  const secondary = payload?.rate_limit?.secondary_window;
-
-  const windows = [];
-
-  if (primary) {
-    windows.push({
-      label: "5-hour",
-      usedPercent: Number(primary.used_percent || 0),
-      remainingPercent: Math.max(0, 100 - Number(primary.used_percent || 0)),
-      resetAt: unixSecondsToIso(primary.reset_at),
-      resetAfterSeconds: Number(primary.reset_after_seconds || 0),
-      source: "primary_window"
-    });
-  }
-
-  if (secondary) {
-    windows.push({
-      label: "weekly",
-      usedPercent: Number(secondary.used_percent || 0),
-      remainingPercent: Math.max(0, 100 - Number(secondary.used_percent || 0)),
-      resetAt: unixSecondsToIso(secondary.reset_at),
-      resetAfterSeconds: Number(secondary.reset_after_seconds || 0),
-      source: "secondary_window"
-    });
-  }
+  const windows = normalizeCodexRateWindows(payload?.rate_limit);
 
   const additionalRateLimits = Array.isArray(payload?.additional_rate_limits)
     ? payload.additional_rate_limits.map((entry) => ({
         label: entry.limit_name || entry.metered_feature || "Additional limit",
+        windows: normalizeCodexRateWindows(entry?.rate_limit),
         primaryUsedPercent: Number(entry?.rate_limit?.primary_window?.used_percent || 0),
         weeklyUsedPercent: Number(entry?.rate_limit?.secondary_window?.used_percent || 0)
       }))
@@ -884,15 +888,6 @@ async function fetchCodexUsage(account) {
     },
     additionalRateLimits,
     fetchedAt: new Date().toISOString()
-  };
-}
-
-function parseClaudeStatusScreen(screenText) {
-  return {
-    service: "claude",
-    planType: extractClaudeField(screenText, "Login method", ["Organization", "Email"]),
-    organization: extractClaudeField(screenText, "Organization", ["Email", "Account"]),
-    email: extractClaudeField(screenText, "Email", ["Account", "Status", "Config", "Usage"])
   };
 }
 
@@ -1146,18 +1141,14 @@ function stripTerminalControl(input) {
     .replace(/\n{3,}/g, "\n\n");
 }
 
-async function captureClaudeStatus(account) {
+async function captureClaudeUsage(account) {
   const command = [
     "(",
     "sleep 2;",
-    "printf '/status\\r';",
-    "sleep 1;",
-    "printf '\\033[C';",
-    "sleep 1;",
-    "printf '\\033[C';",
-    "sleep 5;",
+    "printf '/usage\\r';",
+    "sleep 6;",
     "printf '\\033';",
-    "sleep 1;",
+    "sleep 3;",
     "printf '/exit\\r';",
     "sleep 1",
     ")",
@@ -1188,7 +1179,7 @@ async function captureClaudeStatus(account) {
     }
 
     throw new Error(
-      `Claude status automation failed. ${error.message}${error.stderr ? ` ${error.stderr}` : ""}`
+      `Claude usage automation failed. ${error.message}${error.stderr ? ` ${error.stderr}` : ""}`
     );
   }
 }
@@ -1200,16 +1191,18 @@ async function fetchClaudeUsage(account) {
     throw new Error("Claude is not logged in on this machine. Run Claude login first.");
   }
 
-  const statusLog = await captureClaudeStatus(account);
-  const statusData = parseClaudeStatusScreen(statusLog);
-  const usageData = parseClaudeUsageScreen(statusLog);
+  const usageLog = await captureClaudeUsage(account);
+  const usageData = parseClaudeUsageScreen(usageLog);
 
   if (!usageData.windows.length) {
-    throw new Error("Claude usage screen loaded, but the limits could not be parsed.");
+    throw new Error("Claude /usage screen loaded, but the limits could not be parsed.");
   }
 
   return {
-    ...statusData,
+    service: "claude",
+    planType: account.planType || null,
+    organization: account.organization || null,
+    email: authStatus.email || account.email || null,
     ...usageData
   };
 }
@@ -1557,6 +1550,7 @@ function normalizeIdentityValue(value) {
 async function refreshAllAccounts(options = {}) {
   const config = await ensureConfig();
   const skippedTypes = new Set(options.skipAccountTypes || []);
+  const skippedDiscoveryTypes = new Set(options.skipDiscoveryTypes || []);
   const onlyTypes = Array.isArray(options.onlyAccountTypes)
     ? new Set(options.onlyAccountTypes)
     : null;
@@ -1565,7 +1559,7 @@ async function refreshAllAccounts(options = {}) {
   let currentClaudeIdentityId = null;
   let currentClaudeLabel = null;
 
-  if ((!onlyTypes || onlyTypes.has("codex")) && !skippedTypes.has("codex")) {
+  if ((!onlyTypes || onlyTypes.has("codex")) && !skippedTypes.has("codex") && !skippedDiscoveryTypes.has("codex")) {
     const discovery = await discoverCurrentCodexIdentity(config);
     configChanged = discovery.changed || configChanged;
     if (discovery.ok) {
@@ -1573,7 +1567,7 @@ async function refreshAllAccounts(options = {}) {
     }
   }
 
-  if ((!onlyTypes || onlyTypes.has("claude")) && !skippedTypes.has("claude")) {
+  if ((!onlyTypes || onlyTypes.has("claude")) && !skippedTypes.has("claude") && !skippedDiscoveryTypes.has("claude")) {
     const discovery = await discoverCurrentClaudeIdentity(config);
     configChanged = discovery.changed || configChanged;
     if (discovery.ok) {
@@ -1949,6 +1943,7 @@ module.exports = {
     codexAccessTokenNeedsRefresh,
     mergeRefreshedCodexAuth,
     fetchCodexUsage,
+    normalizeCodexRateWindows,
     parseClaudeResetAt,
     parseClaudeUsageScreen
   }

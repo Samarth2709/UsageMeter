@@ -379,6 +379,162 @@ h1 {
   margin: 12px 0;
 }
 
+.insight-section {
+  margin: 14px 0;
+}
+
+.section-kicker {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.project-ledger {
+  display: grid;
+  gap: 7px;
+}
+
+.project-row {
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.project-row-head,
+.model-driver-row,
+.scenario-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-name span,
+.project-row p,
+.scenario-note,
+.scenario-row small,
+.model-driver-row span {
+  color: var(--muted);
+}
+
+.project-row b,
+.scenario-row b {
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.project-track,
+.model-driver-track {
+  display: flex;
+  width: 100%;
+  height: 5px;
+  margin: 6px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(244, 240, 231, 0.09);
+}
+
+.project-track i,
+.model-driver-track i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.project-row p {
+  margin: 0;
+  font-size: 0.68rem;
+}
+
+.project-more {
+  margin: 0;
+}
+
+.model-lens h3 {
+  margin: 14px 0 5px;
+  font-size: 0.74rem;
+}
+
+.model-insight-summary {
+  grid-template-columns: repeat(3, 1fr);
+  margin: 8px 0;
+}
+
+.model-scenarios {
+  display: grid;
+  gap: 5px;
+}
+
+.scenario-note {
+  display: grid;
+  gap: 2px;
+  margin: 7px 0 2px;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.scenario-note b {
+  color: var(--fg);
+}
+
+.scenario-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 0.72rem;
+}
+
+.scenario-row small {
+  grid-column: 1 / -1;
+  font-size: 0.65rem;
+}
+
+.model-cost-drivers {
+  display: grid;
+  gap: 5px;
+}
+
+.model-driver-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.8fr) minmax(80px, 1.5fr) auto;
+  align-items: center;
+  font-size: 0.7rem;
+}
+
+.model-driver-row > div:first-child {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.model-driver-row b,
+.model-driver-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-driver-row span,
+.model-driver-row em {
+  font-size: 0.63rem;
+  font-style: normal;
+}
+
+.model-driver-track {
+  margin: 0;
+}
+
 .card {
   display: flex;
   flex-direction: column;

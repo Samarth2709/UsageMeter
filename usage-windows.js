@@ -1,4 +1,9 @@
 function usageWindowKey(window) {
+  const stableId = String(window?.id || "").trim();
+  if (stableId) {
+    return stableId.toLowerCase();
+  }
+
   const label = String(window?.label || "");
 
   if (/5[-\s]?hour|5h|session/i.test(label)) {

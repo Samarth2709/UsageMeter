@@ -1,8 +1,15 @@
 const { localDay } = require("./day");
+const path = require("node:path");
+
+function structuralCwd(obj) {
+  const cwd = typeof obj?.cwd === "string" ? obj.cwd : obj?.payload?.cwd;
+  return typeof cwd === "string" && path.isAbsolute(cwd) ? cwd : null;
+}
 
 function parseClaudeTranscript(text) {
   const records = [];
   const seen = new Set();
+  let currentProjectPath = null;
 
   for (const rawLine of String(text || "").split("\n")) {
     const trimmed = rawLine.trim();
@@ -10,6 +17,7 @@ function parseClaudeTranscript(text) {
 
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
+    currentProjectPath = structuralCwd(obj) || currentProjectPath;
     if (obj.type !== "assistant") continue;
 
     const msg = obj.message || {};
@@ -35,7 +43,7 @@ function parseClaudeTranscript(text) {
     const outputTokens = Number(usage.output_tokens) || 0;
     if (inputTokens + cachedReadTokens + cacheWriteTokens + outputTokens === 0) continue;
 
-    records.push({
+    const record = {
       timestampMs: ts,
       day: localDay(ts),
       cli: "claude",
@@ -45,7 +53,9 @@ function parseClaudeTranscript(text) {
       cacheWriteTokens,
       outputTokens,
       isSidechain: Boolean(obj.isSidechain)
-    });
+    };
+    if (currentProjectPath) record.projectPath = currentProjectPath;
+    records.push(record);
   }
 
   return records;

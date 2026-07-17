@@ -1,8 +1,10 @@
 const fs = require("node:fs");
+const path = require("node:path");
 const { localDay } = require("./day");
 const { parseClaudeTranscript } = require("./parseClaude");
 const { parseCodexTranscript } = require("./parseCodex");
 const { priceRecord, cacheSavings, priceBreakdown } = require("./pricing");
+const { buildModelInsights } = require("./model-insights");
 const { listAllTranscriptFiles } = require("./sources");
 const { loadCache, saveCache } = require("./store");
 
@@ -30,12 +32,52 @@ function recordsToContribution(records) {
   return contribution;
 }
 
-function contributionForFile(filePath, text, cli) {
+function projectForRecord(record, filePath, cli) {
+  if (typeof record.projectPath === "string" && path.isAbsolute(record.projectPath)) {
+    return {
+      key: `path:${record.projectPath}`,
+      path: record.projectPath,
+      label: path.basename(record.projectPath) || record.projectPath,
+      parentLabel: path.basename(path.dirname(record.projectPath)) || null
+    };
+  }
+
+  if (cli === "claude") {
+    const parts = filePath.split(path.sep);
+    const projectsIndex = parts.lastIndexOf("projects");
+    const folder = projectsIndex >= 0 ? parts[projectsIndex + 1] : null;
+    if (folder) {
+      return { key: `claude-folder:${folder}`, path: null, label: folder, parentLabel: null };
+    }
+  }
+
+  return { key: "unattributed", path: null, label: "Unattributed", parentLabel: null };
+}
+
+function recordsToProjectContribution(records, filePath, cli) {
+  const contribution = {};
+  for (const record of records) {
+    const project = projectForRecord(record, filePath, cli);
+    const dayMap = (contribution[record.day] = contribution[record.day] || {});
+    const entry = (dayMap[project.key] = dayMap[project.key] || { ...project, models: {} });
+    const modelKey = `${record.cli}::${record.model}`;
+    const bucket = entry.models[modelKey] || EMPTY();
+    addBuckets(bucket, record);
+    bucket.prompts += 1;
+    entry.models[modelKey] = bucket;
+  }
+  return contribution;
+}
+
+function parseRecords(text, cli) {
   // Select the parser by the CLI the file was discovered under — NOT by a path
   // substring. Codex sessions can live outside ~/.codex (e.g. a launcher's own
   // CODEX_HOME), so a "/.codex/" path check silently misparses them as Claude.
-  const records = cli === "codex" ? parseCodexTranscript(text) : parseClaudeTranscript(text);
-  return recordsToContribution(records);
+  return cli === "codex" ? parseCodexTranscript(text) : parseClaudeTranscript(text);
+}
+
+function contributionForFile(filePath, text, cli) {
+  return recordsToContribution(parseRecords(text, cli));
 }
 
 function rangeDaysList(rangeDays, nowMs) {
@@ -67,6 +109,16 @@ function perPrompt(dollars, prompts) {
   return prompts > 0 ? dollars / prompts : 0;
 }
 
+function fallbackProjectContribution(entry) {
+  const contribution = {};
+  for (const [day, models] of Object.entries(entry.contribution || {})) {
+    contribution[day] = {
+      unattributed: { key: "unattributed", path: null, label: "Unattributed", parentLabel: null, models }
+    };
+  }
+  return contribution;
+}
+
 function mergeAndPrice(files, { rangeDays, nowMs }) {
   const wantDays = new Set(rangeDaysList(rangeDays, nowMs));
   const todayKey = localDay(nowMs);
@@ -91,6 +143,32 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     if (!p.modelKnown) unknownModels.add(model);
     return { cli, model, ...p };
   };
+
+  const projectAcc = {};
+  for (const entry of Object.values(files)) {
+    const contribution = entry.projectContribution || fallbackProjectContribution(entry);
+    for (const [day, projects] of Object.entries(contribution)) {
+      if (!wantDays.has(day)) continue;
+      for (const [projectKey, project] of Object.entries(projects)) {
+        const into = (projectAcc[projectKey] = projectAcc[projectKey] || {
+          key: projectKey,
+          path: project.path || null,
+          label: project.label || "Unattributed",
+          parentLabel: project.parentLabel || null,
+          buckets: EMPTY(),
+          dollars: 0,
+          models: {}
+        });
+        for (const [modelKey, buckets] of Object.entries(project.models || {})) {
+          const priced = priceKey(modelKey, buckets);
+          addBuckets(into.buckets, buckets);
+          into.dollars += priced.dollars;
+          const model = (into.models[modelKey] = into.models[modelKey] || { cli: priced.cli, model: priced.model, dollars: 0 });
+          model.dollars += priced.dollars;
+        }
+      }
+    }
+  }
 
   const dayRows = rangeDaysList(rangeDays, nowMs).map((day) => {
     const models = byDay[day] || {};
@@ -127,11 +205,17 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     }
   }
   const byModel = Object.values(modelAcc)
-    .map((m) => ({
-      cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars,
-      prompts: m.buckets.prompts, costPerPrompt: perPrompt(m.dollars, m.buckets.prompts),
-      cacheSavings: cacheSavings(m.cli, m.model, m.buckets.cachedReadTokens), modelKnown: m.modelKnown
-    }))
+    .map((m) => {
+      const priced = priceRecord(m.cli, m.model, m.buckets);
+      const costByType = priceBreakdown(m.cli, m.model, m.buckets);
+      const costDriver = Object.entries(costByType).sort(([, a], [, b]) => b - a)[0]?.[0] || null;
+      return {
+        cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars,
+        prompts: m.buckets.prompts, costPerPrompt: perPrompt(m.dollars, m.buckets.prompts),
+        cacheSavings: cacheSavings(m.cli, m.model, m.buckets.cachedReadTokens),
+        modelKnown: m.modelKnown, rateKey: priced.rateKey, costByType, costDriver
+      };
+    })
     .sort((a, b) => b.dollars - a.dollars);
 
   const rangeCacheSavings = byModel.reduce((s, m) => s + m.cacheSavings, 0);
@@ -152,6 +236,22 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
   };
 
   const rangeTotalsOut = bucketsWithTotal(rangeTotals);
+  const byProject = Object.values(projectAcc)
+    .map((project) => {
+      const primaryModel = Object.values(project.models).sort((a, b) => b.dollars - a.dollars)[0] || null;
+      return {
+        key: project.key,
+        label: project.label,
+        parentLabel: project.parentLabel,
+        path: project.path,
+        tokens: bucketsWithTotal(project.buckets),
+        dollars: project.dollars,
+        prompts: project.buckets.prompts,
+        share: rangeDollars > 0 ? project.dollars / rangeDollars : 0,
+        primaryModel: primaryModel && { cli: primaryModel.cli, model: primaryModel.model }
+      };
+    })
+    .sort((a, b) => b.dollars - a.dollars);
 
   return {
     today: {
@@ -159,10 +259,11 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
       costPerPrompt: perPrompt(todayRow.dollars, todayRow.tokens.prompts)
     },
     range: {
-      tokens: rangeTotalsOut, dollars: rangeDollars, days: dayRows, byModel,
+      tokens: rangeTotalsOut, dollars: rangeDollars, days: dayRows, byModel, byProject,
       avgCostPerPrompt: perPrompt(rangeDollars, rangeTotalsOut.prompts),
       cacheSavings: rangeCacheSavings,
-      costByType
+      costByType,
+      modelInsights: buildModelInsights(byModel)
     },
     flags: { unknownModels: Array.from(unknownModels) },
     scannedAt: new Date(nowMs).toISOString()
@@ -186,11 +287,25 @@ function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.cli === cli) continue;
     let text = "";
     try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
-    cache.files[p] = { mtimeMs: stat.mtimeMs, size: stat.size, cli, contribution: contributionForFile(p, text, cli) };
+    const records = parseRecords(text, cli);
+    cache.files[p] = {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      cli,
+      contribution: recordsToContribution(records),
+      projectContribution: recordsToProjectContribution(records, p, cli)
+    };
   }
 
   saveCache(dataDir, cache);
   return mergeAndPrice(cache.files, { rangeDays, nowMs });
 }
 
-module.exports = { recordsToContribution, contributionForFile, mergeAndPrice, rangeDaysList, scanUsageHistory };
+module.exports = {
+  recordsToContribution,
+  recordsToProjectContribution,
+  contributionForFile,
+  mergeAndPrice,
+  rangeDaysList,
+  scanUsageHistory
+};

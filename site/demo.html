@@ -30,6 +30,18 @@
       <!-- summary cards -->
       <div id="sum-cards" class="history-summary"></div>
 
+      <!-- projects -->
+      <section class="insight-section">
+        <div class="chart-head">
+          <div>
+            <h2>Projects</h2>
+            <p class="section-kicker">Automatic grouping from local working directories</p>
+          </div>
+          <span id="project-count" class="live-label"></span>
+        </div>
+        <div id="project-ledger" class="project-ledger"></div>
+      </section>
+
       <!-- subscription value (live) -->
       <h2>Subscription value <span class="live-label">live now — not range-scoped</span></h2>
       <div id="ec-value"></div>
@@ -61,11 +73,22 @@
         </div>
       </div>
 
-      <!-- models -->
-      <h2>Model mix over time</h2>
+      <!-- model lens -->
+      <section class="insight-section model-lens">
+      <div class="chart-head">
+        <div>
+          <h2>Model Lens</h2>
+          <p class="section-kicker">Cost drivers and rate-only scenarios from local transcripts</p>
+        </div>
+      </div>
+      <div id="ml-insights" class="history-summary model-insight-summary"></div>
+      <div id="md-scenarios" class="model-scenarios"></div>
+      <h3>Cost mix over time</h3>
       <div id="md-mix" class="history-chart"></div>
       <div id="md-mix-legend" class="mix-legend"></div>
-      <h2>All models</h2>
+      <h3>Cost drivers</h3>
+      <div id="md-cost-drivers" class="model-cost-drivers"></div>
+      <h3>All models</h3>
       <div class="history-models">
         <table id="md-table">
           <thead>
@@ -74,12 +97,13 @@
               <th class="num">Prompts</th>
               <th class="num">Fresh input</th><th class="num">Cache read</th>
               <th class="num">Cache write</th><th class="num">Output</th>
-              <th class="num">Total tok</th><th class="num">$ value</th><th class="num">$ / prompt</th>
+              <th class="num">Total tok</th><th class="num">$ value</th><th class="num">$ / prompt</th><th>Cost driver</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
+      </section>
 
       <!-- diagnostics (toggled by the gear button) -->
       <section id="diag-panel" class="hidden">

@@ -41,6 +41,40 @@ test("empty configs normalize without Codex placeholders", () => {
   assert.equal(serialized.accounts[0].type, "claude");
 });
 
+test("Codex usage windows use reported durations and do not invent a missing 5-hour limit", () => {
+  const windows = _test.normalizeCodexRateWindows({
+    secondary_window: {
+      used_percent: 43,
+      limit_window_seconds: 7 * 24 * 60 * 60,
+      reset_after_seconds: 3600,
+      reset_at: 1893456000
+    }
+  });
+
+  assert.deepEqual(windows, [{
+    id: "secondary_window",
+    label: "weekly",
+    usedPercent: 43,
+    remainingPercent: 57,
+    resetAt: "2030-01-01T00:00:00.000Z",
+    resetAfterSeconds: 3600,
+    durationSeconds: 7 * 24 * 60 * 60,
+    source: "secondary_window"
+  }]);
+});
+
+test("Codex usage windows fall back to neutral labels when the server omits duration metadata", () => {
+  const windows = _test.normalizeCodexRateWindows({
+    primary_window: { used_percent: 12, reset_at: 1893456000 },
+    secondary_window: { used_percent: 34, reset_at: 1893460000 }
+  });
+
+  assert.deepEqual(windows.map((window) => [window.id, window.label, window.durationSeconds]), [
+    ["primary_window", "Current allowance", null],
+    ["secondary_window", "Secondary allowance", null]
+  ]);
+});
+
 test("legacy first-run Codex placeholders are filtered out", () => {
   const normalized = _test.normalizeConfig({
     identities: [
@@ -445,6 +479,22 @@ test("Electron toggle path does not create implicit globals", async () => {
   const electronSource = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
 
   assert.equal(electronSource.includes("lastPopoverBounds"), false);
+});
+
+test("Electron refresh uses the throttled Claude CLI usage supplement", async () => {
+  const electronSource = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
+
+  assert.equal(electronSource.includes("refreshClaudeFallbackUsage"), false);
+  assert.equal(electronSource.includes("shouldRefreshClaudeFallback"), false);
+  assert.ok(electronSource.includes("claudeCliUsageRefreshMs"));
+  assert.ok(electronSource.includes('skipDiscoveryTypes: ["claude"]'));
+});
+
+test("Claude CLI capture opens the usage screen, not status", async () => {
+  const serverSource = await fs.readFile(path.join(__dirname, "..", "server.js"), "utf8");
+
+  assert.ok(serverSource.includes("printf '/usage\\\\r';"));
+  assert.equal(serverSource.includes("printf '/status\\\\r';"), false);
 });
 
 test("parseClaudeUsageScreen uses the all-models weekly limit, not a 0% model-only sub-limit", () => {

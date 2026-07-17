@@ -55,6 +55,7 @@ test("windowDurationMs maps the known window kinds", () => {
   assert.equal(windowDurationMs("fiveHour"), 5 * 3600 * 1000);
   assert.equal(windowDurationMs("week"), 7 * 86400 * 1000);
   assert.equal(windowDurationMs("other"), null);
+  assert.equal(windowDurationMs({ durationSeconds: 2 * 86400 }), 2 * 86400 * 1000);
 });
 
 test("computeWindowValues sums only the priced turns inside the window", () => {

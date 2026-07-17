@@ -35,3 +35,12 @@ test("skips non-assistant lines and malformed JSON", () => {
   const text = ["not json", line({ type: "user", message: {} }), assistant("ok", { input_tokens: 1, output_tokens: 1 })].join("\n");
   assert.equal(parseClaudeTranscript(text).length, 1);
 });
+
+test("carries only structural working-directory metadata into token records", () => {
+  const text = [
+    line({ type: "user", cwd: "/Users/you/Projects/usage-meter", message: { cwd: "/ignore/message-cwd" } }),
+    assistant("cwd", { input_tokens: 1, output_tokens: 1 })
+  ].join("\n");
+  const [record] = parseClaudeTranscript(text);
+  assert.equal(record.projectPath, "/Users/you/Projects/usage-meter");
+});

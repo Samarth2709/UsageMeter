@@ -21,7 +21,14 @@ const LOOKBACK_MS = WEEK_MS + 24 * 60 * 60 * 1000;
 // Below this %, the projection (divide by pct) amplifies noise too much to be meaningful.
 const MIN_PROJECT_PCT = 5;
 
-function windowDurationMs(kind) {
+function windowDurationMs(windowOrKind) {
+  if (typeof windowOrKind === "object" && windowOrKind !== null) {
+    const reportedSeconds = Number(windowOrKind.durationSeconds);
+    if (Number.isFinite(reportedSeconds) && reportedSeconds > 0) {
+      return reportedSeconds * 1000;
+    }
+  }
+  const kind = typeof windowOrKind === "string" ? windowOrKind : usageWindowKey(windowOrKind);
   if (kind === "fiveHour") return FIVE_HOUR_MS;
   if (kind === "week") return WEEK_MS;
   return null;
@@ -157,7 +164,7 @@ function projectFull(usedDollars, usedTokens, usedPercent, blendedRate) {
 // Returns one row per resolvable window with the API-dollar value used in it.
 function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [], extraRoots = {}, dataDir = null } = {}) {
   const resolvable = limits
-    .map((w) => ({ ...w, kind: usageWindowKey(w), durationMs: windowDurationMs(usageWindowKey(w)) }))
+    .map((w) => ({ ...w, kind: usageWindowKey(w), durationMs: windowDurationMs(w) }))
     .filter((w) => w.cli && w.durationMs && w.resetAt && Number.isFinite(Date.parse(w.resetAt)));
   if (!resolvable.length) return [];
 

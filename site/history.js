@@ -129,7 +129,7 @@ function heatmap(el, days) {
 }
 
 function card(label, value, sub) {
-  return `<div class="card"><span class="card-label">${label}</span><span class="card-value">${value}</span><span class="card-sub">${sub || ""}</span></div>`;
+  return `<div class="card"><span class="card-label">${esc(label)}</span><span class="card-value">${esc(value)}</span><span class="card-sub">${esc(sub || "")}</span></div>`;
 }
 
 /* ---------- per-day hover bodies ---------- */
@@ -169,13 +169,14 @@ function renderWindowValues(rows) {
     return;
   }
   const sorted = [...rows].sort((a, b) =>
-    (CLI_ORDER[a.cli] - CLI_ORDER[b.cli]) || (WINDOW_ORDER[a.kind] - WINDOW_ORDER[b.kind]));
+    ((CLI_ORDER[a.cli] ?? 99) - (CLI_ORDER[b.cli] ?? 99)) ||
+    ((WINDOW_ORDER[a.kind] ?? 99) - (WINDOW_ORDER[b.kind] ?? 99)));
   el.innerHTML = sorted.map((w) => {
     const pct = Math.min(100, Math.max(0, w.usedPercent));
     const label = `${CLI_LABEL[w.cli] || w.cli} · ${WINDOW_LABEL[w.kind] || w.label}`;
     return `
     <div class="hbar">
-      <span class="hbar-label">${label}</span>
+      <span class="hbar-label">${esc(label)}</span>
       <span class="hbar-track"><span class="hbar-fill" style="width:${pct.toFixed(1)}%;background:${CLI_COLORS[w.cli] || "var(--accent)"}"></span></span>
       <span class="hbar-val">${Math.round(w.usedPercent)}%&nbsp;·&nbsp;${windowValueText(w)}</span>
     </div>`;
@@ -197,8 +198,83 @@ function renderDaily(d) {
   );
 }
 
+function renderProjectLedger(d) {
+  const host = document.querySelector("#project-ledger");
+  const count = document.querySelector("#project-count");
+  if (!host) return;
+  const projects = [...(d.range.byProject || [])].sort((a, b) => b.dollars - a.dollars);
+  if (count) count.textContent = projects.length ? `${projects.length} found` : "";
+  if (!projects.length) {
+    host.innerHTML = `<p class="history-note">No project metadata was found in this range yet. New local CLI transcripts will be grouped automatically when they include a working directory.</p>`;
+    return;
+  }
+
+  const unattributed = projects.find((project) => project.key === "unattributed");
+  const visible = projects.filter((project) => project.key !== "unattributed").slice(0, 8);
+  if (unattributed && !visible.includes(unattributed)) visible.push(unattributed);
+  host.innerHTML = visible.map((project) => {
+    const title = project.path || "No structural working-directory metadata was found for these local transcript turns.";
+    const detail = [fmtTokens(project.tokens.total) + " tok", `${project.prompts.toLocaleString()} prompts`, project.primaryModel?.model].filter(Boolean).join(" · ");
+    const label = project.parentLabel ? `${esc(project.label)} <span>· ${esc(project.parentLabel)}</span>` : esc(project.label);
+    return `<article class="project-row">
+      <div class="project-row-head"><span class="project-name" title="${esc(title)}">${label}</span><b>${fmtDollars(project.dollars)}</b></div>
+      <div class="project-track" aria-label="${esc(project.label)} accounts for ${fmtPct(project.share * 100)} of range value"><i style="width:${Math.max(1, project.share * 100).toFixed(1)}%"></i></div>
+      <p>${esc(detail)}</p>
+    </article>`;
+  }).join("");
+  if (projects.length > visible.length) {
+    host.insertAdjacentHTML("beforeend", `<p class="history-note project-more">Showing ${visible.length} of ${projects.length} projects.</p>`);
+  }
+}
+
+function modelInsightsFor(range) {
+  if (range.modelInsights) return range.modelInsights;
+  const top = range.byModel?.[0] || null;
+  return {
+    topModel: top && { ...top, share: range.dollars > 0 ? top.dollars / range.dollars : 0 },
+    totalCacheSavings: range.cacheSavings || 0,
+    scenarios: []
+  };
+}
+
+function renderModelLens(d) {
+  const r = d.range;
+  const insights = modelInsightsFor(r);
+  const summary = document.querySelector("#ml-insights");
+  const scenarios = document.querySelector("#md-scenarios");
+  const drivers = document.querySelector("#md-cost-drivers");
+  if (summary) {
+    const top = insights.topModel;
+    summary.innerHTML =
+      card("Top model", top ? top.model : "—", top ? `${fmtPct(top.share * 100)} of value` : "no model data") +
+      card("Top-model value", top ? fmtDollars(top.dollars) : "—", top ? (CLI_LABEL[top.cli] || top.cli) : "") +
+      card("Cache savings", fmtDollars(insights.totalCacheSavings), "vs fresh input rate");
+  }
+  if (scenarios) {
+    const rows = insights.scenarios || [];
+    scenarios.innerHTML = rows.length
+      ? `<div class="scenario-note"><b>Rate scenarios</b><span>Same token mix at a lower listed API rate — not a quality or capability comparison.</span></div>${rows.map((scenario) => `<div class="scenario-row"><span>${esc(scenario.model)} → ${esc(scenario.targetLabel)}</span><b>${fmtDollars(scenario.savings)} less</b><small>${fmtDollars(scenario.currentDollars)} → ${fmtDollars(scenario.scenarioDollars)}</small></div>`).join("")}`
+      : "";
+  }
+  if (drivers) {
+    const labels = { input: "Fresh input", cachedRead: "Cache read", cacheWrite: "Cache write", output: "Output" };
+    const colors = { input: "#5fa8d3", cachedRead: "#74c278", cacheWrite: "#d7c56f", output: "#e0796a" };
+    drivers.innerHTML = r.byModel.slice(0, 6).map((model) => {
+      const parts = model.costByType || {};
+      const total = Object.values(parts).reduce((sum, value) => sum + (Number(value) || 0), 0);
+      const segments = Object.entries(labels).map(([key, label]) => {
+        const value = Number(parts[key]) || 0;
+        return value > 0 ? `<i title="${label}: ${fmtDollars(value)}" style="width:${total > 0 ? value / total * 100 : 0}%;background:${colors[key]}"></i>` : "";
+      }).join("");
+      const driver = labels[model.costDriver] || "—";
+      return `<div class="model-driver-row"><div><b>${esc(model.model)}</b><span>${driver}</span></div><div class="model-driver-track">${segments}</div><em>${fmtDollars(model.dollars)}</em></div>`;
+    }).join("");
+  }
+}
+
 function renderModelsSection(d) {
   const r = d.range;
+  renderModelLens(d);
   const colorMap = {};
   r.byModel.slice(0, MODEL_PALETTE.length).forEach((m, i) => { colorMap[`${m.cli}::${m.model}`] = MODEL_PALETTE[i]; });
   const colorFor = (key) => colorMap[key] || OTHER_COLOR;
@@ -233,8 +309,8 @@ function renderModelsSection(d) {
       m.prompts.toLocaleString(),
       fmtTokens(m.tokens.input), fmtTokens(m.tokens.cachedRead),
       fmtTokens(m.tokens.cacheWrite), fmtTokens(m.tokens.output),
-      fmtTokens(m.tokens.total), fmtDollars(m.dollars), fmtPerPrompt(m.costPerPrompt)
-    ].forEach((t, i) => { const td = document.createElement("td"); if (i >= 2) td.className = "num"; td.textContent = t; tr.appendChild(td); });
+      fmtTokens(m.tokens.total), fmtDollars(m.dollars), fmtPerPrompt(m.costPerPrompt), m.costDriver || "—"
+    ].forEach((t, i) => { const td = document.createElement("td"); if (i >= 2 && i <= 9) td.className = "num"; td.textContent = t; tr.appendChild(td); });
     tbody.appendChild(tr);
   }
 }
@@ -409,6 +485,8 @@ function renderAll(d) {
     card("Range total", fmtDollars(r.dollars), fmtTokens(r.tokens.total) + " tok") +
     card("Avg / day", fmtDollars(r.dollars / rangeDays), "over " + rangeDays + "d") +
     card("Prompts", r.tokens.prompts.toLocaleString(), fmtPerPrompt(r.avgCostPerPrompt) + " / prompt");
+
+  renderProjectLedger(d);
 
   // subscription value (live windows)
   renderWindowValues(d.windowValues);

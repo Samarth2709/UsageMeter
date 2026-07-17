@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  recordsToContribution, contributionForFile, mergeAndPrice, rangeDaysList, scanUsageHistory
+  recordsToContribution, recordsToProjectContribution, contributionForFile, mergeAndPrice, rangeDaysList, scanUsageHistory
 } = require("../usage-history/aggregate");
 
 test("recordsToContribution groups buckets by day and cli::model", () => {
@@ -14,6 +14,16 @@ test("recordsToContribution groups buckets by day and cli::model", () => {
   ];
   const c = recordsToContribution(recs);
   assert.deepEqual(c["2026-06-16"]["claude::claude-opus-4-8"], { inputTokens: 15, cachedReadTokens: 1, cacheWriteTokens: 2, outputTokens: 4, prompts: 2 });
+});
+
+test("recordsToProjectContribution retains an explicit project and falls back to Unattributed", () => {
+  const records = [
+    { day: "2026-06-16", cli: "codex", model: "gpt-5.5", projectPath: "/Users/you/Projects/kernel", inputTokens: 10, outputTokens: 1 },
+    { day: "2026-06-16", cli: "codex", model: "gpt-5.5", inputTokens: 5, outputTokens: 1 }
+  ];
+  const contribution = recordsToProjectContribution(records, "/Users/you/.codex/sessions/a.jsonl", "codex");
+  assert.equal(contribution["2026-06-16"]["path:/Users/you/Projects/kernel"].label, "kernel");
+  assert.equal(contribution["2026-06-16"].unattributed.label, "Unattributed");
 });
 
 test("contributionForFile picks the parser from the cli tag", () => {
@@ -58,6 +68,30 @@ test("mergeAndPrice sums a range and computes dollars + flags unknown models", (
   assert.equal(today.tokens.input, 1_000_000);
   assert.ok(res.flags.unknownModels.includes("weird-model"));
   assert.ok(res.today.tokens.total >= 1_000_000);
+});
+
+test("project totals reconcile with the range total and preserve paths only as metadata", () => {
+  const buckets = { inputTokens: 1_000_000, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, prompts: 2 };
+  const files = {
+    "/f1": {
+      cli: "codex",
+      contribution: { "2026-06-16": { "codex::gpt-5.5": buckets } },
+      projectContribution: {
+        "2026-06-16": {
+          "path:/Users/you/Projects/kernel": {
+            key: "path:/Users/you/Projects/kernel", path: "/Users/you/Projects/kernel", label: "kernel", parentLabel: "Projects",
+            models: { "codex::gpt-5.5": buckets }
+          }
+        }
+      }
+    }
+  };
+  const now = new Date(2026, 5, 16, 12, 0, 0).getTime();
+  const result = mergeAndPrice(files, { rangeDays: 7, nowMs: now });
+  assert.equal(result.range.byProject.length, 1);
+  assert.equal(result.range.byProject[0].label, "kernel");
+  assert.equal(result.range.byProject[0].path, "/Users/you/Projects/kernel");
+  assert.equal(result.range.byProject.reduce((sum, project) => sum + project.dollars, 0), result.range.dollars);
 });
 
 test("scanUsageHistory skips unchanged files and recomputes changed ones", () => {

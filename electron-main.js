@@ -27,6 +27,7 @@ const {
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { scanUsageHistory } = require("./usage-history/aggregate");
 const { computeWindowValues, transcriptFingerprint, clearPointsCache } = require("./usage-history/windows");
+const { computeRunways } = require("./usage-history/runway");
 const { buildDiagnostics } = require("./usage-history/diagnostics");
 
 const toggleShortcut = "Control+Option+L";
@@ -44,10 +45,8 @@ const updateCheckMs = 6 * 60 * 60 * 1000; // every 6 hours
 const releasesPageUrl = `https://github.com/${updateRepo}/releases/latest`;
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
 // The claude.ai web scrape recreates a full renderer each time, so keep it infrequent.
-// It's supplementary — the CLI fallback covers shorter intervals, and the popover also
-// refreshes on show.
 const claudeWebRefreshMs = 300000;
-const claudeCliFallbackRefreshMs = 120000;
+const claudeCliUsageRefreshMs = 300000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -67,9 +66,9 @@ let claudeUsageWindow = null;
 let claudeLoginWindow = null;
 let claudeWebRefreshTimer = null;
 let claudeWebRefreshPromise = null;
-let claudeFallbackRefreshPromise = null;
-let lastClaudeFallbackRefreshAt = 0;
+let claudeCliUsageRefreshPromise = null;
 let lastClaudeWebScrapeAt = 0;
+let lastClaudeCliUsageRefreshAt = 0;
 let claudeWebOrgId = null;
 // Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
 // "View usage history" window opens instantly instead of scanning transcripts on click.
@@ -138,7 +137,7 @@ async function enableLaunchAtLoginByDefault() {
 
 function createPopover() {
   const initialBounds = getPopoverBounds();
-  popover = new BrowserWindow({
+  const window = new BrowserWindow({
     width: windowWidth,
     height: currentWindowHeight,
     x: initialBounds.x,
@@ -158,17 +157,31 @@ function createPopover() {
     }
   });
 
-  popover.setAlwaysOnTop(true, "floating");
-  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  popover.loadFile(path.join(__dirname, "public", "index.html"));
+  popover = window;
+  window.setAlwaysOnTop(true, "floating");
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.loadFile(path.join(__dirname, "public", "index.html"));
 
-  popover.on("move", queueSavePopoverPosition);
-  popover.on("moved", queueSavePopoverPosition);
+  window.on("move", queueSavePopoverPosition);
+  window.on("moved", queueSavePopoverPosition);
+  window.on("closed", () => {
+    if (popover === window) {
+      popover = null;
+    }
+  });
 
   // Intentionally NOT hiding on blur: combined with setVisibleOnAllWorkspaces,
   // this keeps the popover pinned to the top-right and visible on every Space /
   // desktop (it would otherwise auto-hide when a Space switch steals focus).
   // Use the menu-bar icon or Control+Option+L to hide/show it manually.
+}
+
+function ensurePopover() {
+  if (!popover || popover.isDestroyed()) {
+    createPopover();
+  }
+
+  return popover;
 }
 
 async function loadPopoverPosition() {
@@ -298,7 +311,7 @@ function setExpandedView(expanded, rowCount = currentRowCount, contentHeight = n
   currentRowCount = Math.max(1, Number(rowCount) || 1);
   currentWindowHeight = getWindowHeight(expanded, currentRowCount, contentHeight);
 
-  if (!popover) {
+  if (!popover || popover.isDestroyed()) {
     return;
   }
 
@@ -365,30 +378,29 @@ function openHistoryWindow() {
 }
 
 function showPopover() {
+  const window = ensurePopover();
   const bounds = getPopoverBounds();
   // Re-assert all-Spaces membership, then show WITHOUT activating the app.
   // Calling show()/focus() activates the window, which makes macOS jump to
   // whichever Space the window was last shown on. showInactive() simply orders
   // it onto the desktop you're currently looking at — the behavior we want for a
   // pinned top-right widget.
-  popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  popover.setAlwaysOnTop(true, "floating");
-  popover.setBounds(bounds);
-  popover.showInactive();
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setAlwaysOnTop(true, "floating");
+  window.setBounds(bounds);
+  window.showInactive();
   queueSavePopoverPosition();
   if (process.env.RATE_LIMIT_TOOL_DEBUG) {
-    console.log("Popover visible:", popover.isVisible(), popover.getBounds());
+    console.log("Popover visible:", window.isVisible(), window.getBounds());
   }
 }
 
 function togglePopover() {
-  if (!popover) {
-    return;
-  }
+  const window = ensurePopover();
 
-  if (popover.isVisible()) {
+  if (window.isVisible()) {
     queueSavePopoverPosition();
-    popover.hide();
+    window.hide();
     return;
   }
 
@@ -793,8 +805,7 @@ async function refreshClaudeWebUsage({ force = false } = {}) {
 
   // The scrape spins up a full claude.ai renderer, so throttle it: no matter how often
   // callers ask (the 60s snapshot loop does), actually scrape at most once per
-  // claudeWebRefreshMs and otherwise return the cached result. CLI fallback still runs
-  // on its own cadence when web usage isn't OK.
+  // claudeWebRefreshMs and otherwise return the cached result.
   if (!force && Date.now() - lastClaudeWebScrapeAt < claudeWebRefreshMs) {
     return claudeWebUsageCache;
   }
@@ -881,6 +892,8 @@ async function mergeClaudeWebUsage(snapshot) {
       return {
         ...result,
         ok: true,
+        stale: false,
+        error: undefined,
         data: {
           ...existingData,
           ...webData,
@@ -900,68 +913,54 @@ async function mergeClaudeWebUsage(snapshot) {
   return mergedSnapshot;
 }
 
-async function refreshClaudeFallbackUsage() {
-  if (claudeFallbackRefreshPromise) {
-    return claudeFallbackRefreshPromise;
+function hasClaudeFiveHourWindow(windows = []) {
+  return windows.some((window) => /5[-\s]?hour|5h|current\s*session/i.test(window?.label || ""));
+}
+
+function shouldRefreshClaudeCliUsage(force = false) {
+  if (claudeWebUsageCache.ok && hasClaudeFiveHourWindow(claudeWebUsageCache.data?.windows || [])) {
+    return false;
   }
 
-  claudeFallbackRefreshPromise = (async () => {
-    lastClaudeFallbackRefreshAt = Date.now();
-    const startedAt = nowMs();
-    const snapshot = await refreshAllAccounts({ onlyAccountTypes: ["claude"] });
-    const results = snapshot.results || [];
+  return force || Date.now() - lastClaudeCliUsageRefreshAt >= claudeCliUsageRefreshMs;
+}
 
-    if (latestSnapshot?.results?.length) {
-      const resultsByAccountId = new Map(results.map((result) => [result.accountId, result]));
-      const existingResultIds = new Set(latestSnapshot.results.map((result) => result.accountId));
-      latestSnapshot = {
-        ...latestSnapshot,
-        config: snapshot.config || latestSnapshot.config,
-        results: [
-          ...latestSnapshot.results.map((prev) => {
-            const fresh = resultsByAccountId.get(prev.accountId);
-            if (!fresh) {
-              return prev;
-            }
-            // The CLI parse can transiently drop a window's reset (a partial /status
-            // redraw). Merge the fresh windows onto the previous ones so a reset that
-            // momentarily went missing carries over instead of wiping the countdown.
-            if (fresh.ok && fresh.data && prev.ok && prev.data) {
-              return {
-                ...fresh,
-                data: {
-                  ...fresh.data,
-                  windows: mergeUsageWindows(prev.data.windows, fresh.data.windows)
-                }
-              };
-            }
-            return fresh;
-          }),
-          ...results.filter((result) => !existingResultIds.has(result.accountId))
-        ]
-      };
-      broadcastSnapshot(latestSnapshot);
-    }
+async function refreshClaudeCliUsage() {
+  if (claudeCliUsageRefreshPromise) {
+    return claudeCliUsageRefreshPromise;
+  }
 
-    logRefreshMetric({
-      event: "claude_cli_refresh",
-      durationMs: nowMs() - startedAt,
-      resultCount: results.length,
-      okCount: results.filter((result) => result.ok).length
-    });
-
-    return results;
-  })();
+  lastClaudeCliUsageRefreshAt = Date.now();
+  claudeCliUsageRefreshPromise = refreshAllAccounts({
+    onlyAccountTypes: ["claude"],
+    skipDiscoveryTypes: ["claude"]
+  });
 
   try {
-    return await claudeFallbackRefreshPromise;
+    return await claudeCliUsageRefreshPromise;
   } finally {
-    claudeFallbackRefreshPromise = null;
+    claudeCliUsageRefreshPromise = null;
   }
 }
 
+function mergeAccountRefresh(snapshot, refreshedSnapshot) {
+  if (!refreshedSnapshot?.results?.length) {
+    return snapshot;
+  }
+
+  const refreshedByAccountId = new Map(
+    refreshedSnapshot.results.map((result) => [result.accountId, result])
+  );
+
+  return {
+    ...snapshot,
+    config: refreshedSnapshot.config || snapshot.config,
+    results: snapshot.results.map((result) => refreshedByAccountId.get(result.accountId) || result)
+  };
+}
+
 // Flatten the live snapshot's per-account limit windows into the shape
-// computeWindowValues wants: { cli, label, usedPercent, resetAt }. One account per
+// computeWindowValues wants. One account per
 // service is the norm; take the first OK result per service to avoid double rows.
 function liveLimitWindows() {
   const results = latestSnapshot?.results || [];
@@ -974,10 +973,71 @@ function liveLimitWindows() {
     if (!windows.length) continue;
     seenServices.add(service);
     for (const w of windows) {
-      limits.push({ cli: service, label: w.label, usedPercent: w.usedPercent, resetAt: w.resetAt });
+      limits.push({
+        cli: service,
+        id: w.id,
+        source: w.source,
+        label: w.label,
+        durationSeconds: w.durationSeconds,
+        usedPercent: w.usedPercent,
+        resetAt: w.resetAt
+      });
     }
   }
   return limits;
+}
+
+function liveRunwayInput() {
+  const results = latestSnapshot?.results || [];
+  const byService = new Map();
+
+  for (const result of results) {
+    const service = result?.data?.service;
+    const windows = result?.data?.windows || [];
+    if (!result.ok || !service || !windows.length) continue;
+    const entry = byService.get(service) || [];
+    entry.push({ accountId: result.accountId, windows });
+    byService.set(service, entry);
+  }
+
+  const limits = [];
+  const ambiguousServices = [];
+  for (const [service, accounts] of byService) {
+    const eligible = accounts.filter((account) => account.windows.some((window) =>
+      Number(window.durationSeconds) > 0 || /5-hour|5h|session|week|7-day|7d/i.test(window.label || "")
+    ));
+    if (eligible.length > 1) {
+      ambiguousServices.push(service);
+      continue;
+    }
+    const account = eligible[0] || accounts[0];
+    for (const window of account.windows) {
+      limits.push({
+        cli: service,
+        id: window.id,
+        source: window.source,
+        label: window.label,
+        durationSeconds: window.durationSeconds,
+        usedPercent: window.usedPercent,
+        resetAt: window.resetAt
+      });
+    }
+  }
+  return { limits, ambiguousServices };
+}
+
+function getRunways() {
+  if (!latestSnapshot?.results?.length) {
+    return [];
+  }
+  const { limits, ambiguousServices } = liveRunwayInput();
+  return computeRunways({
+    homeDir: os.homedir(),
+    limits,
+    ambiguousServices,
+    extraRoots: scanRoots,
+    dataDir: appDataDir
+  });
 }
 
 // Compare dotted versions (e.g. "0.2.0" vs "0.1.0"). Returns >0 if a > b.
@@ -1122,46 +1182,6 @@ function getHistoryPayload(rangeDays) {
   return historyCache.get(rangeDays);
 }
 
-function shouldRefreshClaudeFallback() {
-  const hasClaudeResult = latestSnapshot?.results?.some((result) => result.data?.service === "claude");
-
-  if (!hasClaudeResult) {
-    return true;
-  }
-
-  return Date.now() - lastClaudeFallbackRefreshAt >= claudeCliFallbackRefreshMs;
-}
-
-async function preserveFastClaudeResults(snapshot, previousSnapshot) {
-  if (!snapshot?.results?.length || !previousSnapshot?.results?.length) {
-    return snapshot;
-  }
-
-  const state = await getState();
-  const claudeAccountIds = new Set(
-    state.config.accounts
-      .filter((account) => account.type === "claude")
-      .map((account) => account.id)
-  );
-  const previousByAccountId = new Map(
-    previousSnapshot.results.map((result) => [result.accountId, result])
-  );
-
-  return {
-    ...snapshot,
-    results: snapshot.results.map((result) => {
-      if (!claudeAccountIds.has(result.accountId) || result.error !== "Skipped for fast refresh.") {
-        return result;
-      }
-
-      return previousByAccountId.get(result.accountId) || {
-        ...result,
-        error: claudeWebUsageCache.error || "Claude usage API needs a web login."
-      };
-    })
-  };
-}
-
 function preserveRecentSuccessfulResults(snapshot, previousSnapshot) {
   if (!snapshot?.results?.length || !previousSnapshot?.results?.length) {
     return snapshot;
@@ -1189,6 +1209,36 @@ function preserveRecentSuccessfulResults(snapshot, previousSnapshot) {
         ...previous,
         stale: true,
         staleReason: result.error
+      };
+    })
+  };
+}
+
+function preserveStoredClaudeUsage(snapshot) {
+  const storedUsageByAccountId = new Map(
+    (snapshot?.config?.accounts || [])
+      .filter((account) => account.type === "claude" && account.lastUsage)
+      .map((account) => [account.id, account.lastUsage])
+  );
+
+  return {
+    ...snapshot,
+    results: (snapshot?.results || []).map((result) => {
+      if (result.error !== "Skipped for fast refresh.") {
+        return result;
+      }
+
+      const data = storedUsageByAccountId.get(result.accountId);
+      if (!data) {
+        return result;
+      }
+
+      return {
+        accountId: result.accountId,
+        ok: true,
+        stale: true,
+        error: claudeWebUsageCache.error || "Waiting for Claude usage refresh.",
+        data
       };
     })
   };
@@ -1279,7 +1329,7 @@ function logRefreshMetric(fields) {
   console.log(`[refresh-metric] ${JSON.stringify(enrichedFields)}`);
 }
 
-async function refreshSnapshot() {
+async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
   if (refreshPromise) {
     return refreshPromise;
   }
@@ -1290,51 +1340,7 @@ async function refreshSnapshot() {
     const previousSnapshot = latestSnapshot;
 
     const claudeStartedAt = nowMs();
-    refreshClaudeWebUsage()
-      .then(async () => {
-        const claudeFetchMs = nowMs() - claudeStartedAt;
-        if (!claudeWebUsageCache.ok && shouldRefreshClaudeFallback()) {
-          refreshClaudeFallbackUsage().catch((error) => {
-            logRefreshMetric({
-              event: "claude_cli_refresh",
-              durationMs: nowMs() - claudeStartedAt,
-              status: "error",
-              ok: false,
-              error: error.message
-            });
-          });
-        }
-
-        if (!latestSnapshot) {
-          logRefreshMetric({
-            event: "claude_web_refresh",
-            durationMs: claudeFetchMs,
-            status: claudeWebUsageCache.status,
-            ok: claudeWebUsageCache.ok,
-            error: claudeWebUsageCache.ok ? undefined : claudeWebUsageCache.error
-          });
-          return;
-        }
-
-        latestSnapshot = await mergeClaudeWebUsage(latestSnapshot);
-        broadcastSnapshot(latestSnapshot);
-        logRefreshMetric({
-          event: "claude_web_refresh",
-          durationMs: claudeFetchMs,
-          status: claudeWebUsageCache.status,
-          ok: claudeWebUsageCache.ok,
-          error: claudeWebUsageCache.ok ? undefined : claudeWebUsageCache.error
-        });
-      })
-      .catch((error) => {
-        logRefreshMetric({
-          event: "claude_web_refresh",
-          durationMs: nowMs() - claudeStartedAt,
-          status: "error",
-          ok: false,
-          error: error.message
-        });
-      });
+    const claudeRefresh = refreshClaudeWebUsage();
 
     const accountRefreshStartedAt = nowMs();
     try {
@@ -1344,9 +1350,16 @@ async function refreshSnapshot() {
     }
     const accountRefreshMs = nowMs() - accountRefreshStartedAt;
 
+    await claudeRefresh;
+    const claudeFetchMs = nowMs() - claudeStartedAt;
+    const claudeCliSnapshot = shouldRefreshClaudeCliUsage(forceClaudeCliUsage)
+      ? await refreshClaudeCliUsage()
+      : null;
+
     const mergeStartedAt = nowMs();
     snapshot = preserveRecentSuccessfulResults(snapshot, previousSnapshot);
-    snapshot = await preserveFastClaudeResults(snapshot, previousSnapshot);
+    snapshot = mergeAccountRefresh(snapshot, claudeCliSnapshot);
+    snapshot = preserveStoredClaudeUsage(snapshot);
     latestSnapshot = await mergeClaudeWebUsage(snapshot);
     const mergeMs = nowMs() - mergeStartedAt;
 
@@ -1359,6 +1372,13 @@ async function refreshSnapshot() {
       mergeMs,
       resultCount: latestSnapshot?.results?.length || 0,
       okCount: latestSnapshot?.results?.filter((result) => result.ok).length || 0
+    });
+    logRefreshMetric({
+      event: "claude_web_refresh",
+      durationMs: claudeFetchMs,
+      status: claudeWebUsageCache.status,
+      ok: claudeWebUsageCache.ok,
+      error: claudeWebUsageCache.ok ? undefined : claudeWebUsageCache.error
     });
     return latestSnapshot;
   })();
@@ -1380,6 +1400,7 @@ function startBackgroundRefresh() {
 function registerIpcHandlers() {
   ipcMain.handle("rate-limit:get-state", () => getState());
   ipcMain.handle("rate-limit:get-snapshot", async () => latestSnapshot);
+  ipcMain.handle("rate-limit:get-runways", () => getRunways());
   ipcMain.handle("rate-limit:save-config", async (event, config) => {
     await saveConfig(config);
     await refreshScanRoots();
@@ -1399,7 +1420,7 @@ function registerIpcHandlers() {
 
     return openLoginForAccountById(accountId);
   });
-  ipcMain.handle("rate-limit:refresh", () => refreshSnapshot());
+  ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeCliUsage: true }));
   ipcMain.handle("rate-limit:toggle", togglePopover);
   ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount, contentHeight) => {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
@@ -1427,9 +1448,7 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (popover) {
-      showPopover();
-    }
+    showPopover();
   });
 
   app.whenReady().then(async () => {
@@ -1450,6 +1469,7 @@ if (!gotSingleInstanceLock) {
     setTimeout(showPopover, 800);
     startBackgroundRefresh();
     startClaudeWebUsageRefresh();
+    refreshSnapshot({ forceClaudeCliUsage: true }).catch(() => {});
     startUpdateChecks();
 
     const registered = globalShortcut.register(toggleShortcut, togglePopover);
@@ -1462,9 +1482,6 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on("activate", () => {
-    if (!popover) {
-      createPopover();
-    }
     showPopover();
   });
 }

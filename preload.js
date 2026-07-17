@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("rateLimitAPI", {
   getState: () => ipcRenderer.invoke("rate-limit:get-state"),
   getSnapshot: () => ipcRenderer.invoke("rate-limit:get-snapshot"),
+  getRunways: () => ipcRenderer.invoke("rate-limit:get-runways"),
   saveConfig: (config) => ipcRenderer.invoke("rate-limit:save-config", config),
   openLogin: (accountId) => ipcRenderer.invoke("rate-limit:open-login", accountId),
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),

@@ -1,5 +1,6 @@
 const accountsRoot = document.querySelector("#accounts");
 const accountTemplate = document.querySelector("#account-template");
+const limitWindowTemplate = document.querySelector("#limit-window-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
 const nativeApi = window.rateLimitAPI || null;
@@ -14,6 +15,8 @@ let countdownTimer = null;
 let statusHeartbeat = null;
 let lastSnapshotAt = null;
 let rowsExpanded = true;
+let runwaysByService = new Map();
+let runwayRequestId = 0;
 
 // Background usage refresh runs every 60s. If no live snapshot has arrived in
 // ~2.5 cycles, the data source is effectively down — the status dot must show
@@ -82,7 +85,7 @@ function compactWindowLabel(label) {
     return "wk";
   }
 
-  return String(label || "").toLowerCase();
+  return String(label || "Allowance").trim();
 }
 
 function usageWindows(data) {
@@ -90,12 +93,7 @@ function usageWindows(data) {
     return [];
   }
 
-  return data.windows.filter((window) => /5-hour|week/i.test(window.label || ""));
-}
-
-function findUsageWindow(data, kind) {
-  const pattern = kind === "week" ? /week/i : /5-hour/i;
-  return usageWindows(data).find((window) => pattern.test(window.label || "")) || null;
+  return data.windows.filter((window) => window && typeof window === "object");
 }
 
 function buildCompactSummary(data) {
@@ -157,22 +155,6 @@ function getResetDate(window) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function formatCountdown(targetDate) {
-  if (!targetDate) {
-    return null;
-  }
-
-  const remainingMs = targetDate.getTime() - Date.now();
-  if (remainingMs <= 0) {
-    return "0:00";
-  }
-
-  const totalMinutes = Math.ceil(remainingMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}:${String(minutes).padStart(2, "0")}`;
-}
-
 // Two-unit countdown to a reset. Shows the largest non-zero unit plus the next
 // one down: days+hours, else hours+minutes, else minutes+seconds (always two).
 function formatResetCountdown(targetDate) {
@@ -195,21 +177,13 @@ function formatResetCountdown(targetDate) {
   return `${minutes}m ${seconds}s`;
 }
 
-function buildResetDetailParts(window, includeDate = false, includeCountdown = true) {
-  const resetDate = getResetDate(window);
-  const countdown = includeCountdown ? formatCountdown(resetDate) : null;
-  const reset = getWindowReset(window, includeDate);
-  return { countdown, reset };
-}
-
-function buildResetDetail(window, includeDate = false) {
-  // The weekly window (includeDate) shows a countdown to reset, not the date.
-  if (includeDate) {
-    const countdown = formatResetCountdown(getResetDate(window));
-    return countdown || getWindowReset(window, true) || "";
+function resetDetail(window) {
+  const countdown = formatResetCountdown(getResetDate(window));
+  if (countdown) {
+    return `resets in ${countdown}`;
   }
-  const detail = buildResetDetailParts(window, includeDate, !includeDate);
-  return [detail.countdown, detail.reset].filter(Boolean).join(" · ");
+  const reset = getWindowReset(window, true);
+  return reset ? `resets ${reset}` : "reset not reported";
 }
 
 function buildExpandedSummary(data) {
@@ -223,7 +197,7 @@ function buildExpandedSummary(data) {
     .map((window) => {
       const label = compactWindowLabel(window.label);
       const remaining = `${Math.round(window.remainingPercent)}% left`;
-      const reset = buildResetDetail(window, /week/i.test(window.label || ""));
+      const reset = resetDetail(window);
       return reset ? `${label} ${remaining}, ${reset}` : `${label} ${remaining}`;
     })
     .join(" · ");
@@ -242,57 +216,90 @@ function buildResetTitle(data) {
 
   return windows
     .map((window) => {
-      const reset = buildResetDetail(window, /week/i.test(window.label || ""));
+      const reset = resetDetail(window);
       return reset ? `${compactWindowLabel(window.label)} ${reset}` : null;
     })
     .filter(Boolean)
     .join("\n");
 }
 
-function setLimitWindow(elements, kind, window) {
-  const limit = elements.limits[kind];
+function renderLimitWindows(elements, data) {
+  const displayWindows = usageWindows(data);
 
-  if (!limit) {
-    return;
-  }
-
-  if (!window) {
-    limit.value.textContent = "--";
-    limit.countdown.textContent = "";
-    limit.time.textContent = "";
-    limit.separator.classList.add("hidden");
-    limit.reset.classList.add("hidden");
-    limit.root.classList.add("empty");
-    return;
-  }
-
-  // Weekly shows a countdown to reset; the 5-hour keeps countdown + reset time.
-  let countdown;
-  let resetText;
-  if (kind === "week") {
+  elements.limitGrid.replaceChildren(...displayWindows.map((window) => {
+    const root = limitWindowTemplate.content.firstElementChild.cloneNode(true);
+    const label = compactWindowLabel(window.label);
     const resetDate = getResetDate(window);
-    countdown = resetDate ? formatResetCountdown(resetDate) : "";
-    resetText = countdown ? "" : getWindowReset(window, true);
-  } else {
-    const reset = buildResetDetailParts(window, false, true);
-    countdown = reset.countdown;
-    resetText = reset.reset;
-  }
-
-  limit.value.textContent = `${Math.round(window.remainingPercent)}%`;
-  limit.countdown.textContent = countdown || "";
-  limit.time.textContent = resetText || "";
-  limit.separator.classList.toggle("hidden", !countdown || !resetText);
-  limit.reset.classList.toggle("hidden", !countdown && !resetText);
-  limit.root.classList.remove("empty");
+    root.querySelector(".limit-label").textContent = label;
+    root.querySelector(".limit-value").textContent = `${Math.round(Number(window.remainingPercent) || 0)}%`;
+    const reset = root.querySelector(".limit-reset");
+    reset.textContent = resetDetail(window);
+    reset.title = resetDate ? `Resets ${formatResetTime(resetDate.toISOString(), true)}` : "Reset time not reported.";
+    root.classList.remove("empty");
+    return root;
+  }));
+  elements.limitGrid.classList.toggle("hidden", !displayWindows.length);
 }
 
-function renderLimitWindows(elements, data) {
-  setLimitWindow(elements, "fiveHour", findUsageWindow(data, "fiveHour"));
-  setLimitWindow(elements, "week", findUsageWindow(data, "week"));
+function hideRunway(elements) {
+  elements.runway.textContent = "";
+  elements.runway.title = "";
+  elements.runway.className = "account-runway hidden";
+}
+
+function formatRunwayDuration(minutes) {
+  const totalMinutes = Math.max(0, Math.ceil(Number(minutes) || 0));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const mins = totalMinutes % 60;
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
+function renderRunway(elements, data) {
+  if (!nativeApi?.getRunways || !data?.service) {
+    hideRunway(elements);
+    return;
+  }
+
+  const runway = runwaysByService.get(data.service);
+  if (!runway) {
+    elements.runway.textContent = "Runway: calculating…";
+    elements.runway.title = "Calculating from recent local CLI transcript activity.";
+    elements.runway.className = "account-runway pending";
+    return;
+  }
+
+  if (runway.status !== "ready") {
+    const text = runway.status === "ambiguous_account"
+      ? "Runway unavailable: multiple accounts"
+      : "Runway needs more recent local activity";
+    elements.runway.textContent = text;
+    elements.runway.title = "Runway uses local CLI transcript activity and live usage windows.";
+    elements.runway.className = "account-runway pending";
+    return;
+  }
+
+  const item = (window) => {
+    const label = compactWindowLabel(window.label);
+    if (!Number.isFinite(Number(window.estimatedMinutes))) {
+      return null;
+    }
+    return window.lastsUntilReset ? `${label} lasts to reset` : `${label} ~${formatRunwayDuration(window.estimatedMinutes)}`;
+  };
+  const text = runway.windows.map(item).filter(Boolean).join(" · ");
+  if (!text) {
+    hideRunway(elements);
+    return;
+  }
+  elements.runway.textContent = text;
+  elements.runway.title = `Based on ${formatRunwayDuration(runway.sampleWindowMinutes)} of local CLI activity at ${Math.round(runway.tokensPerHour).toLocaleString()} tokens/hour.`;
+  elements.runway.className = "account-runway";
 }
 
 function showStatusSummary(elements, text, className, title = "") {
+  if (elements.runway) hideRunway(elements);
   elements.limitGrid.classList.add("hidden");
   elements.summary.textContent = text;
   elements.summary.title = title;
@@ -446,7 +453,7 @@ function renderConnected(accountId, data, metadata = {}) {
 
   const summary = buildSummary(data);
   renderLimitWindows(elements, data);
-  elements.limitGrid.classList.remove("hidden");
+  renderRunway(elements, data);
   elements.summary.textContent = "";
   elements.summary.title = metadata.stale
     ? `Last known usage. Live refresh failed: ${metadata.error || "Unavailable"}`
@@ -469,6 +476,7 @@ function renderDisconnected(accountId) {
   }
 
   showStatusSummary(elements, "Not connected", "error");
+  hideRunway(elements);
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Connect";
@@ -486,6 +494,7 @@ function renderError(accountId, error) {
 
   const detail = String(error || "Unavailable");
   showStatusSummary(elements, "Unavailable", "error", detail);
+  hideRunway(elements);
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
@@ -518,6 +527,7 @@ function applySnapshot(snapshot) {
   }
 
   lastSnapshotAt = Date.now();
+  runwaysByService = new Map();
 
   if (snapshot.config?.accounts) {
     syncAccountsFromConfig(snapshot.config);
@@ -528,6 +538,24 @@ function applySnapshot(snapshot) {
   }
 
   syncViewSize();
+  refreshRunways();
+}
+
+async function refreshRunways() {
+  if (!nativeApi?.getRunways) return;
+  const requestId = ++runwayRequestId;
+  try {
+    const runways = await nativeApi.getRunways();
+    if (requestId !== runwayRequestId) return;
+    runwaysByService = new Map((runways || []).map((runway) => [runway.cli, runway]));
+    renderCurrentRows();
+    syncViewSize();
+  } catch {
+    if (requestId !== runwayRequestId) return;
+    runwaysByService = new Map();
+    renderCurrentRows();
+    syncViewSize();
+  }
 }
 
 function syncAccountsFromConfig(config) {
@@ -574,6 +602,7 @@ function createAccountRow(account) {
   const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
   const summary = node.querySelector(".account-summary");
+  const runway = node.querySelector(".account-runway");
   const connectButton = node.querySelector(".connect-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
@@ -582,7 +611,8 @@ function createAccountRow(account) {
   showStatusSummary(
     {
       limitGrid,
-      summary
+      summary,
+      runway
     },
     "Loading…",
     "pending"
@@ -593,8 +623,9 @@ function createAccountRow(account) {
     connectButton.textContent = "Opening…";
     showStatusSummary(
       {
-        limitGrid,
-        summary
+      limitGrid,
+      summary,
+      runway
       },
       "Waiting for login…",
       "pending"
@@ -618,25 +649,8 @@ function createAccountRow(account) {
     row: node,
     name,
     limitGrid,
-    limits: {
-      fiveHour: {
-        root: node.querySelector('[data-window="5h"]'),
-        value: node.querySelector('[data-window="5h"] .limit-value'),
-        reset: node.querySelector('[data-window="5h"] .limit-reset'),
-        countdown: node.querySelector('[data-window="5h"] .limit-countdown'),
-        separator: node.querySelector('[data-window="5h"] .limit-separator'),
-        time: node.querySelector('[data-window="5h"] .limit-time')
-      },
-      week: {
-        root: node.querySelector('[data-window="week"]'),
-        value: node.querySelector('[data-window="week"] .limit-value'),
-        reset: node.querySelector('[data-window="week"] .limit-reset'),
-        countdown: node.querySelector('[data-window="week"] .limit-countdown'),
-        separator: node.querySelector('[data-window="week"] .limit-separator'),
-        time: node.querySelector('[data-window="week"] .limit-time')
-      }
-    },
     summary,
+    runway,
     connectButton
   });
 

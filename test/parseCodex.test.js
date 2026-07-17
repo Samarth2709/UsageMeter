@@ -43,3 +43,12 @@ test("skips malformed lines without throwing", () => {
   assert.equal(recs.length, 1);
   assert.equal(recs[0].model, "gpt-5.4");
 });
+
+test("carries payload working-directory metadata into token records", () => {
+  const text = [
+    L({ type: "session_meta", timestamp: "2026-06-16T18:00:00.000Z", payload: { model: "gpt-5.5", cwd: "/Users/you/Projects/kernel" } }),
+    tc("2026-06-16T18:00:01.000Z", { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1 }, {})
+  ].join("\n");
+  const [record] = parseCodexTranscript(text);
+  assert.equal(record.projectPath, "/Users/you/Projects/kernel");
+});
