@@ -40,8 +40,17 @@ function contributionForFile(filePath, text, cli) {
 
 function rangeDaysList(rangeDays, nowMs) {
   const days = [];
+  const today = new Date(nowMs);
+  const localMidnight = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate()
+  );
+
   for (let i = rangeDays - 1; i >= 0; i--) {
-    days.push(localDay(nowMs - i * 86_400_000));
+    const day = new Date(localMidnight);
+    day.setDate(localMidnight.getDate() - i);
+    days.push(localDay(day.getTime()));
   }
   return days;
 }
@@ -174,7 +183,7 @@ function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30
     let stat;
     try { stat = fs.statSync(p); } catch { continue; }
     const cached = cache.files[p];
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) continue;
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.cli === cli) continue;
     let text = "";
     try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
     cache.files[p] = { mtimeMs: stat.mtimeMs, size: stat.size, cli, contribution: contributionForFile(p, text, cli) };
@@ -184,4 +193,4 @@ function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30
   return mergeAndPrice(cache.files, { rangeDays, nowMs });
 }
 
-module.exports = { recordsToContribution, contributionForFile, mergeAndPrice, scanUsageHistory };
+module.exports = { recordsToContribution, contributionForFile, mergeAndPrice, rangeDaysList, scanUsageHistory };

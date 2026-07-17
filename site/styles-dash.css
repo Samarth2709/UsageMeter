@@ -350,6 +350,7 @@ h1 {
   background: var(--bg);
   font-family: "Avenir Next", "DIN Alternate", "Helvetica Neue", sans-serif;
   font-variant-numeric: tabular-nums;
+  overflow-y: auto;
 }
 
 .history-header {
@@ -571,38 +572,21 @@ h1 {
   vertical-align: baseline;
 }
 
-/* ===== multi-page dashboard ===== */
-.history-body {
-  overflow-y: auto;
-}
-
-.page-tabs {
+/* ===== single-page dashboard ===== */
+.header-controls {
   display: flex;
-  gap: 4px;
-  margin: 4px 0 12px;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 8px;
+  align-items: center;
+  gap: 8px;
 }
 
-.page-tabs button {
-  border: 0;
-  background: transparent;
+.live-label {
+  font-size: 0.6rem;
   color: var(--muted);
-  font-size: 0.78rem;
-  padding: 4px 10px;
-  border-radius: 7px;
+  font-weight: 400;
+  margin-left: 6px;
 }
 
-.page-tabs button:hover {
-  color: var(--fg);
-}
-
-.page-tabs button.active {
-  color: var(--fg);
-  background: var(--surface-strong);
-}
-
-.page h2 {
+.history-body h2 {
   font-size: 0.78rem;
   font-weight: 600;
   margin: 14px 0 6px;
@@ -671,37 +655,14 @@ h1 {
   width: 120px;
 }
 
-/* donut */
-.donut-wrap {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.donut-c1 {
-  fill: var(--fg);
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.donut-c2 {
-  fill: var(--muted);
-  font-size: 9px;
-}
-
-.donut-legend,
+/* legends */
 .mix-legend {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 0.72rem;
-}
-
-.mix-legend {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 4px 12px;
   margin-top: 6px;
+  font-size: 0.72rem;
   color: var(--muted);
 }
 
@@ -709,15 +670,6 @@ h1 {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.lg-name {
-  flex: 1;
-}
-
-.lg-val {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 
 .lg-dot {

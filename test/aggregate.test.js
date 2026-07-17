@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  recordsToContribution, contributionForFile, mergeAndPrice, scanUsageHistory
+  recordsToContribution, contributionForFile, mergeAndPrice, rangeDaysList, scanUsageHistory
 } = require("../usage-history/aggregate");
 
 test("recordsToContribution groups buckets by day and cli::model", () => {
@@ -97,4 +97,56 @@ test("scanUsageHistory counts usage from a configured extra Codex root", () => {
   assert.ok(withRoot.range.dollars > 0, "extra-root usage should be priced");
   const codexModel = withRoot.range.byModel.find((m) => m.cli === "codex");
   assert.ok(codexModel && codexModel.dollars > 0, "extra-root codex usage should be priced");
+});
+
+test("scanUsageHistory re-parses a cached file when its CLI tag changes", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "um-scan-home-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "um-scan-data-"));
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-extra-root-"));
+  const now = Date.now();
+  const ts = new Date(now).toISOString();
+
+  try {
+    fs.writeFileSync(path.join(extra, "r.jsonl"), [
+      JSON.stringify({ type: "session_meta", timestamp: ts, payload: { model: "gpt-5.5" } }),
+      JSON.stringify({ type: "event_msg", timestamp: ts, payload: { type: "token_count", info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 10 } } } })
+    ].join("\n"));
+
+    const misclassified = scanUsageHistory({
+      homeDir: home,
+      dataDir,
+      nowMs: now,
+      rangeDays: 7,
+      extraRoots: { claude: [extra] }
+    });
+    assert.equal(misclassified.range.tokens.total, 0);
+
+    const corrected = scanUsageHistory({
+      homeDir: home,
+      dataDir,
+      nowMs: now,
+      rangeDays: 7,
+      extraRoots: { codex: [extra] }
+    });
+    assert.equal(corrected.range.tokens.total, 110);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(extra, { recursive: true, force: true });
+  }
+});
+
+test("rangeDaysList steps through local calendar days across daylight saving time", () => {
+  const previousTz = process.env.TZ;
+  process.env.TZ = "America/New_York";
+
+  try {
+    assert.deepEqual(
+      rangeDaysList(3, Date.parse("2026-03-10T00:30:00-04:00")),
+      ["2026-03-08", "2026-03-09", "2026-03-10"]
+    );
+  } finally {
+    if (previousTz === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTz;
+  }
 });

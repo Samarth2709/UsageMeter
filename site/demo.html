@@ -13,116 +13,76 @@
   <body class="history-body">
     <header class="history-header">
       <h1>Usage History</h1>
-      <div class="range-toggle">
-        <button data-range="7">7d</button>
-        <button data-range="30" class="active">30d</button>
-        <button data-range="90">90d</button>
+      <div class="header-controls">
+        <div class="range-toggle">
+          <button data-range="7">7d</button>
+          <button data-range="30" class="active">30d</button>
+          <button data-range="90">90d</button>
+        </div>
+        <button id="diag-toggle" class="mini-toggle" title="Diagnostics">⚙</button>
       </div>
     </header>
 
-    <nav class="page-tabs">
-      <button data-page="overview" class="active">Overview</button>
-      <button data-page="overtime">Over Time</button>
-      <button data-page="models">Models</button>
-      <button data-page="economics">Economics</button>
-      <button data-page="efficiency">Efficiency</button>
-      <button data-page="diagnostics">Diagnostics</button>
-    </nav>
+    <main id="page">
+      <!-- empty state -->
+      <div id="ov-empty"></div>
 
-    <main id="pages">
-      <!-- Overview -->
-      <section id="page-overview" class="page">
-        <div id="ov-empty"></div>
-        <div id="ov-cards" class="history-summary"></div>
-        <div class="chart-head">
-          <h2>Daily usage</h2>
-          <div class="mini-toggle" id="ov-metric">
-            <button data-metric="tokens" class="active">Tokens</button>
-            <button data-metric="cost">Cost</button>
-          </div>
+      <!-- summary cards -->
+      <div id="sum-cards" class="history-summary"></div>
+
+      <!-- subscription value (live) -->
+      <h2>Subscription value <span class="live-label">live now — not range-scoped</span></h2>
+      <div id="ec-value"></div>
+      <p id="ec-value-note" class="history-note">Value used so far is priced exactly per token type. The projected full-window value extrapolates the unused part at your recent average cost per token, so it shifts if your input/output mix changes. Counts local sessions on this machine only.</p>
+
+      <!-- daily usage -->
+      <div class="chart-head">
+        <h2>Daily usage</h2>
+        <div class="mini-toggle" id="ov-metric">
+          <button data-metric="tokens" class="active">Tokens</button>
+          <button data-metric="cost">Cost</button>
         </div>
-        <div id="ov-chart" class="history-chart"></div>
-        <h2>Top models</h2>
-        <div id="ov-top-models" class="mini-models"></div>
-      </section>
+      </div>
+      <div id="ov-chart" class="history-chart"></div>
 
-      <!-- Over Time -->
-      <section id="page-overtime" class="page hidden">
-        <div id="ot-stats" class="history-summary"></div>
-        <h2>Cost per day</h2>
-        <div id="ot-cost-chart" class="history-chart"></div>
-        <h2>Cumulative spend</h2>
-        <div id="ot-cumulative" class="history-chart"></div>
-        <div class="two-col">
-          <div>
-            <h2>By day of week</h2>
-            <div id="ot-weekday"></div>
-          </div>
-          <div>
-            <h2>Daily cost calendar</h2>
-            <div id="ot-heatmap"></div>
-          </div>
+      <!-- cumulative spend -->
+      <h2>Cumulative spend</h2>
+      <div id="ot-cumulative" class="history-chart"></div>
+
+      <!-- spend detail -->
+      <div class="two-col">
+        <div>
+          <h2>Daily cost calendar</h2>
+          <div id="ot-heatmap"></div>
         </div>
-      </section>
-
-      <!-- Models -->
-      <section id="page-models" class="page hidden">
-        <div class="two-col">
-          <div>
-            <h2>Cost share</h2>
-            <div id="md-donut"></div>
-          </div>
-          <div>
-            <h2>Model mix over time</h2>
-            <div id="md-mix" class="history-chart"></div>
-            <div id="md-mix-legend" class="mix-legend"></div>
-          </div>
+        <div>
+          <h2>Most expensive days</h2>
+          <div id="ec-top-days"></div>
         </div>
-        <h2>All models</h2>
-        <div class="history-models">
-          <table id="md-table">
-            <thead>
-              <tr>
-                <th>Model</th><th>CLI</th>
-                <th class="num">Prompts</th><th class="num">Tokens</th>
-                <th class="num">$ value</th><th class="num">$ / prompt</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
+      </div>
 
-      <!-- Economics -->
-      <section id="page-economics" class="page hidden">
-        <div id="ec-cards" class="history-summary"></div>
-        <h2>Subscription value</h2>
-        <div id="ec-value"></div>
-        <p id="ec-value-note" class="history-note">Value used so far is priced exactly per token type. The projected full-window value extrapolates the unused part at your recent average cost per token, so it shifts if your input/output mix changes. Counts local sessions on this machine only.</p>
-        <div class="two-col">
-          <div>
-            <h2>Spend by token type</h2>
-            <div id="ec-type"></div>
-          </div>
-          <div>
-            <h2>Claude vs Codex</h2>
-            <div id="ec-cli"></div>
-          </div>
-        </div>
-        <h2>Most expensive days</h2>
-        <div id="ec-top-days"></div>
-      </section>
+      <!-- models -->
+      <h2>Model mix over time</h2>
+      <div id="md-mix" class="history-chart"></div>
+      <div id="md-mix-legend" class="mix-legend"></div>
+      <h2>All models</h2>
+      <div class="history-models">
+        <table id="md-table">
+          <thead>
+            <tr>
+              <th>Model</th><th>CLI</th>
+              <th class="num">Prompts</th>
+              <th class="num">Fresh input</th><th class="num">Cache read</th>
+              <th class="num">Cache write</th><th class="num">Output</th>
+              <th class="num">Total tok</th><th class="num">$ value</th><th class="num">$ / prompt</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
 
-      <!-- Efficiency -->
-      <section id="page-efficiency" class="page hidden">
-        <div id="ef-cards" class="history-summary"></div>
-        <h2>Cache hit rate by model</h2>
-        <div id="ef-cache"></div>
-        <p class="history-note">Cache hit rate = cache-read tokens ÷ (cache-read + fresh input). Savings = what those cache reads would cost at the full input rate.</p>
-      </section>
-
-      <!-- Diagnostics -->
-      <section id="page-diagnostics" class="page hidden">
+      <!-- diagnostics (toggled by the gear button) -->
+      <section id="diag-panel" class="hidden">
         <div class="chart-head">
           <h2>Diagnostics</h2>
           <span style="display:flex;gap:6px">
@@ -138,7 +98,10 @@
       </section>
     </main>
 
-    <p id="history-note" class="history-note"></p>
+    <footer id="history-footer">
+      <span id="footer-transparency" class="history-note"></span>
+      <p id="history-note" class="history-note"></p>
+    </footer>
 
     <script src="mock.js"></script>
     <script src="help.js"></script>

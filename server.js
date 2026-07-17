@@ -20,6 +20,7 @@ const defaultWorkspace = process.cwd();
 const timerKickPrompt = "Reply with exactly OK.";
 const browserServerHost = "127.0.0.1";
 const browserServerToken = crypto.randomBytes(32).toString("base64url");
+let configWriteQueue = Promise.resolve();
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -486,15 +487,41 @@ async function ensureConfig() {
   }
 
   const normalized = await hydrateConfigFromStoredIdentities(config);
-  await fs.writeFile(configPath, JSON.stringify(normalized, null, 2));
   return normalized;
 }
 
-async function saveConfig(config) {
+function queueConfigWrite(operation) {
+  const pending = configWriteQueue.then(operation, operation);
+  configWriteQueue = pending.catch(() => {});
+  return pending;
+}
+
+async function writeConfig(config) {
   const normalized = normalizeConfig(config);
   await fs.mkdir(appDataDir, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify(normalized, null, 2));
   return normalized;
+}
+
+function saveConfig(config) {
+  return queueConfigWrite(() => writeConfig(config));
+}
+
+function mergeRefreshedConfig(latestConfig, refreshedConfig) {
+  return {
+    ...latestConfig,
+    identities: mergeIdentities([
+      ...latestConfig.identities,
+      ...refreshedConfig.identities
+    ])
+  };
+}
+
+function saveRefreshedConfig(refreshedConfig) {
+  return queueConfigWrite(async () => {
+    const latestConfig = await ensureConfig();
+    return writeConfig(mergeRefreshedConfig(latestConfig, refreshedConfig));
+  });
 }
 
 function defaultAutomationState() {
@@ -1473,7 +1500,7 @@ async function refreshAccountById(accountId) {
   }
 
   const result = await refreshIdentity(config, identity);
-  await saveConfig(config);
+  await saveRefreshedConfig(config);
   return result;
 }
 
@@ -1487,7 +1514,7 @@ async function saveUsageForAccount(accountId, data) {
 
   const changed = updateIdentityFromUsage(identity, data);
   if (changed) {
-    await saveConfig(config);
+    await saveRefreshedConfig(config);
   }
 
   return changed;
@@ -1586,7 +1613,7 @@ async function refreshAllAccounts(options = {}) {
   );
 
   if (configChanged || results.some((result) => result.ok)) {
-    await saveConfig(config);
+    await saveRefreshedConfig(config);
   }
 
   const latestConfig = await ensureConfig();
@@ -1914,6 +1941,7 @@ module.exports = {
     normalizeConfig,
     normalizeScanRoots,
     serializeConfig,
+    mergeRefreshedConfig,
     createBrowserIndexHtml,
     loadStoredCodexIdentities,
     refreshIdentity,

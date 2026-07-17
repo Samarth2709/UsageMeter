@@ -6,26 +6,26 @@ const FILE_NAME = "usage-history.json";
 // older version are discarded and transcripts are re-parsed with the new logic.
 const CACHE_VERSION = 5;
 
-function freshCache() {
-  return { version: CACHE_VERSION, files: {} };
+function freshCache(version = CACHE_VERSION) {
+  return { version, files: {} };
 }
 
-function loadCache(dataDir) {
+function loadCache(dataDir, fileName = FILE_NAME, version = CACHE_VERSION) {
   try {
-    const raw = fs.readFileSync(path.join(dataDir, FILE_NAME), "utf8");
+    const raw = fs.readFileSync(path.join(dataDir, fileName), "utf8");
     const parsed = JSON.parse(raw);
-    if (!parsed || parsed.version !== CACHE_VERSION || typeof parsed.files !== "object") {
-      return freshCache();
+    if (!parsed || parsed.version !== version || typeof parsed.files !== "object") {
+      return freshCache(version);
     }
     return parsed;
   } catch {
-    return freshCache();
+    return freshCache(version);
   }
 }
 
-function saveCache(dataDir, cache) {
+function saveCache(dataDir, cache, fileName = FILE_NAME) {
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(path.join(dataDir, FILE_NAME), JSON.stringify(cache));
+  fs.writeFileSync(path.join(dataDir, fileName), JSON.stringify(cache));
 }
 
 module.exports = { loadCache, saveCache, freshCache, FILE_NAME, CACHE_VERSION };

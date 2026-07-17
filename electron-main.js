@@ -1,8 +1,6 @@
 const path = require("path");
-const http = require("http");
 const fs = require("fs/promises");
 const os = require("os");
-const crypto = require("crypto");
 const {
   app,
   BrowserWindow,
@@ -39,11 +37,11 @@ const minWindowHeight = 70;
 const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
+const launchAtLoginStateFile = "launch-at-login-enabled.json";
 const backgroundRefreshMs = 60000;
 const updateRepo = process.env.USAGE_METER_UPDATE_REPO || "Samarth2709/UsageMeter";
 const updateCheckMs = 6 * 60 * 60 * 1000; // every 6 hours
 const releasesPageUrl = `https://github.com/${updateRepo}/releases/latest`;
-const claudeUsageApiPort = Number(process.env.CLAUDE_USAGE_API_PORT || 4555);
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
 // The claude.ai web scrape recreates a full renderer each time, so keep it infrequent.
 // It's supplementary — the CLI fallback covers shorter intervals, and the popover also
@@ -52,7 +50,6 @@ const claudeWebRefreshMs = 300000;
 const claudeCliFallbackRefreshMs = 120000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
-const claudeUsageApiToken = crypto.randomBytes(32).toString("base64url");
 
 let tray = null;
 let popover = null;
@@ -68,7 +65,6 @@ let backgroundRefreshTimer = null;
 let autoStartPromise = null;
 let claudeUsageWindow = null;
 let claudeLoginWindow = null;
-let claudeUsageApiServer = null;
 let claudeWebRefreshTimer = null;
 let claudeWebRefreshPromise = null;
 let claudeFallbackRefreshPromise = null;
@@ -112,6 +108,32 @@ function createTrayIcon() {
   const icon = nativeImage.createFromPath(path.join(__dirname, "assets", "trayTemplate.png"));
   icon.setTemplateImage(true);
   return icon;
+}
+
+async function enableLaunchAtLoginByDefault() {
+  if (process.platform !== "darwin" || !app.isPackaged || !app.isInApplicationsFolder()) {
+    return;
+  }
+
+  const statePath = path.join(app.getPath("userData"), launchAtLoginStateFile);
+
+  try {
+    await fs.access(statePath);
+    return;
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`Could not read launch-at-login state: ${error.message}`);
+      return;
+    }
+  }
+
+  try {
+    app.setLoginItemSettings({ openAtLogin: true });
+    await fs.mkdir(path.dirname(statePath), { recursive: true });
+    await fs.writeFile(statePath, JSON.stringify({ enabledAt: new Date().toISOString() }));
+  } catch (error) {
+    console.warn(`Could not enable launch at login: ${error.message}`);
+  }
 }
 
 function createPopover() {
@@ -1020,7 +1042,7 @@ async function refreshScanRoots() {
 // share across ranges instead of redoing the scan per range.
 function computeSharedHistoryParts() {
   return {
-    windowValues: computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows(), extraRoots: scanRoots }),
+    windowValues: computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows(), extraRoots: scanRoots, dataDir: appDataDir }),
     diagnostics: buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir, extraRoots: scanRoots }),
     appVersion: app.getVersion(),
     computedAt: new Date().toISOString()
@@ -1170,79 +1192,6 @@ function preserveRecentSuccessfulResults(snapshot, previousSnapshot) {
       };
     })
   };
-}
-
-function sendJson(response, statusCode, body) {
-  response.writeHead(statusCode, {
-    "Content-Type": "application/json"
-  });
-  response.end(JSON.stringify(body, null, 2));
-}
-
-function authorizeClaudeUsageApiRequest(request, response) {
-  if (request.headers["x-rate-limit-tool-token"] !== claudeUsageApiToken) {
-    sendJson(response, 403, { ok: false, error: "Invalid local session token." });
-    return false;
-  }
-
-  return true;
-}
-
-function startClaudeUsageApiServer() {
-  if (claudeUsageApiServer) {
-    return;
-  }
-
-  claudeUsageApiServer = http.createServer(async (request, response) => {
-    const url = new URL(request.url, `http://127.0.0.1:${claudeUsageApiPort}`);
-
-    if (!authorizeClaudeUsageApiRequest(request, response)) {
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/claude-web-usage") {
-      const shouldRefresh = url.searchParams.get("refresh") === "1";
-      sendJson(response, 200, shouldRefresh ? await refreshClaudeWebUsage({ force: true }) : claudeWebUsageCache);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/claude-web-usage/refresh") {
-      sendJson(response, 200, await refreshClaudeWebUsage({ force: true }));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/claude-web-usage/login") {
-      showClaudeUsageLogin();
-      claudeWebUsageCache = {
-        ok: false,
-        status: "login_required",
-        error: "Claude usage login window is open.",
-        url: claudeUsageUrl,
-        fetchedAt: new Date().toISOString()
-      };
-      sendJson(response, 200, { ok: true, url: claudeUsageUrl });
-      return;
-    }
-
-    sendJson(response, 404, { ok: false, error: "Not found." });
-  });
-
-  claudeUsageApiServer.on("error", (error) => {
-    if (error.code === "EADDRINUSE") {
-      console.warn(
-        `Claude web usage API port ${claudeUsageApiPort} is already in use; continuing without the helper server.`
-      );
-      claudeUsageApiServer = null;
-      return;
-    }
-
-    console.warn(`Claude web usage API failed to start: ${error.message}`);
-    claudeUsageApiServer = null;
-  });
-
-  claudeUsageApiServer.listen(claudeUsageApiPort, "127.0.0.1", () => {
-    console.log(`Claude web usage API running at http://127.0.0.1:${claudeUsageApiPort}`);
-  });
 }
 
 function startClaudeWebUsageRefresh() {
@@ -1486,6 +1435,8 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     app.setName("Usage Meter");
 
+    await enableLaunchAtLoginByDefault();
+
     if (app.dock) {
       app.dock.hide();
     }
@@ -1498,7 +1449,6 @@ if (!gotSingleInstanceLock) {
     popover.once("ready-to-show", showPopover);
     setTimeout(showPopover, 800);
     startBackgroundRefresh();
-    startClaudeUsageApiServer();
     startClaudeWebUsageRefresh();
     startUpdateChecks();
 
@@ -1527,8 +1477,5 @@ app.on("will-quit", () => {
   clearInterval(backgroundRefreshTimer);
   clearInterval(claudeWebRefreshTimer);
   clearTimeout(popoverPositionSaveTimer);
-  if (claudeUsageApiServer) {
-    claudeUsageApiServer.close();
-  }
   globalShortcut.unregisterAll();
 });

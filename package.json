@@ -16,6 +16,7 @@
   "build": {
     "appId": "com.samarth.usagemeter",
     "productName": "Usage Meter",
+    "icon": "assets/app-icon.icns",
     "mac": {
       "category": "public.app-category.utilities",
       "hardenedRuntime": true,

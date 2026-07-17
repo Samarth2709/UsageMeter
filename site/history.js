@@ -2,8 +2,7 @@ const nativeApi = window.rateLimitAPI || null;
 const serverToken = document.querySelector('meta[name="rate-limit-server-token"]')?.content || "";
 
 let rangeDays = 30;
-let metric = "tokens"; // Overview daily chart: tokens | cost
-let currentPage = "overview";
+let metric = "tokens"; // Daily chart: tokens | cost
 let data = null;
 
 const esc = (s) =>
@@ -104,20 +103,6 @@ function cumulativeLine(el, days) {
   });
 }
 
-function donut(el, slices, centerTop, centerBottom) {
-  const total = slices.reduce((s, x) => s + x.value, 0) || 1;
-  const R = 52, C = 2 * Math.PI * R;
-  let off = 0;
-  const arcs = slices.map((s) => {
-    const len = (s.value / total) * C;
-    const seg = `<circle r="${R}" cx="70" cy="70" fill="none" stroke="${s.color}" stroke-width="20" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
-    off += len;
-    return seg;
-  }).join("");
-  const legend = slices.map((s) => `<div class="lg-row"><span class="lg-dot" style="background:${s.color}"></span><span class="lg-name">${s.label}</span><span class="lg-val">${s.sub || ""}</span></div>`).join("");
-  el.innerHTML = `<div class="donut-wrap"><svg viewBox="0 0 140 140" width="132" height="132">${arcs}<text x="70" y="66" text-anchor="middle" class="donut-c1">${centerTop}</text><text x="70" y="85" text-anchor="middle" class="donut-c2">${centerBottom || ""}</text></svg><div class="donut-legend">${legend}</div></div>`;
-}
-
 function hBars(el, rows) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   el.innerHTML = rows.map((r) => `
@@ -163,115 +148,7 @@ function dayCostHover(d) {
     <div class="tt-row"><span>Prompts</span><b>${d.tokens.prompts.toLocaleString()}</b></div>`;
 }
 
-/* ---------- pages ---------- */
-function renderOverview(d) {
-  const r = d.range;
-  const empty = document.querySelector("#ov-empty");
-  if (empty) {
-    empty.innerHTML = r.tokens.total === 0
-      ? `<div style="border:1px solid var(--accent);border-radius:8px;padding:12px 14px;margin-bottom:12px;color:var(--fg);font-size:0.82rem;line-height:1.45">No CLI usage found in the last ${rangeDays} days. Usage history is built only from local <b>Claude Code</b> &amp; <b>Codex</b> CLI transcripts — API/SDK or IDE usage isn't counted. Open the <b>Diagnostics</b> tab to see exactly what was scanned.</div>`
-      : "";
-  }
-  let cT = 0, xT = 0, cD = 0, xD = 0;
-  for (const day of r.days) { cT += day.byCli.claude.tokens.total; xT += day.byCli.codex.tokens.total; cD += day.byCli.claude.dollars; xD += day.byCli.codex.dollars; }
-  document.querySelector("#ov-cards").innerHTML =
-    card("Today", fmtTokens(d.today.tokens.total) + " tok", fmtDollars(d.today.dollars)) +
-    card("Range total", fmtTokens(r.tokens.total) + " tok", fmtDollars(r.dollars)) +
-    card("Avg / prompt", fmtPerPrompt(r.avgCostPerPrompt), r.tokens.prompts.toLocaleString() + " prompts") +
-    card("Claude / Codex", fmtTokens(cT) + " / " + fmtTokens(xT), fmtDollars(cD) + " / " + fmtDollars(xD));
-
-  const useCost = metric === "cost";
-  dayBars(
-    document.querySelector("#ov-chart"),
-    r.days,
-    (day) => useCost
-      ? [{ value: day.byCli.claude.dollars, color: CLI_COLORS.claude }, { value: day.byCli.codex.dollars, color: CLI_COLORS.codex }]
-      : [{ value: day.byCli.claude.tokens.total, color: CLI_COLORS.claude }, { value: day.byCli.codex.tokens.total, color: CLI_COLORS.codex }],
-    useCost ? dayCostHover : dayTokenHover
-  );
-
-  hBars(document.querySelector("#ov-top-models"), r.byModel.slice(0, 5).map((m, i) => ({
-    label: m.model, color: MODEL_PALETTE[i % MODEL_PALETTE.length],
-    value: m.dollars, valueText: fmtDollars(m.dollars)
-  })));
-}
-
-function renderOverTime(d) {
-  const r = d.range;
-  const half = Math.floor(r.days.length / 2);
-  const firstHalf = r.days.slice(0, half).reduce((s, x) => s + x.dollars, 0);
-  const secondHalf = r.days.slice(half).reduce((s, x) => s + x.dollars, 0);
-  const delta = firstHalf > 0 ? ((secondHalf - firstHalf) / firstHalf) * 100 : 0;
-  const busiest = r.days.reduce((a, b) => (b.dollars > a.dollars ? b : a), r.days[0]);
-  document.querySelector("#ot-stats").innerHTML =
-    card("Total spend", fmtDollars(r.dollars), rangeDays + "d") +
-    card("Avg / day", fmtDollars(r.dollars / rangeDays), "") +
-    card("Busiest day", fmtDollars(busiest.dollars), fmtDay(busiest.day)) +
-    card("2nd half vs 1st", (delta >= 0 ? "+" : "") + delta.toFixed(0) + "%", "spend momentum");
-
-  dayBars(
-    document.querySelector("#ot-cost-chart"),
-    r.days,
-    (day) => [{ value: day.byCli.claude.dollars, color: CLI_COLORS.claude }, { value: day.byCli.codex.dollars, color: CLI_COLORS.codex }],
-    dayCostHover
-  );
-
-  cumulativeLine(document.querySelector("#ot-cumulative"), r.days);
-
-  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const wd = names.map(() => ({ sum: 0, n: 0 }));
-  for (const day of r.days) { const g = new Date(day.day + "T00:00:00").getDay(); wd[g].sum += day.dollars; wd[g].n += 1; }
-  hBars(document.querySelector("#ot-weekday"), wd.map((w, i) => ({
-    label: names[i], color: "var(--accent)",
-    value: w.n ? w.sum / w.n : 0, valueText: fmtDollars(w.n ? w.sum / w.n : 0)
-  })));
-
-  heatmap(document.querySelector("#ot-heatmap"), r.days);
-}
-
-function renderModels(d) {
-  const r = d.range;
-  const colorMap = {};
-  r.byModel.slice(0, MODEL_PALETTE.length).forEach((m, i) => { colorMap[`${m.cli}::${m.model}`] = MODEL_PALETTE[i]; });
-  const colorFor = (key) => colorMap[key] || OTHER_COLOR;
-
-  // donut by cost
-  const top = r.byModel.slice(0, MODEL_PALETTE.length);
-  const otherD = r.byModel.slice(MODEL_PALETTE.length).reduce((s, m) => s + m.dollars, 0);
-  const slices = top.map((m, i) => ({ label: m.model, color: MODEL_PALETTE[i], value: m.dollars, sub: fmtDollars0(m.dollars) }));
-  if (otherD > 0) slices.push({ label: "other", color: OTHER_COLOR, value: otherD, sub: fmtDollars0(otherD) });
-  donut(document.querySelector("#md-donut"), slices, fmtDollars0(r.dollars), "total");
-
-  // model mix over time (stacked by model, cost)
-  const keys = Object.keys(colorMap);
-  dayBars(
-    document.querySelector("#md-mix"),
-    r.days,
-    (day) => {
-      const segs = keys.map((k) => ({ value: (day.models[k]?.dollars || 0), color: colorFor(k) }));
-      let other = 0;
-      for (const [k, v] of Object.entries(day.models)) if (!colorMap[k]) other += v.dollars;
-      if (other > 0) segs.push({ value: other, color: OTHER_COLOR });
-      return segs;
-    },
-    (day) => {
-      const rows = Object.entries(day.models).sort((a, b) => b[1].dollars - a[1].dollars).slice(0, 6)
-        .map(([k, v]) => `<div class="tt-row"><span><span class="tt-dot" style="background:${colorFor(k)}"></span>${k.split("::")[1]}</span><span>${fmtDollars(v.dollars)}</span></div>`).join("");
-      return `<div class="tt-date">${fmtDay(day.day)}</div>${rows || "<div class='tt-row'><span>no usage</span></div>"}`;
-    }
-  );
-  document.querySelector("#md-mix-legend").innerHTML = top.map((m, i) => `<span class="lg-row"><span class="lg-dot" style="background:${MODEL_PALETTE[i]}"></span>${m.model}</span>`).join("");
-
-  const tbody = document.querySelector("#md-table tbody");
-  tbody.innerHTML = "";
-  for (const m of r.byModel) {
-    const tr = document.createElement("tr");
-    [m.model + (m.modelKnown ? "" : " *"), m.cli, m.prompts.toLocaleString(), fmtTokens(m.tokens.total), fmtDollars(m.dollars), fmtPerPrompt(m.costPerPrompt)]
-      .forEach((t, i) => { const td = document.createElement("td"); if (i >= 2) td.className = "num"; td.textContent = t; tr.appendChild(td); });
-    tbody.appendChild(tr);
-  }
-}
-
+/* ---------- subscription value (live windows) ---------- */
 const WINDOW_ORDER = { fiveHour: 0, week: 1 };
 const CLI_ORDER = { claude: 0, codex: 1 };
 const CLI_LABEL = { claude: "Claude", codex: "Codex" };
@@ -305,57 +182,64 @@ function renderWindowValues(rows) {
   }).join("");
 }
 
-function renderEconomics(d) {
+/* ---------- sections ---------- */
+// Daily usage bars — re-rendered on its own when the Tokens/Cost toggle flips.
+function renderDaily(d) {
   const r = d.range;
-  renderWindowValues(d.windowValues);
-  const effRate = r.tokens.total ? r.dollars / (r.tokens.total / 1e6) : 0;
-  document.querySelector("#ec-cards").innerHTML =
-    card("Total spend", fmtDollars(r.dollars), rangeDays + "d window") +
-    card("Avg / day", fmtDollars(r.dollars / rangeDays), "") +
-    card("Projected / mo", fmtDollars0((r.dollars / rangeDays) * 30), "at current rate") +
-    card("Effective rate", "$" + effRate.toFixed(2) + "/M", "blended $/Mtok");
-
-  const t = r.costByType;
-  hBars(document.querySelector("#ec-type"), [
-    { label: "Output", value: t.output, valueText: fmtDollars(t.output), color: "#e0796a" },
-    { label: "Fresh input", value: t.input, valueText: fmtDollars(t.input), color: "#5fa8d3" },
-    { label: "Cache write", value: t.cacheWrite, valueText: fmtDollars(t.cacheWrite), color: "#d7c56f" },
-    { label: "Cache read", value: t.cachedRead, valueText: fmtDollars(t.cachedRead), color: "#74c278" }
-  ]);
-
-  let cD = 0, xD = 0;
-  for (const day of r.days) { cD += day.byCli.claude.dollars; xD += day.byCli.codex.dollars; }
-  hBars(document.querySelector("#ec-cli"), [
-    { label: "Codex", value: xD, valueText: fmtDollars(xD), color: CLI_COLORS.codex },
-    { label: "Claude", value: cD, valueText: fmtDollars(cD), color: CLI_COLORS.claude }
-  ]);
-
-  const topDays = [...r.days].sort((a, b) => b.dollars - a.dollars).slice(0, 7);
-  hBars(document.querySelector("#ec-top-days"), topDays.map((day) => ({
-    label: fmtDay(day.day), value: day.dollars, valueText: fmtDollars(day.dollars), color: "var(--accent)"
-  })));
+  const useCost = metric === "cost";
+  dayBars(
+    document.querySelector("#ov-chart"),
+    r.days,
+    (day) => useCost
+      ? [{ value: day.byCli.claude.dollars, color: CLI_COLORS.claude }, { value: day.byCli.codex.dollars, color: CLI_COLORS.codex }]
+      : [{ value: day.byCli.claude.tokens.total, color: CLI_COLORS.claude }, { value: day.byCli.codex.tokens.total, color: CLI_COLORS.codex }],
+    useCost ? dayCostHover : dayTokenHover
+  );
 }
 
-function renderEfficiency(d) {
+function renderModelsSection(d) {
   const r = d.range;
-  const tot = r.tokens;
-  const hitRate = (tot.input + tot.cachedRead) ? (tot.cachedRead / (tot.input + tot.cachedRead)) * 100 : 0;
-  document.querySelector("#ef-cards").innerHTML =
-    card("Cache hit rate", fmtPct(hitRate), "of input tokens") +
-    card("Cache savings", fmtDollars0(r.cacheSavings), "vs uncached") +
-    card("Would-be cost", fmtDollars0(r.dollars + r.cacheSavings), "without caching");
+  const colorMap = {};
+  r.byModel.slice(0, MODEL_PALETTE.length).forEach((m, i) => { colorMap[`${m.cli}::${m.model}`] = MODEL_PALETTE[i]; });
+  const colorFor = (key) => colorMap[key] || OTHER_COLOR;
 
-  const rows = r.byModel.filter((m) => m.tokens.input + m.tokens.cachedRead > 0).map((m, i) => {
-    const rate = (m.tokens.cachedRead / (m.tokens.input + m.tokens.cachedRead)) * 100;
-    return {
-      label: m.model, value: rate, valueText: fmtPct(rate) + "  ·  saved " + fmtDollars0(m.cacheSavings),
-      color: MODEL_PALETTE[i % MODEL_PALETTE.length],
-      title: `${m.model}: ${fmtPct(rate)} cache hit, ${fmtDollars0(m.cacheSavings)} saved`
-    };
-  });
-  hBars(document.querySelector("#ef-cache"), rows);
+  // model mix over time (stacked by model, cost)
+  const keys = Object.keys(colorMap);
+  dayBars(
+    document.querySelector("#md-mix"),
+    r.days,
+    (day) => {
+      const segs = keys.map((k) => ({ value: (day.models[k]?.dollars || 0), color: colorFor(k) }));
+      let other = 0;
+      for (const [k, v] of Object.entries(day.models)) if (!colorMap[k]) other += v.dollars;
+      if (other > 0) segs.push({ value: other, color: OTHER_COLOR });
+      return segs;
+    },
+    (day) => {
+      const rows = Object.entries(day.models).sort((a, b) => b[1].dollars - a[1].dollars).slice(0, 6)
+        .map(([k, v]) => `<div class="tt-row"><span><span class="tt-dot" style="background:${colorFor(k)}"></span>${esc(k.split("::").slice(1).join("::"))}</span><span>${fmtDollars(v.dollars)}</span></div>`).join("");
+      return `<div class="tt-date">${fmtDay(day.day)}</div>${rows || "<div class='tt-row'><span>no usage</span></div>"}`;
+    }
+  );
+  const top = r.byModel.slice(0, MODEL_PALETTE.length);
+  document.querySelector("#md-mix-legend").innerHTML = top.map((m, i) => `<span class="lg-row"><span class="lg-dot" style="background:${MODEL_PALETTE[i]}"></span>${esc(m.model)}</span>`).join("");
+
+  const tbody = document.querySelector("#md-table tbody");
+  tbody.innerHTML = "";
+  for (const m of r.byModel) {
+    const tr = document.createElement("tr");
+    [
+      m.model + (m.modelKnown ? "" : " *"), m.cli,
+      m.prompts.toLocaleString(),
+      fmtTokens(m.tokens.input), fmtTokens(m.tokens.cachedRead),
+      fmtTokens(m.tokens.cacheWrite), fmtTokens(m.tokens.output),
+      fmtTokens(m.tokens.total), fmtDollars(m.dollars), fmtPerPrompt(m.costPerPrompt)
+    ].forEach((t, i) => { const td = document.createElement("td"); if (i >= 2) td.className = "num"; td.textContent = t; tr.appendChild(td); });
+    tbody.appendChild(tr);
+  }
 }
 
+/* ---------- diagnostics ---------- */
 function diagnosticsReport(d) {
   const dg = d.diagnostics;
   const r = d.range;
@@ -503,21 +387,56 @@ async function mutateScanRoots(cli, folder, op) {
     ? (list.includes(folder) ? list : [...list, folder])
     : list.filter((x) => x !== folder);
   await nativeApi.saveConfig(config);
-  await load(); // history is recomputed with the new folders; re-render Diagnostics
+  await load(); // history is recomputed with the new folders; re-render everything
 }
 
-const RENDERERS = { overview: renderOverview, overtime: renderOverTime, models: renderModels, economics: renderEconomics, efficiency: renderEfficiency, diagnostics: renderDiagnostics };
-
-function renderCurrent() {
+/* ---------- render everything ---------- */
+function renderAll(d) {
   hideTooltip();
-  if (data) RENDERERS[currentPage](data);
-}
+  const r = d.range;
 
-function showPage(name) {
-  currentPage = name;
-  for (const btn of document.querySelectorAll(".page-tabs button")) btn.classList.toggle("active", btn.dataset.page === name);
-  for (const sec of document.querySelectorAll(".page")) sec.classList.toggle("hidden", sec.id !== `page-${name}`);
-  renderCurrent();
+  // empty-state banner
+  const empty = document.querySelector("#ov-empty");
+  if (empty) {
+    empty.innerHTML = r.tokens.total === 0
+      ? `<div style="border:1px solid var(--accent);border-radius:8px;padding:12px 14px;margin-bottom:12px;color:var(--fg);font-size:0.82rem;line-height:1.45">No CLI usage found in the last ${rangeDays} days. Usage history is built only from local <b>Claude Code</b> &amp; <b>Codex</b> CLI transcripts — API/SDK or IDE usage isn't counted. Open the <b>Diagnostics</b> panel (⚙) to see exactly what was scanned.</div>`
+      : "";
+  }
+
+  // summary cards
+  document.querySelector("#sum-cards").innerHTML =
+    card("Today", fmtDollars(d.today.dollars), fmtTokens(d.today.tokens.total) + " tok") +
+    card("Range total", fmtDollars(r.dollars), fmtTokens(r.tokens.total) + " tok") +
+    card("Avg / day", fmtDollars(r.dollars / rangeDays), "over " + rangeDays + "d") +
+    card("Prompts", r.tokens.prompts.toLocaleString(), fmtPerPrompt(r.avgCostPerPrompt) + " / prompt");
+
+  // subscription value (live windows)
+  renderWindowValues(d.windowValues);
+
+  // daily usage
+  renderDaily(d);
+
+  // cumulative spend
+  cumulativeLine(document.querySelector("#ot-cumulative"), r.days);
+
+  // heatmap + most expensive days
+  heatmap(document.querySelector("#ot-heatmap"), r.days);
+  const topDays = [...r.days].sort((a, b) => b.dollars - a.dollars).slice(0, 7);
+  hBars(document.querySelector("#ec-top-days"), topDays.map((day) => ({
+    label: fmtDay(day.day), value: day.dollars, valueText: fmtDollars(day.dollars), color: "var(--accent)"
+  })));
+
+  // models
+  renderModelsSection(d);
+
+  // diagnostics panel (rendered even when hidden so it's correct when opened)
+  renderDiagnostics(d);
+
+  // transparency footer
+  const ts = d.computedAt || d.scannedAt || "?";
+  const footer = document.querySelector("#footer-transparency");
+  if (footer) footer.textContent =
+    `Data: local Claude Code + Codex CLI transcripts only · $ = estimated API-equivalent pricing (built-in table) · last computed ${ts}`;
 }
 
 /* ---------- data ---------- */
@@ -537,12 +456,13 @@ async function load() {
     document.querySelector("#history-note").textContent = data.flags.unknownModels.length
       ? `* unknown model, priced at fallback rate: ${data.flags.unknownModels.join(", ")}`
       : "";
-    renderCurrent();
+    renderAll(data);
   } catch (error) {
     document.querySelector("#history-note").textContent = error.message;
   }
 }
 
+/* ---------- controls ---------- */
 for (const btn of document.querySelectorAll(".range-toggle button")) {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".range-toggle button").forEach((b) => b.classList.remove("active"));
@@ -551,15 +471,20 @@ for (const btn of document.querySelectorAll(".range-toggle button")) {
     load();
   });
 }
-for (const btn of document.querySelectorAll(".page-tabs button")) {
-  btn.addEventListener("click", () => showPage(btn.dataset.page));
-}
 document.querySelector("#ov-metric").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-metric]");
   if (!btn) return;
   metric = btn.dataset.metric;
   document.querySelectorAll("#ov-metric button").forEach((b) => b.classList.toggle("active", b === btn));
-  if (data) renderOverview(data);
+  if (data) renderDaily(data);
 });
+
+const diagToggle = document.querySelector("#diag-toggle");
+if (diagToggle && !diagToggle.dataset.wired) {
+  diagToggle.dataset.wired = "1";
+  diagToggle.addEventListener("click", () => {
+    document.querySelector("#diag-panel").classList.toggle("hidden");
+  });
+}
 
 load();

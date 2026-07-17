@@ -144,6 +144,37 @@ test("identity serialization preserves last successful usage", () => {
   assert.equal(serialized.accounts[0].lastUsage.windows[0].remainingPercent, 64);
 });
 
+test("refresh config merges identity updates without reverting scan roots", () => {
+  const latest = _test.normalizeConfig({
+    identities: [
+      {
+        id: "claude-1",
+        type: "claude",
+        label: "Claude Code",
+        workspace: process.cwd()
+      }
+    ],
+    scanRoots: { claude: ["~/new-claude-sessions"], codex: [] }
+  });
+  const refreshed = _test.normalizeConfig({
+    identities: [
+      {
+        ...latest.identities[0],
+        lastUsage: {
+          service: "claude",
+          windows: [{ label: "5-hour", remainingPercent: 55 }]
+        }
+      }
+    ],
+    scanRoots: { claude: [], codex: ["~/stale-codex-sessions"] }
+  });
+
+  const merged = _test.mergeRefreshedConfig(latest, refreshed);
+
+  assert.deepEqual(merged.scanRoots, latest.scanRoots);
+  assert.equal(merged.identities[0].lastUsage.windows[0].remainingPercent, 55);
+});
+
 test("refresh falls back to last successful usage when live auth is unavailable", async () => {
   const config = { identities: [] };
   const identity = _test.normalizeConfig({

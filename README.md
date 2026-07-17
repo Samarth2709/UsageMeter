@@ -1,6 +1,6 @@
 # Usage Meter
 
-**[⬇ Download for macOS](https://github.com/Samarth2709/UsageMeter/releases/latest/download/UsageMeter-0.1.0-arm64.dmg)** · **[Website](https://usage-meter-five.vercel.app)** · MIT licensed · Apple Silicon
+**[⬇ Download for macOS](https://github.com/Samarth2709/UsageMeter/releases/latest/download/UsageMeter-arm64.dmg)** · **[Website](https://usage-meter-five.vercel.app)** · MIT licensed · Apple Silicon
 
 > New here or not a GitHub user? The [website](https://usage-meter-five.vercel.app) has a one-click download and a short "how to open it" guide.
 
@@ -40,7 +40,7 @@ npm run dist:mac
 Install from the generated DMG:
 
 ```bash
-open dist/Usage\ Meter-0.1.0-arm64.dmg
+open dist/UsageMeter-arm64.dmg
 ```
 
 For the old browser/server debugging mode:

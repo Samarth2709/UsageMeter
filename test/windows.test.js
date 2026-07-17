@@ -139,6 +139,51 @@ test("recentPricedPoints re-parses only a file that changed", () => {
   });
 });
 
+test("recentPricedPoints re-parses a cached file when its CLI tag changes", () => {
+  withTempHome((home) => {
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), "um-points-root-"));
+    const ts = iso(NOW);
+    try {
+      fs.writeFileSync(path.join(extra, "r.jsonl"), [
+        JSON.stringify({ type: "session_meta", timestamp: ts, payload: { model: "gpt-5.5" } }),
+        codexTurn(NOW - 3600000)
+      ].join("\n"));
+      fs.utimesSync(path.join(extra, "r.jsonl"), new Date(NOW), new Date(NOW));
+      clearPointsCache();
+
+      assert.equal(recentPricedPoints(home, NOW, { claude: [extra] }).length, 0);
+      const corrected = recentPricedPoints(home, NOW, { codex: [extra] });
+      assert.equal(_lastParseCount(), 1);
+      assert.equal(corrected.length, 1);
+    } finally {
+      fs.rmSync(extra, { recursive: true, force: true });
+    }
+  });
+});
+
+test("recentPricedPoints keeps only lookback records in its disk cache", () => {
+  withTempHome((home) => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "um-points-data-"));
+    try {
+      clearPointsCache();
+      writeCodexFixture(home, [
+        codexTurn(NOW - 3600000),
+        codexTurn(NOW - 30 * 86400000)
+      ]);
+
+      const points = recentPricedPoints(home, NOW, {}, dataDir);
+      assert.equal(points.length, 1);
+
+      const disk = JSON.parse(fs.readFileSync(path.join(dataDir, "window-points.json"), "utf8"));
+      const records = Object.values(disk.files).flatMap((entry) => entry.records);
+      assert.equal(records.length, 1);
+      assert.ok(records[0].timestampMs >= NOW - 8 * 86400000);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("recentPricedPoints evicts files that leave the lookback window", () => {
   withTempHome((home) => {
     clearPointsCache();
