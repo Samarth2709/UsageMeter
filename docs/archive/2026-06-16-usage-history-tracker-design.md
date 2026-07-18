@@ -1,5 +1,7 @@
 # Usage History Tracker — Design
 
+> **Historical document — superseded.** This was the approved June 16 design proposal. The tracker shipped and has since evolved; use the active [Architecture](../ARCHITECTURE.md) and [Project history](../HISTORY.md) instead.
+
 Date: 2026-06-16
 Status: Approved (pending spec review)
 

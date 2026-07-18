@@ -1,0 +1,80 @@
+# Development
+
+## Prerequisites
+
+- macOS on Apple Silicon for the packaged app.
+- Node.js 20 or newer. The site deployment workflow also uses Node 20.
+- An installed Codex and/or Claude Code CLI if you want live-limit or local-history data.
+
+## Setup and commands
+
+```bash
+npm ci
+npm start
+npm test
+```
+
+| Command | Purpose |
+| --- | --- |
+| `npm start` / `npm run dev` | Launch Electron from source. |
+| `npm test` | Run all Node tests. |
+| `npm run server` | Run the local browser/debug server at `http://localhost:4545`. |
+| `npm run dist:mac` | Build unsigned macOS DMG and ZIP artifacts in `dist/`. |
+| `npm run clean` | Remove only generated `dist/` artifacts. |
+
+Use `npm ci` for a deterministic dependency install. Do not commit `node_modules/` or `dist/`.
+
+## Verification checklist
+
+Run these checks for a code or documentation change:
+
+```bash
+npm test
+git diff --check
+```
+
+For a dashboard change, also verify:
+
+1. The Electron history view loads its 7/30/90-day data.
+2. Diagnostics work with default and configured transcript folders.
+3. The static demo still loads and native-only controls stay read-only or hidden.
+4. `public/history.js` and `site/history.js` remain intentionally aligned.
+
+For a packaging change, additionally build the DMG, install it into `/Applications`, open it once, and check the menu-bar icon, global shortcut, live refresh, and Login Items behavior.
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `CODEX_HOME` | Adds an alternate Codex home to discovery and live Codex usage. |
+| `CLAUDE_CONFIG_DIR` | Replaces the default `~/.claude` root for Claude transcript discovery. |
+| `USAGE_METER_UPDATE_REPO` | Overrides the GitHub repository used for update checks. |
+| `CLAUDE_USAGE_URL` | Overrides the authenticated Claude web Usage URL. |
+| `RATE_LIMIT_TOOL_DEBUG=1` | Enables development diagnostics. |
+| `RATE_LIMIT_TOOL_KEEP_OPEN=1` | Keeps the History window open after blur while debugging. |
+| `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` | Opts into the 5-hour reset automation; this can run a CLI task and consume usage. |
+| `RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN=1` | Reports eligible automation actions without running a task. |
+
+The packaged app enables macOS launch-at-login independently of `RATE_LIMIT_TOOL_AUTOSTART_ENABLED`. They are different features.
+
+## Code ownership guide
+
+| Need | Start here |
+| --- | --- |
+| Codex/Claude account refresh or login | `server.js` |
+| Window labels, resets, or merge behavior | `usage-windows.js`, `server.js` |
+| History file discovery and parsing | `usage-history/sources.js`, `parseClaude.js`, `parseCodex.js` |
+| Cost, cache savings, or pricing | `usage-history/pricing.js` |
+| Range aggregation or persistence | `usage-history/aggregate.js`, `store.js` |
+| Runway, project, or model insights | `usage-history/windows.js`, `runway.js`, `model-insights.js` |
+| Electron lifecycle or IPC | `electron-main.js`, `preload.js` |
+| Popover/dashboard UI | `public/` and its `site/` counterpart |
+
+## Generated and local-only files
+
+- `node_modules/` is the local dependency tree.
+- `dist/` contains rebuildable DMG/ZIP outputs.
+- `site/.vercel/` links this checkout to the Vercel project and stays ignored.
+- `~/.rate-limit-tool/` contains user-local app state and must not be committed or copied into fixtures.
+
+See [Architecture](ARCHITECTURE.md) for data handling and [Releasing](RELEASING.md) for publication steps.

@@ -206,7 +206,7 @@
         { cli: "codex", kind: "fiveHour", label: "5-hour", usedPercent: 100, usedDollars: 4.2, projectedDollars: 4.2, full: true, resetAt: new Date(now + 2 * 3600e3).toISOString() },
         { cli: "codex", kind: "week", label: "weekly", usedPercent: 40, usedDollars: 52, projectedDollars: 130, full: false, resetAt: new Date(now + 1.6 * 86400e3).toISOString() }
       ],
-      appVersion: "0.2.1",
+      appVersion: "0.2.5",
       diagnostics: {
         homeDir: "/Users/you",
         env: { CLAUDE_CONFIG_DIR: null, CODEX_HOME: null },

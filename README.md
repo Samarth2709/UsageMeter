@@ -1,71 +1,75 @@
 # Usage Meter
 
-**[⬇ Download for macOS](https://github.com/Samarth2709/UsageMeter/releases/latest/download/UsageMeter-arm64.dmg)** · **[Website](https://usage-meter-five.vercel.app)** · MIT licensed · Apple Silicon
+**[Download for macOS](https://github.com/Samarth2709/UsageMeter/releases/latest/download/UsageMeter-arm64.dmg)** · **[Website](https://usage-meter-five.vercel.app)** · MIT licensed · Apple Silicon
 
-> New here or not a GitHub user? The [website](https://usage-meter-five.vercel.app) has a one-click download and a short "how to open it" guide.
+Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Code limits and local CLI usage.
 
-A small macOS menu bar app that shows:
+> As of 2026-07-18, the current source and installed build are v0.2.5 while the latest published GitHub release is v0.2.3. See [Releasing](docs/RELEASING.md) before publishing the newer build.
 
-- saved Codex account usage windows
-- one Claude Code usage window
-- a popover from the menu bar icon
-- a `Control` + `Option` + `L` shortcut to show or hide the popover
+## What it does
 
-## How it works
+- Shows live Codex and Claude Code allowance windows, including dynamically reported weekly-only plans.
+- Refreshes limit data in the background and preserves the last successful value if a provider is temporarily unavailable.
+- Opens with the menu-bar icon or `Control` + `Option` + `L`.
+- Enables macOS launch-at-login on the first packaged launch from `/Applications`; later changes in macOS Login Items are respected.
+- Reads local Claude Code and Codex transcripts to power a Usage History dashboard with daily trends, project grouping, model cost/cache analysis, subscription value, runway estimates, and diagnostics.
+- Lets you add extra transcript folders when your CLI sessions live outside the standard locations.
 
-- Codex usage comes from the saved `auth.json` inside each configured `CODEX_HOME`, refreshes saved tokens when needed, then calls the same authenticated usage endpoint the installed client uses.
-- Claude usage comes from the installed `claude` CLI by opening `/status` in a pseudo-terminal and reading the Usage tab.
+## Install and use
 
-## Run it
+1. Download and install the DMG into `/Applications`.
+2. Open **Usage Meter** once. It adds a menu-bar icon and enables launch-at-login for the packaged app.
+3. Use the refresh control to load limits. Connect a row if the app cannot find an existing CLI login.
+4. Select **View usage history** for local transcript analytics. If history is empty, open **Diagnostics** and add the folder containing your `.jsonl` sessions.
 
-Run the desktop widget from source:
+The packaged app supports Apple Silicon Macs. If macOS blocks an unsigned download, use the instructions on the [website](https://usage-meter-five.vercel.app).
+
+## Data and privacy
+
+Usage Meter is designed around local CLI state:
+
+- Usage History parses local `.jsonl` transcripts and writes an incremental local cache. It does not upload transcript contents.
+- Codex limits use the authenticated credentials already stored by Codex and call its usage service.
+- Claude limits use the installed `claude` CLI's Usage screen and may supplement it with the existing authenticated `claude.ai` session.
+- App configuration, saved identities, caches, window state, and optional automation state live under `~/.rate-limit-tool/`.
+
+See [Architecture](docs/ARCHITECTURE.md) for the exact data flow and [Development](docs/DEVELOPMENT.md) for environment overrides.
+
+## Run from source
+
+Prerequisites: macOS, Node.js 20 or newer, and an installed Codex and/or Claude Code CLI for live data.
 
 ```bash
-npm install
+npm ci
 npm start
 ```
 
-The app opens as a small desktop popover and adds a menu bar icon. Click the menu bar icon or press `Control` + `Option` + `L` to show or hide it.
-
-The widget starts in a waiting state. Click the refresh icon in the top-right corner to load the latest limits. After that, the app refreshes once per minute.
-
-## Run the Packaged App
-
-Build the macOS app:
+Useful commands:
 
 ```bash
-npm run dist:mac
+npm test          # full Node test suite
+npm run server    # browser/debug mode at http://localhost:4545
+npm run dist:mac  # build DMG and ZIP under dist/
+npm run clean     # remove generated dist/ artifacts only
 ```
 
-Install from the generated DMG:
+Source-mode runs do not register a macOS login item.
 
-```bash
-open dist/UsageMeter-arm64.dmg
-```
+## Optional 5-hour automation
 
-For the old browser/server debugging mode:
-
-```bash
-npm run server
-```
-
-Then open [http://localhost:4545](http://localhost:4545).
-
-## Logging in
-
-- Codex accounts are loaded from saved identities in `~/.rate-limit-tool/accounts.json` and `~/.rate-limit-tool/codex-identities`
-- On refresh, the app can discover the current `~/.codex` login and persist it as a stable identity under `~/.rate-limit-tool/codex-identities`
-- Saved Codex identities use their own stored auth, so switching the active `~/.codex` login does not disconnect previously saved identities unless that saved refresh token is revoked or expired
-- `Claude Code` uses the machine's installed `claude` login
-
-Click `Connect` on a row to open the right login command in Terminal. If two saved Codex identities resolve to the same OpenAI/Codex account, the app keeps the first one connected and marks the duplicate as not connected so it can be reconnected correctly.
-
-## Optional Timer Automation
-
-The 5-hour timer auto-start behavior is disabled by default. To enable it while running from source:
+The app normally only reads limits. Setting `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` opts into automation that starts a minimal CLI task when an eligible 5-hour allowance resets. It can consume usage, so it is disabled by default.
 
 ```bash
 RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1 npm start
 ```
 
-Without that environment variable, the app only displays limits and does not send any Codex or Claude messages.
+Use `RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN=1` to inspect eligible actions without running a CLI task. Details and other environment variables are in [Development](docs/DEVELOPMENT.md).
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — components, data paths, storage, and UI mirrors.
+- [Development](docs/DEVELOPMENT.md) — setup, commands, tests, and environment variables.
+- [Releasing](docs/RELEASING.md) — build, release, website deployment, and verification.
+- [Project history](docs/HISTORY.md) — shipped milestones and historical references.
+
+Historical plans live under [docs/archive](docs/archive/README.md). They are retained for context and are not current operating instructions.

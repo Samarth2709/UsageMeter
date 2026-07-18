@@ -1,5 +1,7 @@
 # Usage History Tracker Implementation Plan
 
+> **Historical document — completed and superseded.** This task-by-task June 16 implementation plan is preserved for provenance. Do not treat its checkboxes, versions, or implementation details as current; use [Development](../DEVELOPMENT.md) and [Architecture](../ARCHITECTURE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Track Claude + Codex token usage over time from local CLI transcripts, shown in a dedicated dashboard window with daily totals split by CLI/model and an API-equivalent dollar value.

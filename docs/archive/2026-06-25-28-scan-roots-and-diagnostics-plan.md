@@ -1,5 +1,7 @@
 # Plan: Editable transcript folders + state-aware help
 
+> **Historical document — completed and superseded.** This plan was implemented in the 0.2.2 work. Current behavior and maintenance guidance live in [Architecture](../ARCHITECTURE.md) and [Development](../DEVELOPMENT.md).
+
 ## Context
 Usage history only reads local Claude Code / Codex **CLI** transcripts from fixed locations (`~/.claude/projects`, `~/.codex/sessions`, a few known Codex homes). A user (the friend) whose sessions live elsewhere has no way to point the app at them, and no guidance on what to do. This adds: (1) an in-app editor to add/remove folders scanned per CLI, persisted in config; (2) a **?** help button whose text is generated from the app's *current* scan state (not static). Both live in the Diagnostics tab.
 
