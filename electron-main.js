@@ -9,6 +9,7 @@ const {
   globalShortcut,
   ipcMain,
   nativeImage,
+  Notification,
   screen,
   dialog
 } = require("electron");
@@ -27,6 +28,7 @@ const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { scanUsageHistory } = require("./usage-history/aggregate");
 const { computeWindowValues, transcriptFingerprint, clearPointsCache } = require("./usage-history/windows");
 const { computeRunways } = require("./usage-history/runway");
+const { emptyAlertState, normalizeAlertState, selectRunwayAlerts, markRunwayAlertSent } = require("./usage-history/runway-alerts");
 const { buildDiagnostics } = require("./usage-history/diagnostics");
 
 const toggleShortcut = "Control+Option+L";
@@ -37,6 +39,7 @@ const minWindowHeight = 70;
 const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
+const runwayAlertStatePath = path.join(appDataDir, "runway-alert-state.json");
 const launchAtLoginStateFile = "launch-at-login-enabled.json";
 const backgroundRefreshMs = 60000;
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
@@ -71,6 +74,8 @@ let claudeWebOrgId = null;
 let historyCache = new Map();
 let historyRecomputeQueued = false;
 let historyFingerprint = null;
+let runwayAlertState = emptyAlertState();
+let runwayAlertPromise = null;
 // User-configured extra transcript folders (absolute paths), mirrored from config so
 // the synchronous history path can read them without an async config load each time.
 let scanRoots = { claude: [], codex: [] };
@@ -1036,6 +1041,71 @@ function getRunways() {
   });
 }
 
+async function loadRunwayAlertState() {
+  try {
+    runwayAlertState = normalizeAlertState(JSON.parse(await fs.readFile(runwayAlertStatePath, "utf8")));
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`Could not load runway alert state: ${error.message}`);
+    }
+    runwayAlertState = emptyAlertState();
+  }
+}
+
+async function saveRunwayAlertState() {
+  await fs.mkdir(appDataDir, { recursive: true });
+  const temporaryPath = `${runwayAlertStatePath}.${process.pid}.tmp`;
+  await fs.writeFile(temporaryPath, `${JSON.stringify(runwayAlertState, null, 2)}\n`);
+  await fs.rename(temporaryPath, runwayAlertStatePath);
+}
+
+function formatAlertDailyRate(tokensPerDay) {
+  if (tokensPerDay >= 1000000) return `${(tokensPerDay / 1000000).toFixed(1)}M tokens/day`;
+  if (tokensPerDay >= 1000) return `${Math.round(tokensPerDay / 1000)}k tokens/day`;
+  return `${Math.round(tokensPerDay).toLocaleString()} tokens/day`;
+}
+
+function formatAlertTime(value) {
+  return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+async function processRunwayAlerts() {
+  if (!Notification.isSupported()) return;
+
+  const selection = selectRunwayAlerts(getRunways(), { state: runwayAlertState });
+  runwayAlertState = selection.state;
+  let changed = selection.pruned;
+
+  for (const alert of selection.alerts) {
+    try {
+      new Notification({
+        title: `${String(alert.cli || "Usage").replace(/^./, (letter) => letter.toUpperCase())} limit forecast`,
+        body: `At your normal 7-day pace of ${formatAlertDailyRate(alert.tokensPerDay)}, ${alert.label} will be exhausted around ${formatAlertTime(alert.exhaustsAt)}.`
+      }).show();
+      runwayAlertState = markRunwayAlertSent(runwayAlertState, alert);
+      changed = true;
+    } catch (error) {
+      console.warn(`Could not show runway alert: ${error.message}`);
+    }
+  }
+
+  if (changed) {
+    try {
+      await saveRunwayAlertState();
+    } catch (error) {
+      console.warn(`Could not save runway alert state: ${error.message}`);
+    }
+  }
+}
+
+function queueRunwayAlerts() {
+  if (runwayAlertPromise) return runwayAlertPromise;
+  runwayAlertPromise = processRunwayAlerts().finally(() => {
+    runwayAlertPromise = null;
+  });
+  return runwayAlertPromise;
+}
+
 function startUpdateChecks() {
   globalThis.usageMeterCoreUpdater?.start();
 }
@@ -1323,6 +1393,7 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     const mergeMs = nowMs() - mergeStartedAt;
 
     broadcastSnapshot(latestSnapshot);
+    queueRunwayAlerts().catch((error) => console.warn(`Could not process runway alerts: ${error.message}`));
     queueAutoStart(latestSnapshot);
     logRefreshMetric({
       event: "manual_refresh",
@@ -1417,6 +1488,7 @@ if (!gotSingleInstanceLock) {
 
     await loadPopoverPosition();
     await refreshScanRoots();
+    await loadRunwayAlertState();
     registerIpcHandlers();
     createPopover();
     createTray();

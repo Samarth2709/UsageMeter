@@ -1,7 +1,10 @@
 const { computeWindowValues, recentPricedPoints } = require("./windows");
+const { localDay } = require("./day");
 
-const PACE_WINDOW_MS = 60 * 60 * 1000;
+const DAILY_PACE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const DAILY_SAMPLE_DAYS = DAILY_PACE_WINDOW_MS / (24 * 60 * 60 * 1000);
 const MIN_POINTS = 2;
+const MIN_DAILY_ACTIVE_DAYS = 2;
 const MIN_PROJECT_PCT = 5;
 
 function insufficient(cli, reason) {
@@ -24,17 +27,28 @@ function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousSer
       continue;
     }
 
-    const recent = points.filter((point) => point.cli === cli && point.timestampMs >= nowMs - PACE_WINDOW_MS && point.timestampMs <= nowMs);
-    if (recent.length < MIN_POINTS) {
-      output.push(insufficient(cli, "not_enough_recent_events"));
+    const daily = points.filter((point) => point.cli === cli && point.timestampMs >= nowMs - DAILY_PACE_WINDOW_MS && point.timestampMs <= nowMs);
+    if (daily.length < MIN_POINTS) {
+      output.push(insufficient(cli, "not_enough_daily_events"));
       continue;
     }
 
-    const sampleTokens = recent.reduce((sum, point) => sum + (Number(point.tokens) || 0), 0);
-    if (!(sampleTokens > 0)) {
-      output.push(insufficient(cli, "no_recent_tokens"));
+    const dailyActiveDays = new Set(daily.map((point) => localDay(point.timestampMs)));
+    if (dailyActiveDays.size < MIN_DAILY_ACTIVE_DAYS) {
+      output.push(insufficient(cli, "not_enough_active_days"));
       continue;
     }
+
+    const dailySampleTokens = daily.reduce((sum, point) => sum + (Number(point.tokens) || 0), 0);
+    if (!(dailySampleTokens > 0)) {
+      output.push(insufficient(cli, "no_daily_tokens"));
+      continue;
+    }
+
+    // This is the primary forecast: a full seven days of elapsed calendar time,
+    // including breaks and sleep, rather than assuming an active coding burst lasts
+    // indefinitely.
+    const tokensPerDay = dailySampleTokens / DAILY_SAMPLE_DAYS;
 
     const windows = [];
     for (const value of windowValues.filter((window) => window.cli === cli)) {
@@ -43,7 +57,7 @@ function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousSer
       if (!Number.isFinite(resetMs) || resetMs <= nowMs || usedPercent < MIN_PROJECT_PCT || !(value.usedTokens > 0)) continue;
 
       const remainingTokens = value.usedTokens * (100 - Math.min(usedPercent, 100)) / usedPercent;
-      const estimatedMinutes = remainingTokens / sampleTokens * 60;
+      const estimatedMinutes = remainingTokens / tokensPerDay * 1440;
       const resetMinutes = Math.max(0, (resetMs - nowMs) / 60000);
       windows.push({
         kind: value.kind,
@@ -62,9 +76,10 @@ function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousSer
     output.push({
       cli,
       status: "ready",
-      sampleWindowMinutes: 60,
-      sampleTokens,
-      tokensPerHour: sampleTokens,
+      dailySampleDays: DAILY_SAMPLE_DAYS,
+      dailyActiveDays: dailyActiveDays.size,
+      dailySampleTokens,
+      tokensPerDay,
       windows
     });
   }
@@ -72,4 +87,11 @@ function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousSer
   return output;
 }
 
-module.exports = { computeRunways, PACE_WINDOW_MS, MIN_POINTS, MIN_PROJECT_PCT };
+module.exports = {
+  computeRunways,
+  DAILY_PACE_WINDOW_MS,
+  DAILY_SAMPLE_DAYS,
+  MIN_POINTS,
+  MIN_DAILY_ACTIVE_DAYS,
+  MIN_PROJECT_PCT
+};

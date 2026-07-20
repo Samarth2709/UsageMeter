@@ -257,6 +257,14 @@ function formatRunwayDuration(minutes) {
   return `${mins}m`;
 }
 
+function formatRunwayHitTime(minutes) {
+  return new Date(Date.now() + Math.max(0, Number(minutes) || 0) * 60000).toLocaleTimeString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
 function renderRunway(elements, data) {
   if (!nativeApi?.getRunways || !data?.service) {
     hideRunway(elements);
@@ -264,38 +272,22 @@ function renderRunway(elements, data) {
   }
 
   const runway = runwaysByService.get(data.service);
-  if (!runway) {
-    elements.runway.textContent = "Runway: calculating…";
-    elements.runway.title = "Calculating from recent local CLI transcript activity.";
-    elements.runway.className = "account-runway pending";
-    return;
-  }
-
-  if (runway.status !== "ready") {
-    const text = runway.status === "ambiguous_account"
-      ? "Runway unavailable: multiple accounts"
-      : "Runway needs more recent local activity";
-    elements.runway.textContent = text;
-    elements.runway.title = "Runway uses local CLI transcript activity and live usage windows.";
-    elements.runway.className = "account-runway pending";
-    return;
-  }
-
-  const item = (window) => {
-    const label = compactWindowLabel(window.label);
-    if (!Number.isFinite(Number(window.estimatedMinutes))) {
-      return null;
-    }
-    return window.lastsUntilReset ? `${label} lasts to reset` : `${label} ~${formatRunwayDuration(window.estimatedMinutes)}`;
-  };
-  const text = runway.windows.map(item).filter(Boolean).join(" · ");
-  if (!text) {
+  if (!runway || runway.status !== "ready") {
     hideRunway(elements);
     return;
   }
-  elements.runway.textContent = text;
-  elements.runway.title = `Based on ${formatRunwayDuration(runway.sampleWindowMinutes)} of local CLI activity at ${Math.round(runway.tokensPerHour).toLocaleString()} tokens/hour.`;
-  elements.runway.className = "account-runway";
+
+  const nextLimit = runway.windows
+    .filter((window) => !window.lastsUntilReset && Number.isFinite(Number(window.estimatedMinutes)))
+    .sort((a, b) => Number(a.estimatedMinutes) - Number(b.estimatedMinutes))[0];
+  if (!nextLimit) {
+    hideRunway(elements);
+    return;
+  }
+  const exhaustsAt = formatRunwayHitTime(nextLimit.estimatedMinutes);
+  elements.runway.textContent = `Runs out in ${formatRunwayDuration(nextLimit.estimatedMinutes)} · ${exhaustsAt}`;
+  elements.runway.title = `Based on your normal seven-day pace, this limit is predicted to be exhausted ${exhaustsAt}.`;
+  elements.runway.className = "account-runway at-risk";
 }
 
 function showStatusSummary(elements, text, className, title = "") {

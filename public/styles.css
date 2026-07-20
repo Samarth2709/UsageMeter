@@ -209,9 +209,10 @@ h1 {
   margin: 4px 0 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.59rem;
+  font-size: 0.72rem;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
   line-height: 1.2;
   text-align: right;
   text-overflow: ellipsis;
@@ -224,6 +225,11 @@ h1 {
 
 .account-row-claude .account-runway:not(.pending) {
   color: var(--fg);
+}
+
+.account-row-codex .account-runway.at-risk,
+.account-row-claude .account-runway.at-risk {
+  color: var(--danger);
 }
 
 .account-right .connect-button {

@@ -10,6 +10,7 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 
 - Shows live Codex and Claude Code allowance windows, including dynamically reported weekly-only plans.
 - Refreshes limit data in the background and preserves the last successful value if a provider is temporarily unavailable.
+- Shows one normal seven-day runway estimate and sends one macOS alert per allowance reset when that pace is projected to exhaust a limit early.
 - Opens with the menu-bar icon or `Control` + `Option` + `L`.
 - Enables macOS launch-at-login on the first packaged launch from `/Applications`; later changes in macOS Login Items are respected.
 - Reads local Claude Code and Codex transcripts to power a Usage History dashboard with daily trends, project grouping, model cost/cache analysis, subscription value, runway estimates, and diagnostics.

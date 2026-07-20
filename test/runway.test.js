@@ -30,23 +30,43 @@ function withHome(fn) {
   finally { fs.rmSync(home, { recursive: true, force: true }); clearPointsCache(); }
 }
 
-test("computes runway pace and caps a forecast at reset", () => withHome((home) => {
-  writeCodexFixture(home, [NOW - 30 * 60000, NOW - 10 * 60000]);
+test("uses a seven-day calendar pace including breaks", () => withHome((home) => {
+  writeCodexFixture(home, [
+    NOW - 30 * 60 * 60000,
+    NOW - 26 * 60 * 60000,
+    NOW - 30 * 60000,
+    NOW - 10 * 60000
+  ]);
   const [runway] = computeRunways({
     homeDir: home,
     nowMs: NOW,
     limits: [
-      { cli: "codex", label: "5-hour", usedPercent: 50, resetAt: iso(NOW + 60 * 60000) },
-      { cli: "codex", label: "weekly", usedPercent: 20, resetAt: iso(NOW + 60 * 60000) }
+      { cli: "codex", label: "5-hour", usedPercent: 80, resetAt: iso(NOW + 30 * 60000) },
+      { cli: "codex", label: "weekly", usedPercent: 20, resetAt: iso(NOW + 30 * 60000) }
     ]
   });
   assert.equal(runway.status, "ready");
-  assert.equal(runway.tokensPerHour, 200);
-  assert.equal(runway.windows.find((window) => window.kind === "fiveHour").estimatedMinutes, 60);
-  assert.equal(runway.windows.find((window) => window.kind === "week").lastsUntilReset, true);
+  assert.equal(runway.dailySampleDays, 7);
+  assert.equal(runway.dailyActiveDays, 2);
+  assert.ok(Math.abs(runway.tokensPerDay - (400 / 7)) < 0.000001);
+  const fiveHour = runway.windows.find((window) => window.kind === "fiveHour");
+  assert.ok(Math.abs(fiveHour.estimatedMinutes - 1260) < 0.000001);
+  assert.equal(fiveHour.lastsUntilReset, true);
 }));
 
-test("returns insufficient data below the confidence threshold or recent event minimum", () => withHome((home) => {
+test("requires activity on two calendar days before showing a normal-pace forecast", () => withHome((home) => {
+  writeCodexFixture(home, [NOW - 160 * 60000, NOW - 90 * 60000, NOW - 10 * 60000]);
+  const [runway] = computeRunways({
+    homeDir: home,
+    nowMs: NOW,
+    limits: [{ cli: "codex", label: "5-hour", usedPercent: 50, resetAt: iso(NOW + 2 * 3600000) }]
+  });
+
+  assert.equal(runway.status, "insufficient_data");
+  assert.equal(runway.reason, "not_enough_active_days");
+}));
+
+test("returns insufficient data when the seven-day sample has too few events", () => withHome((home) => {
   writeCodexFixture(home, [NOW - 10 * 60000]);
   const [runway] = computeRunways({
     homeDir: home,
@@ -54,11 +74,11 @@ test("returns insufficient data below the confidence threshold or recent event m
     limits: [{ cli: "codex", label: "5-hour", usedPercent: 4, resetAt: iso(NOW + 60 * 60000) }]
   });
   assert.equal(runway.status, "insufficient_data");
-  assert.equal(runway.reason, "not_enough_recent_events");
+  assert.equal(runway.reason, "not_enough_daily_events");
 }));
 
 test("forecasts a reported weekly allowance when no 5-hour window exists", () => withHome((home) => {
-  writeCodexFixture(home, [NOW - 45 * 60000, NOW - 15 * 60000]);
+  writeCodexFixture(home, [NOW - 2 * 24 * 60 * 60000, NOW - 45 * 60000, NOW - 15 * 60000]);
   const [runway] = computeRunways({
     homeDir: home,
     nowMs: NOW,

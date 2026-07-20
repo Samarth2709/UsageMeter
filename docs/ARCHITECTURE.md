@@ -51,6 +51,7 @@ The app's local state is under `~/.rate-limit-tool/`:
 | `usage-history.json` | Incremental per-file transcript cache. Rebuilt automatically after a cache schema change or corrupt file. |
 | `window-points.json` | Recent window-scoped points used for runway/value calculations. |
 | `window-state.json` | Saved popover position. |
+| `runway-alert-state.json` | Per-window/reset alert records used to avoid duplicate forecast notifications. |
 | `automation-state.json` | Optional 5-hour automation deduplication state. |
 | `cores/current.json` | Atomically written pointer to the active, previous, and pending verified Core. |
 | `cores/<version>/` | Verified Core files plus the signed manifest and signature used to activate them. |
@@ -62,6 +63,7 @@ Transcript parsing is read-only. The cache stores aggregated contributions, not 
 - Main snapshots refresh every minute.
 - Claude CLI and web refreshes are throttled to avoid repeatedly opening a renderer or pseudo-terminal.
 - Usage History is recomputed only while its window is open. In-memory history data is released when the window closes.
+- Runway forecasts use one rolling seven-day calendar pace, including breaks.
 - Per-file caches use file identity and CLI tag, so a transcript changing source classification is re-parsed correctly.
 - Calendar ranges use local dates, not fixed 24-hour jumps, so daylight-saving transitions stay correct.
 - Limit windows use provider-reported duration/reset metadata. A weekly-only allowance does not get an invented five-hour window.
