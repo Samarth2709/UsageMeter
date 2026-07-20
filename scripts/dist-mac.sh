@@ -8,8 +8,10 @@ entitlements_path="$project_root/node_modules/app-builder-lib/templates/entitlem
 trap 'rm -rf "$build_output"' EXIT
 
 npm run clean
+node scripts/build-core.js --out build/core
 npx electron-builder \
   --mac dir \
+  --arm64 \
   --config.mac.identity=null \
   --config.directories.output="$build_output"
 
@@ -34,6 +36,7 @@ fi
 
 npx electron-builder \
   --mac dmg zip \
+  --arm64 \
   --prepackaged "$app_path" \
   --config.mac.identity=null \
   --config.directories.output="$build_output"

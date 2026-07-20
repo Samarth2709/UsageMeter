@@ -27,7 +27,7 @@
           </div>
         </div>
         <div class="header-actions">
-          <button id="update-pill" class="update-pill hidden" title="A new version is available — click to download">
+          <button id="update-pill" class="update-pill hidden" aria-live="polite" title="Update">
             Update
           </button>
           <button id="refresh-button" class="icon-button" aria-label="Refresh" title="Refresh">
@@ -67,6 +67,7 @@
       </div>
     </template>
 
-    <script src="app.js?v=20260618a" type="module"></script>
+    <script src="update-state.js?v=20260718a"></script>
+    <script src="app.js?v=20260718a" type="module"></script>
   </body>
 </html>

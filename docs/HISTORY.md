@@ -2,6 +2,11 @@
 
 This is a concise record of shipped milestones. It is not a substitute for Git history; use `git log` for the exact code-level change record.
 
+## Next release
+
+- Added a fixed Electron bootstrap shell and signed, versioned Core updates with a safe staging path, atomic activation, rollback, and user-controlled restart.
+- Added desktop-release automation that publishes the initial/shell DMG and ZIP alongside signed Core update assets. The shell still requires manual DMG replacement without an Apple Developer ID.
+
 ## Current source: 0.2.5 — 2026-07-17
 
 - Added current model pricing and richer Usage History insights: Usage Runway, Project Ledger, and Model Lens.

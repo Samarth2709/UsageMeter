@@ -756,22 +756,32 @@ document.querySelector(".widget-header")?.addEventListener("dblclick", (event) =
 
 const updatePill = document.querySelector("#update-pill");
 
-function showUpdatePill(update) {
-  if (!updatePill || !update?.available) {
-    return;
-  }
-  if (update.version) {
-    updatePill.title = `Version ${update.version} is available — click to download`;
-  }
-  updatePill.classList.remove("hidden");
+function renderUpdateState(update) {
+  if (!updatePill || !window.usageMeterUpdatePresentation) return;
+  const presentation = window.usageMeterUpdatePresentation.describeUpdate(update);
+  updatePill.textContent = presentation.label;
+  updatePill.title = presentation.title;
+  updatePill.disabled = Boolean(presentation.disabled);
+  updatePill.dataset.updateState = update?.status || "idle";
+  updatePill.dataset.updateAction = presentation.action;
+  updatePill.classList.toggle("hidden", !presentation.visible);
 }
 
 updatePill?.addEventListener("click", () => {
-  nativeApi?.openUpdate?.();
+  const action = updatePill.dataset.updateAction;
+  if (action === "download") {
+    nativeApi?.downloadUpdate?.().catch((error) => {
+      renderUpdateState({ status: "failed", error: error?.message || "Update failed." });
+    });
+  } else if (action === "restart") {
+    nativeApi?.restartUpdate?.();
+  } else if (action === "shell") {
+    nativeApi?.openShellUpdate?.();
+  }
 });
 
-if (nativeApi?.onUpdateAvailable) {
-  nativeApi.onUpdateAvailable(showUpdatePill);
+if (nativeApi?.onUpdateState) {
+  nativeApi.onUpdateState(renderUpdateState);
 }
 
 await loadState();
@@ -811,8 +821,12 @@ if (snapshot) {
 
 // An update may have been detected before this renderer subscribed.
 if (nativeApi?.getUpdate) {
-  nativeApi.getUpdate().then((update) => showUpdatePill(update)).catch(() => {});
+  nativeApi.getUpdate().then((update) => renderUpdateState(update)).catch(() => {});
 }
+
+// The fixed shell clears an update rollback only after the Core renderer has
+// completed its own initialization, rather than merely loading this document.
+nativeApi?.reportCoreHealthy?.();
 
 window.addEventListener("beforeunload", () => {
   if (countdownTimer) {

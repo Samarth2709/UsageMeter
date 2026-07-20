@@ -1,0 +1,195 @@
+name: Release desktop app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "assets/**"
+      - "bootstrap.js"
+      - "bootstrap-updater.js"
+      - "core-updater.js"
+      - "electron-main.js"
+      - "preload.js"
+      - "pricing.js"
+      - "public/**"
+      - "server.js"
+      - "update-public-key.pem"
+      - "usage-history/**"
+      - "usage-windows.js"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/build-core.js"
+      - "scripts/create-core-manifest.js"
+      - "scripts/dist-mac.sh"
+      - "scripts/sign-core-manifest.js"
+      - "scripts/verify-core-release.js"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]'
+    runs-on: macos-14
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Select a pending release or current source
+        id: source
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags --force
+          git checkout --detach origin/main
+
+          pending_tag=""
+          published_tag=""
+          while IFS= read -r tag; do
+            release_json="$(gh release view "$tag" --json isDraft,isPrerelease 2>/dev/null || true)"
+            if [ -z "$release_json" ]; then
+              pending_tag="$tag"
+              break
+            fi
+            if node -e 'const release = JSON.parse(process.argv[1]); process.exit(release.isDraft || release.isPrerelease ? 1 : 0)' "$release_json"; then
+              published_tag="$tag"
+              break
+            fi
+            pending_tag="$tag"
+            break
+          done < <(git tag --merged origin/main --list 'v*' --sort=-v:refname)
+
+          if [ -n "$pending_tag" ]; then
+            git checkout --detach "$pending_tag"
+            echo "mode=recover" >> "$GITHUB_OUTPUT"
+            echo "version=${pending_tag#v}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$published_tag" ] && git merge-base --is-ancestor "$EVENT_SHA" "$published_tag"; then
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version="$(node -p 'const [major, minor, patch] = require("./package.json").version.split(".").map(Number); `${major}.${minor}.${patch + 1}`')"
+          echo "mode=release" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "base_tag=$published_tag" >> "$GITHUB_OUTPUT"
+      - name: Install and test
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          npm ci
+          npm test
+      - name: Prepare the release version
+        if: steps.source.outputs.mode == 'release'
+        id: release_version
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+          BASE_TAG: ${{ steps.source.outputs.base_tag }}
+        run: |
+          set -euo pipefail
+          npm version "$VERSION" --no-git-tag-version
+          shell_files=(bootstrap.js bootstrap-updater.js core-updater.js preload.js update-public-key.pem)
+          if [ -z "$BASE_TAG" ] || ! git diff --quiet "$BASE_TAG"..HEAD -- "${shell_files[@]}"; then
+            npm pkg set "usageMeter.minimumShellVersion=$VERSION"
+          fi
+          echo "min_shell_version=$(node -p "require('./package.json').usageMeter.minimumShellVersion")" >> "$GITHUB_OUTPUT"
+      - name: Build, sign, and verify release assets
+        if: steps.source.outputs.mode != 'skip'
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+          CORE_SIGNING_KEY_B64: ${{ secrets.USAGE_METER_CORE_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$CORE_SIGNING_KEY_B64"
+          npm run dist:mac
+          node scripts/build-core.js --version "$VERSION" --out build/core --archive "dist/UsageMeter-core-${VERSION}.tar.gz"
+          key_path="$RUNNER_TEMP/usage-meter-core-signing-key.pem"
+          node -e 'require("fs").writeFileSync(process.argv[1], Buffer.from(process.env.CORE_SIGNING_KEY_B64, "base64"), { mode: 0o600 })' "$key_path"
+          node scripts/create-core-manifest.js \
+            --version "$VERSION" \
+            --min-shell-version "$(node -p "require('./package.json').usageMeter.minimumShellVersion")" \
+            --archive "dist/UsageMeter-core-${VERSION}.tar.gz" \
+            --archive-url "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/UsageMeter-core-${VERSION}.tar.gz" \
+            --core build/core \
+            --out dist/UsageMeter-core-manifest.json
+          node scripts/sign-core-manifest.js \
+            --manifest dist/UsageMeter-core-manifest.json \
+            --private-key "$key_path" \
+            --signature dist/UsageMeter-core-manifest.sig
+          zip_path="$(find dist -maxdepth 1 -name '*.zip' -print -quit)"
+          test -n "$zip_path"
+          node scripts/verify-core-release.js \
+            --archive "dist/UsageMeter-core-${VERSION}.tar.gz" \
+            --manifest dist/UsageMeter-core-manifest.json \
+            --signature dist/UsageMeter-core-manifest.sig \
+            --public-key update-public-key.pem \
+            --required "dist/UsageMeter-arm64.dmg" \
+            --required "$zip_path"
+      - name: Commit and atomically tag the verified release
+        if: steps.source.outputs.mode == 'release'
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "- Release Usage Meter ${VERSION}"
+          git tag -a "v${VERSION}" -m "Usage Meter ${VERSION}"
+          git push --atomic origin HEAD:main "refs/tags/v${VERSION}"
+      - name: Create or recover the draft release assets
+        if: steps.source.outputs.mode != 'skip'
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          assets=(
+            dist/UsageMeter-arm64.dmg
+            dist/*.zip
+            "dist/UsageMeter-core-${VERSION}.tar.gz"
+            dist/UsageMeter-core-manifest.json
+            dist/UsageMeter-core-manifest.sig
+          )
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" --clobber "${assets[@]}"
+          else
+            gh release create "v${VERSION}" "${assets[@]}" --verify-tag --draft --title "Usage Meter ${VERSION}" --generate-notes
+          fi
+      - name: Verify and publish the release
+        if: steps.source.outputs.mode != 'skip'
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "UsageMeter-arm64.dmg"
+            "UsageMeter-core-${VERSION}.tar.gz"
+            "UsageMeter-core-manifest.json"
+            "UsageMeter-core-manifest.sig"
+          )
+          release_json="$(gh release view "v${VERSION}" --json assets)"
+          node -e '
+            const release = JSON.parse(process.argv[1]);
+            const expected = process.argv.slice(2);
+            const assets = new Map(release.assets.map((asset) => [asset.name, asset.size]));
+            for (const name of expected) {
+              if (!assets.get(name)) throw new Error(`Missing or empty release asset: ${name}`);
+            }
+            if (![...assets.keys()].some((name) => name.endsWith(".zip"))) throw new Error("Missing release ZIP asset.");
+          ' "$release_json" "${expected[@]}"
+          gh release edit "v${VERSION}" --draft=false

@@ -6,7 +6,8 @@ Usage Meter has two local surfaces: an Electron menu-bar app and a static market
 
 | Area | Main files | Responsibility |
 | --- | --- | --- |
-| Electron shell | `electron-main.js`, `preload.js` | Tray icon, popover/history windows, global shortcut, IPC, refresh scheduling, login-item setup, update checks. |
+| Fixed Electron shell | `bootstrap.js`, `bootstrap-updater.js`, `core-updater.js`, `preload.js` | Core selection, signed update verification, rollback, stable update IPC, and manual shell-download fallback. |
+| Versioned Core | `electron-main.js`, `server.js`, `usage-windows.js`, `usage-history/`, `public/`, `assets/` | Tray icon, popover/history windows, live refresh, local analytics, and app UI. |
 | Live limits | `server.js`, `usage-windows.js` | Identity/config storage, Codex usage requests, Claude CLI/web usage capture, window normalization and merging. |
 | Usage History | `usage-history/` | Transcript discovery, parsing, aggregation, pricing, history cache, diagnostics, runway, and model insights. |
 | App renderer | `public/` | Menu-bar popover and Usage History dashboard. |
@@ -51,6 +52,8 @@ The app's local state is under `~/.rate-limit-tool/`:
 | `window-points.json` | Recent window-scoped points used for runway/value calculations. |
 | `window-state.json` | Saved popover position. |
 | `automation-state.json` | Optional 5-hour automation deduplication state. |
+| `cores/current.json` | Atomically written pointer to the active, previous, and pending verified Core. |
+| `cores/<version>/` | Verified Core files plus the signed manifest and signature used to activate them. |
 
 Transcript parsing is read-only. The cache stores aggregated contributions, not a copy of the raw transcript text.
 
@@ -70,6 +73,9 @@ Transcript parsing is read-only. The cache stores aggregated contributions, not 
 - The browser/debug server protects its API with a session token and is intended for local debugging.
 - Model names and paths derived from transcripts are escaped before renderer insertion. Paths are tooltip-only in the Project Ledger.
 - On the first packaged launch from `/Applications`, the app enables the macOS login item once. Source-mode runs and later user opt-outs are left alone.
+- The fixed shell fetches a signed GitHub Release manifest. It validates the Ed25519 signature, archive SHA-256, path-safe archive contents, minimum shell version, and an exact signed per-file SHA-256 map before activation and before every later Core launch. Missing, modified, extra, or symlinked Core files are rejected.
+- A pending Core is healthy only after its registered popover renderer completes initialization and calls the fixed-preload health IPC. A document load alone cannot clear rollback protection; a Core that never sends that acknowledgement is rolled back on the next launch.
+- The bundled Core is the offline fallback. Routine Core updates stay inside `~/.rate-limit-tool/cores/`; Electron/runtime changes stay in the installed `.app` and require a new DMG while the app is unsigned.
 
 ## Keeping app and site aligned
 

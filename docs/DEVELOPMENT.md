@@ -19,8 +19,9 @@ npm test
 | `npm start` / `npm run dev` | Launch Electron from source. |
 | `npm test` | Run all Node tests. |
 | `npm run server` | Run the local browser/debug server at `http://localhost:4545`. |
+| `npm run build:core` | Assemble the versioned Core and its production dependencies in `build/core/`. |
 | `npm run dist:mac` | Build unsigned macOS DMG and ZIP artifacts in `dist/`. |
-| `npm run clean` | Remove only generated `dist/` artifacts. |
+| `npm run clean` | Remove only generated `dist/` and `build/` artifacts. |
 
 Use `npm ci` for a deterministic dependency install. Do not commit `node_modules/` or `dist/`.
 
@@ -49,6 +50,9 @@ For a packaging change, additionally build the DMG, install it into `/Applicatio
 | `CODEX_HOME` | Adds an alternate Codex home to discovery and live Codex usage. |
 | `CLAUDE_CONFIG_DIR` | Replaces the default `~/.claude` root for Claude transcript discovery. |
 | `USAGE_METER_UPDATE_REPO` | Overrides the GitHub repository used for update checks. |
+| `USAGE_METER_UPDATE_MANIFEST_URL` | Overrides the signed manifest URL; intended for local updater fixtures. |
+| `USAGE_METER_UPDATE_SIGNATURE_URL` | Overrides the matching manifest signature URL; intended for local updater fixtures. |
+| `USAGE_METER_SHELL_DOWNLOAD_URL` | Overrides the manual shell/DMG download URL. |
 | `CLAUDE_USAGE_URL` | Overrides the authenticated Claude web Usage URL. |
 | `RATE_LIMIT_TOOL_DEBUG=1` | Enables development diagnostics. |
 | `RATE_LIMIT_TOOL_KEEP_OPEN=1` | Keeps the History window open after blur while debugging. |
@@ -68,12 +72,14 @@ The packaged app enables macOS launch-at-login independently of `RATE_LIMIT_TOOL
 | Range aggregation or persistence | `usage-history/aggregate.js`, `store.js` |
 | Runway, project, or model insights | `usage-history/windows.js`, `runway.js`, `model-insights.js` |
 | Electron lifecycle or IPC | `electron-main.js`, `preload.js` |
+| Core download, activation, or rollback | `core-updater.js`, `bootstrap-updater.js`, `bootstrap.js` |
 | Popover/dashboard UI | `public/` and its `site/` counterpart |
 
 ## Generated and local-only files
 
 - `node_modules/` is the local dependency tree.
 - `dist/` contains rebuildable DMG/ZIP outputs.
+- `build/core/` is a rebuildable fallback Core used while packaging; do not commit it.
 - `site/.vercel/` links this checkout to the Vercel project and stays ignored.
 - `~/.rate-limit-tool/` contains user-local app state and must not be committed or copied into fixtures.
 

@@ -4,7 +4,7 @@
 
 Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Code limits and local CLI usage.
 
-> As of 2026-07-18, the current source and installed build are v0.2.5 while the latest published GitHub release is v0.2.3. See [Releasing](docs/RELEASING.md) before publishing the newer build.
+> The first release containing the verified updater must be installed from the DMG once. After that, routine app/UI updates download as a verified Core from the menu bar; Electron and shell upgrades still use a new DMG.
 
 ## What it does
 
@@ -24,6 +24,12 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 
 The packaged app supports Apple Silicon Macs. If macOS blocks an unsigned download, use the instructions on the [website](https://usage-meter-five.vercel.app).
 
+## Updates
+
+The installed app has a small fixed Electron shell and a separately versioned Core. When a compatible Core update is published, the menu bar shows **Update available**. Select it to download and verify the signed archive, then select **Restart now**. The current Core remains active if verification fails, and the previous healthy Core is restored on the next launch if a new Core never becomes healthy.
+
+This is not macOS bundle auto-update: without an Apple Developer ID, Electron/security updates and any incompatible shell change require downloading and replacing the DMG manually. Update checks and Core archives are public GitHub Release requests; no transcript contents are sent with them.
+
 ## Data and privacy
 
 Usage Meter is designed around local CLI state:
@@ -31,7 +37,7 @@ Usage Meter is designed around local CLI state:
 - Usage History parses local `.jsonl` transcripts and writes an incremental local cache. It does not upload transcript contents.
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
 - Claude limits use the installed `claude` CLI's Usage screen and may supplement it with the existing authenticated `claude.ai` session.
-- App configuration, saved identities, caches, window state, and optional automation state live under `~/.rate-limit-tool/`.
+- App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
 
 See [Architecture](docs/ARCHITECTURE.md) for the exact data flow and [Development](docs/DEVELOPMENT.md) for environment overrides.
 
@@ -49,8 +55,9 @@ Useful commands:
 ```bash
 npm test          # full Node test suite
 npm run server    # browser/debug mode at http://localhost:4545
+npm run build:core # create the local fallback Core in build/core/
 npm run dist:mac  # build DMG and ZIP under dist/
-npm run clean     # remove generated dist/ artifacts only
+npm run clean     # remove generated dist/ and build/ artifacts only
 ```
 
 Source-mode runs do not register a macOS login item.
