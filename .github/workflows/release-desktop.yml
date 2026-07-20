@@ -1,28 +1,6 @@
 name: Release desktop app
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "assets/**"
-      - "bootstrap.js"
-      - "bootstrap-updater.js"
-      - "core-updater.js"
-      - "electron-main.js"
-      - "preload.js"
-      - "pricing.js"
-      - "public/**"
-      - "server.js"
-      - "update-public-key.pem"
-      - "usage-history/**"
-      - "usage-windows.js"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/build-core.js"
-      - "scripts/create-core-manifest.js"
-      - "scripts/dist-mac.sh"
-      - "scripts/sign-core-manifest.js"
-      - "scripts/verify-core-release.js"
   workflow_dispatch:
 
 permissions:
