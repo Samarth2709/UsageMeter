@@ -379,6 +379,154 @@ h1 {
   margin: 12px 0;
 }
 
+.value-section {
+  margin: 16px 0 20px;
+  padding: 14px;
+  border: 1px solid rgba(215, 197, 111, 0.3);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(215, 197, 111, 0.09), transparent 43%),
+    var(--surface);
+}
+
+.value-section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-eyebrow,
+.window-value-kicker,
+.window-value-card-foot small {
+  display: block;
+  color: var(--dim);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.value-section h2 {
+  margin: 2px 0 0;
+}
+
+.window-value-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 9px;
+}
+
+.window-value-card {
+  --window-accent: var(--accent);
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(8, 8, 6, 0.58);
+  box-shadow: inset 3px 0 0 var(--window-accent);
+}
+
+.window-value-card--claude {
+  --window-accent: #f4ab5e;
+}
+
+.window-value-card--codex {
+  --window-accent: #74c278;
+}
+
+.window-value-card-head,
+.window-value-card-main,
+.window-value-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.window-service {
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.window-kind {
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--window-accent) 44%, transparent);
+  border-radius: 999px;
+  color: var(--window-accent);
+  font-size: 0.59rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.window-value-card-main {
+  align-items: flex-end;
+  margin: 12px 0 9px;
+}
+
+.window-value-card-main strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 1.16rem;
+  letter-spacing: -0.035em;
+}
+
+.window-percent {
+  display: grid;
+  gap: 0;
+  color: var(--window-accent);
+  text-align: right;
+}
+
+.window-percent b {
+  font-size: 0.94rem;
+}
+
+.window-percent small {
+  color: var(--muted);
+  font-size: 0.59rem;
+}
+
+.window-meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(244, 240, 231, 0.08);
+}
+
+.window-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--window-accent);
+}
+
+.window-value-card-foot {
+  align-items: flex-end;
+  margin-top: 10px;
+}
+
+.window-value-card-foot b {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+}
+
+.window-reset {
+  max-width: 104px;
+  color: var(--muted);
+  font-size: 0.61rem;
+  line-height: 1.25;
+  text-align: right;
+}
+
+.value-section .history-note {
+  margin: 11px 0 0;
+  line-height: 1.45;
+}
+
 .card {
   display: flex;
   flex-direction: column;

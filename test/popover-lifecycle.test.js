@@ -10,6 +10,12 @@ class FakeBrowserWindow {
     this.destroyed = false;
     this.visible = false;
     this.handlers = new Map();
+    this._webContents = { id: 1 };
+  }
+
+  get webContents() {
+    if (this.destroyed) throw new Error("Object has been destroyed");
+    return this._webContents;
   }
 
   on(event, handler) {

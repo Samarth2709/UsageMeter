@@ -18,7 +18,6 @@ function fmtTokens(n) {
   return String(Math.round(n));
 }
 const fmtDollars = (n) => "$" + (Number(n) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtDollars0 = (n) => "$" + Math.round(Number(n) || 0).toLocaleString();
 const fmtPerPrompt = (n) => "$" + (Number(n) || 0).toFixed(4);
 const fmtDay = (s) => new Date(s + "T00:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 
@@ -151,11 +150,13 @@ const CLI_ORDER = { claude: 0, codex: 1 };
 const CLI_LABEL = { claude: "Claude", codex: "Codex" };
 const WINDOW_LABEL = { fiveHour: "5H", week: "Week" };
 
-function windowValueText(w) {
-  const used = fmtDollars(w.usedDollars) + " used";
-  if (w.full) return used + " · full";
-  if (w.projectedDollars != null) return used + " · ~" + fmtDollars0(w.projectedDollars) + " full value";
-  return used;
+function formatResetAt(resetAt) {
+  const when = Date.parse(resetAt);
+  if (!Number.isFinite(when)) return "Reset unavailable";
+  const remainingMinutes = Math.max(0, Math.round((when - Date.now()) / 60000));
+  if (remainingMinutes < 60) return `Resets in ${remainingMinutes}m`;
+  if (remainingMinutes < 24 * 60) return `Resets in ${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}m`;
+  return `Resets ${new Date(when).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}`;
 }
 
 function renderWindowValues(rows) {
@@ -170,13 +171,29 @@ function renderWindowValues(rows) {
     ((WINDOW_ORDER[a.kind] ?? 99) - (WINDOW_ORDER[b.kind] ?? 99)));
   el.innerHTML = sorted.map((w) => {
     const pct = Math.min(100, Math.max(0, w.usedPercent));
-    const label = `${CLI_LABEL[w.cli] || w.cli} · ${WINDOW_LABEL[w.kind] || w.label}`;
+    const service = CLI_LABEL[w.cli] || w.cli;
+    const window = WINDOW_LABEL[w.kind] || w.label;
+    const projectionLabel = w.full ? "Full-window value" : "Projected window value";
+    const projection = w.projectedDollars == null ? "—" : fmtDollars(w.projectedDollars);
     return `
-    <div class="hbar">
-      <span class="hbar-label">${esc(label)}</span>
-      <span class="hbar-track"><span class="hbar-fill" style="width:${pct.toFixed(1)}%;background:${CLI_COLORS[w.cli] || "var(--accent)"}"></span></span>
-      <span class="hbar-val">${Math.round(w.usedPercent)}%&nbsp;·&nbsp;${windowValueText(w)}</span>
-    </div>`;
+    <article class="window-value-card window-value-card--${esc(w.cli)}">
+      <div class="window-value-card-head">
+        <span class="window-service">${esc(service)}</span>
+        <span class="window-kind">${esc(window)}</span>
+      </div>
+      <div class="window-value-card-main">
+        <div>
+          <span class="window-value-kicker">Value used</span>
+          <strong>${fmtDollars(w.usedDollars)}</strong>
+        </div>
+        <span class="window-percent"><b>${Math.round(pct)}%</b><small>used</small></span>
+      </div>
+      <div class="window-meter" role="progressbar" aria-label="${esc(service)} ${esc(window)} allowance used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct.toFixed(1)}"><i style="width:${pct.toFixed(1)}%"></i></div>
+      <div class="window-value-card-foot">
+        <span><small>${projectionLabel}</small><b>${projection}</b></span>
+        <span class="window-reset">${formatResetAt(w.resetAt)}</span>
+      </div>
+    </article>`;
   }).join("");
 }
 

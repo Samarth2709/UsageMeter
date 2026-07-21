@@ -156,8 +156,9 @@ function createPopover() {
     }
   });
 
+  const popoverWebContents = window.webContents;
   popover = window;
-  globalThis.__usageMeterRegisterCoreWebContents?.(window.webContents);
+  globalThis.__usageMeterRegisterCoreWebContents?.(popoverWebContents);
   window.setAlwaysOnTop(true, "floating");
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.loadFile(path.join(__dirname, "public", "index.html"));
@@ -168,7 +169,7 @@ function createPopover() {
     if (popover === window) {
       popover = null;
     }
-    globalThis.__usageMeterUnregisterCoreWebContents?.(window.webContents);
+    globalThis.__usageMeterUnregisterCoreWebContents?.(popoverWebContents);
   });
 
   // Intentionally NOT hiding on blur: combined with setVisibleOnAllWorkspaces,

@@ -31,9 +31,17 @@
       <div id="sum-cards" class="history-summary"></div>
 
       <!-- subscription value (live) -->
-      <h2>Subscription value <span class="live-label">live now — not range-scoped</span></h2>
-      <div id="ec-value"></div>
-      <p id="ec-value-note" class="history-note">Value used so far is priced exactly per token type. The projected full-window value extrapolates the unused part at your recent average cost per token, so it shifts if your input/output mix changes. Counts local sessions on this machine only.</p>
+      <section class="value-section" aria-labelledby="subscription-value-title">
+        <div class="value-section-head">
+          <div>
+            <span class="section-eyebrow">Live allowances</span>
+            <h2 id="subscription-value-title">Subscription value</h2>
+          </div>
+          <span class="live-label">live now · not range-scoped</span>
+        </div>
+        <div id="ec-value" class="window-value-grid"></div>
+        <p id="ec-value-note" class="history-note">Value used is exact for this allowance window. Projected value estimates the unused portion at your recent average token mix, so it can move as that mix changes. Local Claude Code and Codex CLI sessions only.</p>
+      </section>
 
       <!-- daily usage -->
       <div class="chart-head">
