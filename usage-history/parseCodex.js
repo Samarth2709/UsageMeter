@@ -17,7 +17,7 @@ function extractModel(obj) {
 
 function parseCodexTranscript(text) {
   const records = [];
-  let currentModel = "unknown";
+  let currentModel = null;
   let currentProjectPath = null;
 
   for (const rawLine of String(text || "").split("\n")) {
@@ -33,6 +33,10 @@ function parseCodexTranscript(text) {
 
     const p = obj.payload || {};
     if (obj.type !== "event_msg" || p.type !== "token_count") continue;
+    // Forked/subagent transcripts can replay inherited token_count events before
+    // their first model-bearing turn_context. Those events are copied context,
+    // not new usage in this file, and cannot be attributed safely.
+    if (!currentModel) continue;
 
     const last = (p.info && p.info.last_token_usage) || null;
     const ts = Date.parse(obj.timestamp);
@@ -40,6 +44,7 @@ function parseCodexTranscript(text) {
 
     const input = Number(last.input_tokens) || 0;
     const cached = Number(last.cached_input_tokens) || 0;
+    const cacheWrite = Number(last.cache_write_input_tokens) || 0;
     const output = Number(last.output_tokens) || 0;
     if (input + output === 0) continue;
 
@@ -48,9 +53,10 @@ function parseCodexTranscript(text) {
       day: localDay(ts),
       cli: "codex",
       model: currentModel,
-      inputTokens: Math.max(0, input - cached), // codex input_tokens INCLUDES cached
+      // Codex input_tokens includes both cache reads and cache writes.
+      inputTokens: Math.max(0, input - cached - cacheWrite),
       cachedReadTokens: cached,
-      cacheWriteTokens: 0,
+      cacheWriteTokens: cacheWrite,
       outputTokens: output
     };
     if (currentProjectPath) record.projectPath = currentProjectPath;

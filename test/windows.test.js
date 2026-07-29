@@ -18,11 +18,11 @@ function codexTurn(ms, input = 200000, output = 100000) {
   });
 }
 
-function writeCodexFixture(homeDir, lines) {
+function writeCodexFixture(homeDir, lines, model = "gpt-5.5") {
   const dir = path.join(homeDir, ".codex", "sessions");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "rollout-test.jsonl");
-  const meta = JSON.stringify({ timestamp: iso(NOW), type: "session_meta", payload: { model: "gpt-5.5" } });
+  const meta = JSON.stringify({ timestamp: iso(NOW), type: "session_meta", payload: { model } });
   fs.writeFileSync(file, [meta, ...lines].join("\n"));
   fs.utimesSync(file, new Date(NOW), new Date(NOW));
 }
@@ -101,6 +101,22 @@ test("computeWindowValues values the remainder at the blended rate, not the wind
     assert.equal(Math.round(rows[0].usedDollars), 9);          // spent part is exact
     // blended rate = $10.50 / 600k tok; remainder 300k tok => +$5.25 => $14.25, not $18.
     assert.ok(Math.abs(rows[0].projectedDollars - 14.25) < 0.01, `got ${rows[0].projectedDollars}`);
+  });
+});
+
+test("computeWindowValues marks future models unpriced instead of inventing value", () => {
+  withTempHome((home) => {
+    writeCodexFixture(home, [codexTurn(NOW - 3600000)], "gpt-5.7-new");
+    const [row] = computeWindowValues({
+      homeDir: home,
+      nowMs: NOW,
+      limits: [{ cli: "codex", label: "weekly", usedPercent: 50, resetAt: iso(NOW + 3600000) }]
+    });
+
+    assert.equal(row.pricingComplete, false);
+    assert.equal(row.usedDollars, null);
+    assert.equal(row.projectedDollars, null);
+    assert.equal(row.unpricedTokens, 300000);
   });
 });
 

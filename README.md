@@ -11,6 +11,7 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 - Shows live Codex and Claude Code allowance windows, including dynamically reported weekly-only plans.
 - Refreshes limit data in the background and preserves the last successful value if a provider is temporarily unavailable.
 - Shows one normal seven-day runway estimate and sends one macOS alert per allowance reset when that pace is projected to exhaust a limit early.
+- Logs local forecast samples and first-observed limit hits so prediction error can be reviewed after enough matched outcomes accumulate.
 - Opens with the menu-bar icon or `Control` + `Option` + `L`.
 - Enables macOS launch-at-login on the first packaged launch from `/Applications`; later changes in macOS Login Items are respected.
 - Reads local Claude Code and Codex transcripts to power a Usage History dashboard with daily trends, project grouping, model cost/cache analysis, subscription value, runway estimates, and diagnostics.
@@ -39,6 +40,7 @@ Usage Meter is designed around local CLI state:
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
 - Claude limits use the installed `claude` CLI's Usage screen and may supplement it with the existing authenticated `claude.ai` session.
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
+- Runway prediction and outcome records stay local under `~/.rate-limit-tool/`; they are not uploaded.
 
 See [Architecture](docs/ARCHITECTURE.md) for the exact data flow and [Development](docs/DEVELOPMENT.md) for environment overrides.
 

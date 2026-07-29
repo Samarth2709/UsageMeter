@@ -455,6 +455,51 @@ test("Claude reset text parses into a concrete future timestamp", () => {
   assert.equal(_test.parseClaudeResetAt("May 2 at 5pm", now), expected);
 });
 
+test("Claude 5-hour windows reject a stale time rolled into the next day", () => {
+  const now = new Date("2026-07-27T21:32:01.798Z");
+  const screen = [
+    "Current session",
+    "100% used",
+    "Resets 5:20pm (America/New_York)",
+    "Current week (all models)",
+    "29% used",
+    "Resets Aug 3 at 2am (America/New_York)"
+  ].join("\n");
+
+  const { windows } = _test.parseClaudeUsageScreen(screen, now);
+  const session = windows.find((window) => window.label === "5-hour");
+
+  assert.ok(session, "5-hour window should still be parsed");
+  assert.equal(session.resetAt, null);
+  assert.equal(session.resetText, null);
+});
+
+test("stored Claude usage drops impossible 5-hour reset timestamps", () => {
+  const normalized = _test.normalizeConfig({
+    identities: [{
+      id: "claude-1",
+      type: "claude",
+      label: "Claude Code",
+      workspace: process.cwd(),
+      lastUsage: {
+        service: "claude",
+        fetchedAt: "2026-07-27T21:32:01.798Z",
+        windows: [{
+          label: "5-hour",
+          usedPercent: 100,
+          remainingPercent: 0,
+          resetText: "5:20pm (America/New_York)",
+          resetAt: "2026-07-28T21:20:00.000Z"
+        }]
+      }
+    }]
+  });
+  const session = normalized.identities[0].lastUsage.windows[0];
+
+  assert.equal(session.resetAt, null);
+  assert.equal(session.resetText, null);
+});
+
 test("production package config does not force unsigned mac builds", () => {
   assert.equal(Object.prototype.hasOwnProperty.call(packageJson.build.mac, "identity"), false);
   assert.equal(packageJson.build.mac.hardenedRuntime, true);
@@ -538,7 +583,8 @@ test("parseClaudeUsageScreen recovers the 5-hour reset from a partial trailing r
     "█████████ 73% used"
   ].join("\n");
 
-  const { windows } = _test.parseClaudeUsageScreen(screen);
+  const now = new Date("2026-06-24T04:00:00.000Z");
+  const { windows } = _test.parseClaudeUsageScreen(screen, now);
   const session = windows.find((w) => w.label === "5-hour");
   assert.ok(session, "5-hour window should be parsed");
   assert.equal(session.usedPercent, 73);

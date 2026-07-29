@@ -1,37 +1,45 @@
-// USD per 1,000,000 tokens. Claude rates verified against the claude-api skill
-// (Models table, 2026-06): Fable 5 $10/$50, Opus 4.x $5/$25, Sonnet 4.6 $3/$15,
-// Haiku 4.5 $1/$5. Cache read = 0.1x input; cache write = 1.25x input (5-minute
-// ephemeral default). Codex/OpenAI rates from current OpenAI pricing (GPT-5.6
-// Sol $5/$30, Terra $2.50/$15, Luna $1/$6; cached input 0.1x; Codex has no
-// cache-write bucket).
-// This table is the single source of truth for pricing.
+// USD per 1,000,000 tokens. This catalog prices only model IDs whose published
+// rate is known. New IDs still contribute tokens and calls, but remain unpriced
+// until a rate is added instead of silently inheriting an unrelated fallback.
 const RATES = {
-  "claude-fable":  { input: 10.0, cachedRead: 1.0,  cacheWrite: 12.5,  output: 50.0 },
-  "claude-opus":   { input: 5.0,  cachedRead: 0.5,  cacheWrite: 6.25,  output: 25.0 },
-  "claude-sonnet": { input: 3.0,  cachedRead: 0.3,  cacheWrite: 3.75,  output: 15.0 },
-  "claude-haiku":  { input: 1.0,  cachedRead: 0.1,  cacheWrite: 1.25,  output: 5.0 },
-  "gpt-5.6-sol":   { input: 5.0,  cachedRead: 0.5,  cacheWrite: 0,     output: 30.0 },
-  "gpt-5.6-terra": { input: 2.5,  cachedRead: 0.25, cacheWrite: 0,     output: 15.0 },
-  "gpt-5.6-luna":  { input: 1.0,  cachedRead: 0.1,  cacheWrite: 0,     output: 6.0 },
-  "gpt-5.5":       { input: 5.0,  cachedRead: 0.5,  cacheWrite: 0,     output: 30.0 },
-  "gpt-5.4":       { input: 2.5,  cachedRead: 0.25, cacheWrite: 0,     output: 15.0 }
+  "claude-fable":           { input: 10.0, cachedRead: 1.0,   cacheWrite: 12.5,  output: 50.0 },
+  "claude-opus":            { input: 5.0,  cachedRead: 0.5,   cacheWrite: 6.25,  output: 25.0 },
+  "claude-sonnet-5-intro":  { input: 2.0,  cachedRead: 0.2,   cacheWrite: 2.5,   output: 10.0 },
+  "claude-sonnet":          { input: 3.0,  cachedRead: 0.3,   cacheWrite: 3.75,  output: 15.0 },
+  "claude-haiku":           { input: 1.0,  cachedRead: 0.1,   cacheWrite: 1.25,  output: 5.0 },
+  "gpt-5.6-sol":            { input: 5.0,  cachedRead: 0.5,   cacheWrite: 6.25,  output: 30.0 },
+  "gpt-5.6-terra":          { input: 2.5,  cachedRead: 0.25,  cacheWrite: 3.125, output: 15.0 },
+  "gpt-5.6-luna":           { input: 1.0,  cachedRead: 0.1,   cacheWrite: 1.25,  output: 6.0 },
+  "gpt-5.5":                { input: 5.0,  cachedRead: 0.5,   cacheWrite: 0,     output: 30.0 },
+  "gpt-5.4":                { input: 2.5,  cachedRead: 0.25,  cacheWrite: 0,     output: 15.0 },
+  "gpt-5.4-mini":           { input: 0.75, cachedRead: 0.075, cacheWrite: 0,     output: 4.5 }
 };
-const FALLBACK = { input: 3.0, cachedRead: 0.3, cacheWrite: 3.75, output: 15.0 };
 
-function rateKeyForModel(cli, model) {
+function dayKey(at) {
+  if (typeof at === "string" && /^\d{4}-\d{2}-\d{2}/.test(at)) return at.slice(0, 10);
+  const timestamp = at == null ? Date.now() : Number(at);
+  const date = new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null;
+}
+
+function rateKeyForModel(cli, model, at = null) {
   const m = String(model || "").toLowerCase();
   if (cli === "claude") {
-    if (m.includes("fable") || m.includes("mythos")) return "claude-fable";
-    if (m.includes("opus")) return "claude-opus";
-    if (m.includes("sonnet")) return "claude-sonnet";
-    if (m.includes("haiku")) return "claude-haiku";
+    if (/^claude-(?:fable|mythos)-5(?:-\d{8})?$/.test(m)) return "claude-fable";
+    if (/^claude-opus-(?:4-[5-8]|5)(?:-\d{8})?$/.test(m)) return "claude-opus";
+    if (/^claude-sonnet-5(?:-\d{8})?$/.test(m)) {
+      return dayKey(at) < "2026-09-01" ? "claude-sonnet-5-intro" : "claude-sonnet";
+    }
+    if (/^claude-sonnet-4-[56](?:-\d{8})?$/.test(m)) return "claude-sonnet";
+    if (/^claude-haiku-4-5(?:-\d{8})?$/.test(m)) return "claude-haiku";
     return null;
   }
-  if (m === "gpt-5.6" || m === "gpt-5.6-sol") return "gpt-5.6-sol";
-  if (m === "gpt-5.6-terra") return "gpt-5.6-terra";
-  if (m === "gpt-5.6-luna") return "gpt-5.6-luna";
-  if (m.includes("5.5")) return "gpt-5.5";
-  if (m.includes("5.4")) return "gpt-5.4";
+  if (/^gpt-5\.6(?:-sol)?(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return "gpt-5.6-sol";
+  if (/^gpt-5\.6-terra(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return "gpt-5.6-terra";
+  if (/^gpt-5\.6-luna(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return "gpt-5.6-luna";
+  if (/^gpt-5\.5(?:-codex)?(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return "gpt-5.5";
+  if (/^gpt-5\.4-mini(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return "gpt-5.4-mini";
+  if (/^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return "gpt-5.4";
   return null;
 }
 
@@ -45,11 +53,12 @@ function priceAtRate(rate, buckets) {
   );
 }
 
-function priceRecord(cli, model, buckets) {
-  const key = rateKeyForModel(cli, model);
-  const rate = key ? RATES[key] : FALLBACK;
+function priceRecord(cli, model, buckets, at = null) {
+  const key = rateKeyForModel(cli, model, at);
+  if (!key) return { dollars: null, rateKey: null, modelKnown: false };
+  const rate = RATES[key];
   const dollars = priceAtRate(rate, buckets);
-  return { dollars, rateKey: key, modelKnown: key !== null };
+  return { dollars, rateKey: key, modelKnown: true };
 }
 
 function priceBucketsAtRate(rateKey, buckets) {
@@ -58,16 +67,18 @@ function priceBucketsAtRate(rateKey, buckets) {
 }
 
 // Dollars saved by cache reads vs paying the full input rate for the same tokens.
-function cacheSavings(cli, model, cachedReadTokens) {
-  const key = rateKeyForModel(cli, model);
-  const rate = key ? RATES[key] : FALLBACK;
+function cacheSavings(cli, model, cachedReadTokens, at = null) {
+  const key = rateKeyForModel(cli, model, at);
+  if (!key) return null;
+  const rate = RATES[key];
   return ((Number(cachedReadTokens) || 0) * (rate.input - rate.cachedRead)) / 1_000_000;
 }
 
 // Dollars attributable to each token type, for spend-by-type breakdowns.
-function priceBreakdown(cli, model, buckets) {
-  const key = rateKeyForModel(cli, model);
-  const rate = key ? RATES[key] : FALLBACK;
+function priceBreakdown(cli, model, buckets, at = null) {
+  const key = rateKeyForModel(cli, model, at);
+  if (!key) return null;
+  const rate = RATES[key];
   const per = (tokens, r) => ((Number(tokens) || 0) * r) / 1_000_000;
   return {
     input: per(buckets.inputTokens, rate.input),
@@ -77,4 +88,4 @@ function priceBreakdown(cli, model, buckets) {
   };
 }
 
-module.exports = { RATES, FALLBACK, rateKeyForModel, priceRecord, priceBucketsAtRate, cacheSavings, priceBreakdown };
+module.exports = { RATES, rateKeyForModel, priceRecord, priceBucketsAtRate, cacheSavings, priceBreakdown };

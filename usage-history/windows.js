@@ -12,7 +12,7 @@ const { loadCache, saveCache } = require("./store");
 const POINTS_FILE = "window-points.json";
 // Bump when the parser or cached record shape changes. Dollars are priced on read, so
 // pricing-table changes take effect without a version bump.
-const POINTS_VERSION = 2;
+const POINTS_VERSION = 3;
 
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -129,7 +129,14 @@ function recentPricedPoints(homeDir, nowMs, extraRoots = {}, dataDir = null) {
       dirty = true;
     }
     for (const rec of recentRecords) {
-      points.push({ timestampMs: rec.timestampMs, cli, dollars: priceRecord(cli, rec.model, rec).dollars, tokens: recordTokens(rec) });
+      const priced = priceRecord(cli, rec.model, rec, rec.timestampMs);
+      points.push({
+        timestampMs: rec.timestampMs,
+        cli,
+        dollars: priced.dollars,
+        tokens: recordTokens(rec),
+        modelKnown: priced.modelKnown
+      });
     }
   }
 
@@ -175,30 +182,49 @@ function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [], extraRo
   const baseline = {};
   for (const p of points) {
     if (p.timestampMs > nowMs) continue;
-    const b = (baseline[p.cli] = baseline[p.cli] || { dollars: 0, tokens: 0 });
-    b.dollars += p.dollars;
-    b.tokens += p.tokens;
+    const b = (baseline[p.cli] = baseline[p.cli] || { dollars: 0, tokens: 0, unpricedTokens: 0 });
+    if (p.modelKnown) {
+      b.dollars += p.dollars;
+      b.tokens += p.tokens;
+    } else {
+      b.unpricedTokens += p.tokens;
+    }
   }
-  const blendedRate = (cli) => (baseline[cli] && baseline[cli].tokens > 0 ? baseline[cli].dollars / baseline[cli].tokens : 0);
+  const blendedRate = (cli) => (
+    baseline[cli] && baseline[cli].tokens > 0 && baseline[cli].unpricedTokens === 0
+      ? baseline[cli].dollars / baseline[cli].tokens
+      : 0
+  );
 
   return resolvable.map((w) => {
     const resetMs = Date.parse(w.resetAt);
     const start = resetMs - w.durationMs;
     const end = Math.min(nowMs, resetMs);
-    let usedDollars = 0;
+    let pricedDollars = 0;
     let usedTokens = 0;
+    let unpricedTokens = 0;
     for (const p of points) {
       if (p.cli !== w.cli) continue;
-      if (p.timestampMs >= start && p.timestampMs <= end) { usedDollars += p.dollars; usedTokens += p.tokens; }
+      if (p.timestampMs >= start && p.timestampMs <= end) {
+        usedTokens += p.tokens;
+        if (p.modelKnown) pricedDollars += p.dollars;
+        else unpricedTokens += p.tokens;
+      }
     }
-    const projected = projectFull(usedDollars, usedTokens, w.usedPercent, blendedRate(w.cli));
+    const pricingComplete = unpricedTokens === 0;
+    const projected = pricingComplete
+      ? projectFull(pricedDollars, usedTokens, w.usedPercent, blendedRate(w.cli))
+      : { value: null, full: false };
     return {
       cli: w.cli,
       kind: w.kind,
       label: w.label,
       usedPercent: Number(w.usedPercent) || 0,
-      usedDollars,
+      usedDollars: pricingComplete ? pricedDollars : null,
+      pricedDollars,
       usedTokens,
+      unpricedTokens,
+      pricingComplete,
       projectedDollars: projected.value,
       full: projected.full,
       resetAt: w.resetAt

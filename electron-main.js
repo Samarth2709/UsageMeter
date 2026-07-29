@@ -29,6 +29,11 @@ const { scanUsageHistory } = require("./usage-history/aggregate");
 const { computeWindowValues, transcriptFingerprint, clearPointsCache } = require("./usage-history/windows");
 const { computeRunways } = require("./usage-history/runway");
 const { emptyAlertState, normalizeAlertState, selectRunwayAlerts, markRunwayAlertSent } = require("./usage-history/runway-alerts");
+const {
+  emptyEvaluationState,
+  normalizeEvaluationState,
+  selectRunwayEvaluationEvents
+} = require("./usage-history/runway-evaluation");
 const { buildDiagnostics } = require("./usage-history/diagnostics");
 
 const toggleShortcut = "Control+Option+L";
@@ -40,6 +45,8 @@ const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
 const runwayAlertStatePath = path.join(appDataDir, "runway-alert-state.json");
+const runwayEvaluationStatePath = path.join(appDataDir, "runway-evaluation-state.json");
+const runwayEvaluationLogPath = path.join(appDataDir, "runway-evaluations.jsonl");
 const launchAtLoginStateFile = "launch-at-login-enabled.json";
 const backgroundRefreshMs = 60000;
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
@@ -76,6 +83,8 @@ let historyRecomputeQueued = false;
 let historyFingerprint = null;
 let runwayAlertState = emptyAlertState();
 let runwayAlertPromise = null;
+let runwayEvaluationState = emptyEvaluationState();
+let runwayEvaluationPromise = null;
 // User-configured extra transcript folders (absolute paths), mirrored from config so
 // the synchronous history path can read them without an async config load each time.
 let scanRoots = { claude: [], codex: [] };
@@ -989,8 +998,8 @@ function liveLimitWindows() {
   return limits;
 }
 
-function liveRunwayInput() {
-  const results = latestSnapshot?.results || [];
+function liveRunwayInput(snapshot = latestSnapshot) {
+  const results = snapshot?.results || [];
   const byService = new Map();
 
   for (const result of results) {
@@ -998,7 +1007,14 @@ function liveRunwayInput() {
     const windows = result?.data?.windows || [];
     if (!result.ok || !service || !windows.length) continue;
     const entry = byService.get(service) || [];
-    entry.push({ accountId: result.accountId, windows });
+    entry.push({
+      accountId: result.accountId,
+      windows,
+      fresh: result.stale !== true,
+      observedAt: result.data.fetchedAt || snapshot?.refreshedAt || null,
+      providerLimitReached: result.data.limitReached === true,
+      rateLimitReachedType: result.data.rateLimitReachedType || null
+    });
     byService.set(service, entry);
   }
 
@@ -1021,20 +1037,27 @@ function liveRunwayInput() {
         label: window.label,
         durationSeconds: window.durationSeconds,
         usedPercent: window.usedPercent,
-        resetAt: window.resetAt
+        resetAt: window.resetAt,
+        accountId: account.accountId,
+        fresh: account.fresh,
+        observedAt: account.observedAt,
+        providerLimitReached: account.providerLimitReached,
+        rateLimitReachedType: account.rateLimitReachedType
       });
     }
   }
   return { limits, ambiguousServices };
 }
 
-function getRunways() {
-  if (!latestSnapshot?.results?.length) {
+function getRunways(snapshot = latestSnapshot) {
+  if (!snapshot?.results?.length) {
     return [];
   }
-  const { limits, ambiguousServices } = liveRunwayInput();
+  const { limits, ambiguousServices } = liveRunwayInput(snapshot);
+  const refreshedAt = Date.parse(snapshot.refreshedAt);
   return computeRunways({
     homeDir: os.homedir(),
+    nowMs: Number.isFinite(refreshedAt) ? refreshedAt : Date.now(),
     limits,
     ambiguousServices,
     extraRoots: scanRoots,
@@ -1060,6 +1083,31 @@ async function saveRunwayAlertState() {
   await fs.rename(temporaryPath, runwayAlertStatePath);
 }
 
+async function loadRunwayEvaluationState() {
+  try {
+    runwayEvaluationState = normalizeEvaluationState(JSON.parse(await fs.readFile(runwayEvaluationStatePath, "utf8")));
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`Could not load runway evaluation state: ${error.message}`);
+    }
+    runwayEvaluationState = emptyEvaluationState();
+  }
+}
+
+async function saveRunwayEvaluationState() {
+  await fs.mkdir(appDataDir, { recursive: true });
+  const temporaryPath = `${runwayEvaluationStatePath}.${process.pid}.tmp`;
+  await fs.writeFile(temporaryPath, `${JSON.stringify(runwayEvaluationState, null, 2)}\n`);
+  await fs.rename(temporaryPath, runwayEvaluationStatePath);
+}
+
+async function appendRunwayEvaluationEvents(events) {
+  if (!events.length) return;
+  await fs.mkdir(appDataDir, { recursive: true });
+  const lines = events.map((event) => JSON.stringify(event)).join("\n");
+  await fs.appendFile(runwayEvaluationLogPath, `${lines}\n`);
+}
+
 function formatAlertDailyRate(tokensPerDay) {
   if (tokensPerDay >= 1000000) return `${(tokensPerDay / 1000000).toFixed(1)}M tokens/day`;
   if (tokensPerDay >= 1000) return `${Math.round(tokensPerDay / 1000)}k tokens/day`;
@@ -1070,10 +1118,10 @@ function formatAlertTime(value) {
   return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-async function processRunwayAlerts() {
+async function processRunwayAlerts(runways = getRunways()) {
   if (!Notification.isSupported()) return;
 
-  const selection = selectRunwayAlerts(getRunways(), { state: runwayAlertState });
+  const selection = selectRunwayAlerts(runways, { state: runwayAlertState });
   runwayAlertState = selection.state;
   let changed = selection.pruned;
 
@@ -1099,12 +1147,39 @@ async function processRunwayAlerts() {
   }
 }
 
-function queueRunwayAlerts() {
+function queueRunwayAlerts(runways) {
   if (runwayAlertPromise) return runwayAlertPromise;
-  runwayAlertPromise = processRunwayAlerts().finally(() => {
+  runwayAlertPromise = processRunwayAlerts(runways).finally(() => {
     runwayAlertPromise = null;
   });
   return runwayAlertPromise;
+}
+
+async function processRunwayEvaluations(snapshot, runways = getRunways(snapshot)) {
+  const refreshedAt = Date.parse(snapshot?.refreshedAt);
+  const nowMs = Number.isFinite(refreshedAt) ? refreshedAt : Date.now();
+  const { limits } = liveRunwayInput(snapshot);
+  const selection = selectRunwayEvaluationEvents(
+    { runways, limits },
+    { nowMs, state: runwayEvaluationState }
+  );
+
+  await appendRunwayEvaluationEvents(selection.events);
+  runwayEvaluationState = selection.state;
+  if (selection.changed) await saveRunwayEvaluationState();
+}
+
+function queueRunwayEvaluations(snapshot, runways) {
+  const previous = runwayEvaluationPromise || Promise.resolve();
+  const queued = previous
+    .catch(() => {})
+    .then(() => processRunwayEvaluations(snapshot, runways));
+  runwayEvaluationPromise = queued;
+  queued.then(
+    () => { if (runwayEvaluationPromise === queued) runwayEvaluationPromise = null; },
+    () => { if (runwayEvaluationPromise === queued) runwayEvaluationPromise = null; }
+  );
+  return queued;
 }
 
 function startUpdateChecks() {
@@ -1394,7 +1469,15 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     const mergeMs = nowMs() - mergeStartedAt;
 
     broadcastSnapshot(latestSnapshot);
-    queueRunwayAlerts().catch((error) => console.warn(`Could not process runway alerts: ${error.message}`));
+    try {
+      const runways = getRunways(latestSnapshot);
+      queueRunwayEvaluations(latestSnapshot, runways)
+        .catch((error) => console.warn(`Could not record runway evaluation: ${error.message}`));
+      queueRunwayAlerts(runways)
+        .catch((error) => console.warn(`Could not process runway alerts: ${error.message}`));
+    } catch (error) {
+      console.warn(`Could not compute runway forecast: ${error.message}`);
+    }
     queueAutoStart(latestSnapshot);
     logRefreshMetric({
       event: "manual_refresh",
@@ -1490,6 +1573,7 @@ if (!gotSingleInstanceLock) {
     await loadPopoverPosition();
     await refreshScanRoots();
     await loadRunwayAlertState();
+    await loadRunwayEvaluationState();
     registerIpcHandlers();
     createPopover();
     createTray();

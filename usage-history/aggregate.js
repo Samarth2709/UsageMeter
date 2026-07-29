@@ -8,15 +8,36 @@ const { buildModelInsights } = require("./model-insights");
 const { listAllTranscriptFiles } = require("./sources");
 const { loadCache, saveCache } = require("./store");
 
-const EMPTY = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, prompts: 0 });
+const EMPTY = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, calls: 0 });
 
 function addBuckets(target, src) {
   target.inputTokens += src.inputTokens || 0;
   target.cachedReadTokens += src.cachedReadTokens || 0;
   target.cacheWriteTokens += src.cacheWriteTokens || 0;
   target.outputTokens += src.outputTokens || 0;
-  target.prompts += src.prompts || 0;
+  target.calls += src.calls || 0;
   return target;
+}
+
+function bucketTokens(buckets) {
+  return (
+    (buckets.inputTokens || 0) +
+    (buckets.cachedReadTokens || 0) +
+    (buckets.cacheWriteTokens || 0) +
+    (buckets.outputTokens || 0)
+  );
+}
+
+function pricingCoverage(pricedTokens, unpricedTokens, pricedCalls = 0, unpricedCalls = 0) {
+  const totalTokens = pricedTokens + unpricedTokens;
+  return {
+    complete: unpricedTokens === 0,
+    pricedTokens,
+    unpricedTokens,
+    pricedCalls,
+    unpricedCalls,
+    coverage: totalTokens > 0 ? pricedTokens / totalTokens : 1
+  };
 }
 
 function recordsToContribution(records) {
@@ -26,7 +47,7 @@ function recordsToContribution(records) {
     const key = `${r.cli}::${r.model}`;
     const bucket = dayMap[key] || EMPTY();
     addBuckets(bucket, r);
-    bucket.prompts += 1; // each record is one model turn (one prompt)
+    bucket.calls += 1; // each normalized token record is one model call
     dayMap[key] = bucket;
   }
   return contribution;
@@ -63,7 +84,7 @@ function recordsToProjectContribution(records, filePath, cli) {
     const modelKey = `${record.cli}::${record.model}`;
     const bucket = entry.models[modelKey] || EMPTY();
     addBuckets(bucket, record);
-    bucket.prompts += 1;
+    bucket.calls += 1;
     entry.models[modelKey] = bucket;
   }
   return contribution;
@@ -101,12 +122,12 @@ function bucketsWithTotal(b) {
   return {
     input: b.inputTokens, cachedRead: b.cachedReadTokens, cacheWrite: b.cacheWriteTokens,
     output: b.outputTokens, total: b.inputTokens + b.cachedReadTokens + b.cacheWriteTokens + b.outputTokens,
-    prompts: b.prompts
+    calls: b.calls
   };
 }
 
-function perPrompt(dollars, prompts) {
-  return prompts > 0 ? dollars / prompts : 0;
+function perCall(dollars, calls) {
+  return calls > 0 ? dollars / calls : 0;
 }
 
 function fallbackProjectContribution(entry) {
@@ -122,7 +143,7 @@ function fallbackProjectContribution(entry) {
 function mergeAndPrice(files, { rangeDays, nowMs }) {
   const wantDays = new Set(rangeDaysList(rangeDays, nowMs));
   const todayKey = localDay(nowMs);
-  const unknownModels = new Set();
+  const unpricedModels = new Map();
 
   // dayKey -> "cli::model" -> buckets
   const byDay = {};
@@ -136,11 +157,11 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     }
   }
 
-  const priceKey = (key, buckets) => {
+  const priceKey = (key, buckets, day) => {
     const [cli, ...rest] = key.split("::");
     const model = rest.join("::");
-    const p = priceRecord(cli, model, buckets);
-    if (!p.modelKnown) unknownModels.add(model);
+    const p = priceRecord(cli, model, buckets, day);
+    if (!p.modelKnown) unpricedModels.set(`${cli}::${model}`, { cli, model });
     return { cli, model, ...p };
   };
 
@@ -157,14 +178,29 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
           parentLabel: project.parentLabel || null,
           buckets: EMPTY(),
           dollars: 0,
+          pricedTokens: 0,
+          unpricedTokens: 0,
+          pricedCalls: 0,
+          unpricedCalls: 0,
           models: {}
         });
         for (const [modelKey, buckets] of Object.entries(project.models || {})) {
-          const priced = priceKey(modelKey, buckets);
+          const priced = priceKey(modelKey, buckets, day);
+          const tokens = bucketTokens(buckets);
           addBuckets(into.buckets, buckets);
-          into.dollars += priced.dollars;
-          const model = (into.models[modelKey] = into.models[modelKey] || { cli: priced.cli, model: priced.model, dollars: 0 });
-          model.dollars += priced.dollars;
+          if (priced.modelKnown) {
+            into.dollars += priced.dollars;
+            into.pricedTokens += tokens;
+            into.pricedCalls += buckets.calls || 0;
+          } else {
+            into.unpricedTokens += tokens;
+            into.unpricedCalls += buckets.calls || 0;
+          }
+          const model = (into.models[modelKey] = into.models[modelKey] || {
+            cli: priced.cli, model: priced.model, dollars: 0, modelKnown: priced.modelKnown, tokens: 0
+          });
+          model.tokens += tokens;
+          if (priced.modelKnown) model.dollars += priced.dollars;
         }
       }
     }
@@ -176,15 +212,31 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
     const byCli = { claude: { buckets: EMPTY(), dollars: 0 }, codex: { buckets: EMPTY(), dollars: 0 } };
     const perModel = {}; // "cli::model" -> { tokens, dollars } for the model-mix chart
     let dollars = 0;
+    let pricedTokens = 0;
+    let unpricedTokens = 0;
+    let pricedCalls = 0;
+    let unpricedCalls = 0;
     for (const [key, buckets] of Object.entries(models)) {
-      const priced = priceKey(key, buckets);
+      const priced = priceKey(key, buckets, day);
+      const tokens = bucketTokens(buckets);
       addBuckets(dayTotals, buckets);
-      dollars += priced.dollars;
-      if (byCli[priced.cli]) { addBuckets(byCli[priced.cli].buckets, buckets); byCli[priced.cli].dollars += priced.dollars; }
-      perModel[key] = { tokens: buckets.inputTokens + buckets.cachedReadTokens + buckets.cacheWriteTokens + buckets.outputTokens, dollars: priced.dollars };
+      if (priced.modelKnown) {
+        dollars += priced.dollars;
+        pricedTokens += tokens;
+        pricedCalls += buckets.calls || 0;
+      } else {
+        unpricedTokens += tokens;
+        unpricedCalls += buckets.calls || 0;
+      }
+      if (byCli[priced.cli]) {
+        addBuckets(byCli[priced.cli].buckets, buckets);
+        if (priced.modelKnown) byCli[priced.cli].dollars += priced.dollars;
+      }
+      perModel[key] = { tokens, dollars: priced.dollars };
     }
     return {
       day, tokens: bucketsWithTotal(dayTotals), dollars,
+      pricing: pricingCoverage(pricedTokens, unpricedTokens, pricedCalls, unpricedCalls),
       byCli: { claude: { tokens: bucketsWithTotal(byCli.claude.buckets), dollars: byCli.claude.dollars },
                codex: { tokens: bucketsWithTotal(byCli.codex.buckets), dollars: byCli.codex.dollars } },
       models: perModel
@@ -195,50 +247,98 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
   const modelAcc = {};
   const rangeTotals = EMPTY();
   let rangeDollars = 0;
+  let rangePricedTokens = 0;
+  let rangeUnpricedTokens = 0;
+  let rangePricedCalls = 0;
+  let rangeUnpricedCalls = 0;
   for (const day of rangeDaysList(rangeDays, nowMs)) {
     for (const [key, buckets] of Object.entries(byDay[day] || {})) {
-      const priced = priceKey(key, buckets);
+      const priced = priceKey(key, buckets, day);
+      const tokens = bucketTokens(buckets);
       addBuckets(rangeTotals, buckets);
-      rangeDollars += priced.dollars;
-      const m = (modelAcc[key] = modelAcc[key] || { cli: priced.cli, model: priced.model, buckets: EMPTY(), dollars: 0, modelKnown: priced.modelKnown });
-      addBuckets(m.buckets, buckets); m.dollars += priced.dollars;
+      if (priced.modelKnown) {
+        rangeDollars += priced.dollars;
+        rangePricedTokens += tokens;
+        rangePricedCalls += buckets.calls || 0;
+      } else {
+        rangeUnpricedTokens += tokens;
+        rangeUnpricedCalls += buckets.calls || 0;
+      }
+      const m = (modelAcc[key] = modelAcc[key] || {
+        cli: priced.cli,
+        model: priced.model,
+        buckets: EMPTY(),
+        dollars: 0,
+        modelKnown: priced.modelKnown,
+        rateKeys: new Set(),
+        cacheSavings: 0,
+        costByType: { input: 0, cachedRead: 0, cacheWrite: 0, output: 0 }
+      });
+      addBuckets(m.buckets, buckets);
+      if (priced.modelKnown) {
+        m.dollars += priced.dollars;
+        m.rateKeys.add(priced.rateKey);
+        m.cacheSavings += cacheSavings(m.cli, m.model, buckets.cachedReadTokens, day);
+        const breakdown = priceBreakdown(m.cli, m.model, buckets, day);
+        for (const type of Object.keys(m.costByType)) m.costByType[type] += breakdown[type];
+      }
     }
   }
+  const rangePricing = pricingCoverage(
+    rangePricedTokens,
+    rangeUnpricedTokens,
+    rangePricedCalls,
+    rangeUnpricedCalls
+  );
   const byModel = Object.values(modelAcc)
     .map((m) => {
-      const priced = priceRecord(m.cli, m.model, m.buckets);
-      const costByType = priceBreakdown(m.cli, m.model, m.buckets);
-      const costDriver = Object.entries(costByType).sort(([, a], [, b]) => b - a)[0]?.[0] || null;
+      const costByType = m.modelKnown ? m.costByType : null;
+      const costDriver = costByType
+        ? Object.entries(costByType).sort(([, a], [, b]) => b - a)[0]?.[0] || null
+        : null;
       return {
-        cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets), dollars: m.dollars,
-        prompts: m.buckets.prompts, costPerPrompt: perPrompt(m.dollars, m.buckets.prompts),
-        cacheSavings: cacheSavings(m.cli, m.model, m.buckets.cachedReadTokens),
-        modelKnown: m.modelKnown, rateKey: priced.rateKey, costByType, costDriver
+        cli: m.cli, model: m.model, tokens: bucketsWithTotal(m.buckets),
+        dollars: m.modelKnown ? m.dollars : null,
+        calls: m.buckets.calls,
+        costPerCall: m.modelKnown ? perCall(m.dollars, m.buckets.calls) : null,
+        cacheSavings: m.modelKnown ? m.cacheSavings : null,
+        modelKnown: m.modelKnown,
+        rateKey: m.rateKeys.size === 1 ? Array.from(m.rateKeys)[0] : null,
+        costByType,
+        costDriver
       };
     })
-    .sort((a, b) => b.dollars - a.dollars);
+    .sort((a, b) => (Number(b.dollars) || 0) - (Number(a.dollars) || 0) || b.tokens.total - a.tokens.total);
 
-  const rangeCacheSavings = byModel.reduce((s, m) => s + m.cacheSavings, 0);
+  const rangeCacheSavings = byModel.reduce((s, m) => s + (Number(m.cacheSavings) || 0), 0);
 
   // Dollars by token type across the range (for the Economics page).
   const costByType = { input: 0, cachedRead: 0, cacheWrite: 0, output: 0 };
   for (const m of Object.values(modelAcc)) {
-    const b = priceBreakdown(m.cli, m.model, m.buckets);
-    costByType.input += b.input;
-    costByType.cachedRead += b.cachedRead;
-    costByType.cacheWrite += b.cacheWrite;
-    costByType.output += b.output;
+    if (!m.modelKnown) continue;
+    costByType.input += m.costByType.input;
+    costByType.cachedRead += m.costByType.cachedRead;
+    costByType.cacheWrite += m.costByType.cacheWrite;
+    costByType.output += m.costByType.output;
   }
 
   const todayRow = dayRows.find((d) => d.day === todayKey) || {
     tokens: bucketsWithTotal(EMPTY()), dollars: 0,
+    pricing: pricingCoverage(0, 0),
     byCli: { claude: { tokens: bucketsWithTotal(EMPTY()), dollars: 0 }, codex: { tokens: bucketsWithTotal(EMPTY()), dollars: 0 } }
   };
 
   const rangeTotalsOut = bucketsWithTotal(rangeTotals);
   const byProject = Object.values(projectAcc)
     .map((project) => {
-      const primaryModel = Object.values(project.models).sort((a, b) => b.dollars - a.dollars)[0] || null;
+      const primaryModel = Object.values(project.models)
+        .sort((a, b) => (Number(b.dollars) || 0) - (Number(a.dollars) || 0) || b.tokens - a.tokens)[0] || null;
+      const pricing = pricingCoverage(
+        project.pricedTokens,
+        project.unpricedTokens,
+        project.pricedCalls,
+        project.unpricedCalls
+      );
       return {
         key: project.key,
         label: project.label,
@@ -246,8 +346,9 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
         path: project.path,
         tokens: bucketsWithTotal(project.buckets),
         dollars: project.dollars,
-        prompts: project.buckets.prompts,
-        share: rangeDollars > 0 ? project.dollars / rangeDollars : 0,
+        calls: project.buckets.calls,
+        pricing,
+        share: rangePricing.complete && rangeDollars > 0 ? project.dollars / rangeDollars : null,
         primaryModel: primaryModel && { cli: primaryModel.cli, model: primaryModel.model }
       };
     })
@@ -256,16 +357,21 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
   return {
     today: {
       tokens: todayRow.tokens, dollars: todayRow.dollars, byCli: todayRow.byCli,
-      costPerPrompt: perPrompt(todayRow.dollars, todayRow.tokens.prompts)
+      pricing: todayRow.pricing,
+      costPerCall: todayRow.pricing.complete ? perCall(todayRow.dollars, todayRow.tokens.calls) : null
     },
     range: {
       tokens: rangeTotalsOut, dollars: rangeDollars, days: dayRows, byModel, byProject,
-      avgCostPerPrompt: perPrompt(rangeDollars, rangeTotalsOut.prompts),
+      pricing: rangePricing,
+      avgCostPerCall: rangePricing.complete ? perCall(rangeDollars, rangeTotalsOut.calls) : null,
       cacheSavings: rangeCacheSavings,
       costByType,
       modelInsights: buildModelInsights(byModel)
     },
-    flags: { unknownModels: Array.from(unknownModels) },
+    flags: {
+      unpricedModels: Array.from(unpricedModels.values()),
+      unknownModels: Array.from(unpricedModels.values(), ({ model }) => model)
+    },
     scannedAt: new Date(nowMs).toISOString()
   };
 }

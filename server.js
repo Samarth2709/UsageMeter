@@ -55,6 +55,7 @@ const codexOAuthClientId = "app_EMoamEEZ73f0CkXaXp7hrann";
 const codexUsageRequestTimeoutMs = 10000;
 const codexAuthRefreshTimeoutMs = 10000;
 const codexTokenRefreshSkewMs = 60000;
+const claudeFiveHourResetMaxMs = (5 * 60 * 60 * 1000) + (60 * 1000);
 
 app.use(express.json());
 
@@ -195,9 +196,14 @@ function normalizeLastUsage(raw, type) {
     return null;
   }
 
+  const windows = type === "claude" && Array.isArray(raw.windows)
+    ? raw.windows.map((window) => sanitizeClaudeUsageWindow(window, raw.fetchedAt))
+    : raw.windows;
+
   return {
     ...raw,
-    service
+    service,
+    ...(windows ? { windows } : {})
   };
 }
 
@@ -891,7 +897,7 @@ async function fetchCodexUsage(account) {
   };
 }
 
-function parseClaudeUsageScreen(screenText) {
+function parseClaudeUsageScreen(screenText, now = new Date()) {
   const compact = screenText
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n");
@@ -925,8 +931,8 @@ function parseClaudeUsageScreen(screenText) {
     compact,
     /Extra\s*usage[\s\S]{0,180}?\$([\d.,]+)\s*\/\s*\$([\d.,]+)\s*spent[\s\S]{0,160}?Resets\s*([^\n]+)/g
   );
-  const sessionWindow = extractClaudeWindow("5-hour", sessionBlock);
-  const weekWindow = extractClaudeWindow("weekly", weekBlock);
+  const sessionWindow = extractClaudeWindow("5-hour", sessionBlock, now);
+  const weekWindow = extractClaudeWindow("weekly", weekBlock, now);
 
   if (sessionWindow) {
     windows.push(sessionWindow);
@@ -945,7 +951,7 @@ function parseClaudeUsageScreen(screenText) {
           resetText: cleanClaudeResetText(extraUsageMatch[3])
         }
       : null,
-    fetchedAt: new Date().toISOString()
+    fetchedAt: now.toISOString()
   };
 }
 
@@ -986,7 +992,7 @@ function getLastBlock(text, startRegex, endRegexes = [], preferRegex = null) {
   return blockAt(starts.at(-1).index);
 }
 
-function extractClaudeWindow(label, block) {
+function extractClaudeWindow(label, block, now = new Date()) {
   if (!block) {
     return null;
   }
@@ -1001,13 +1007,38 @@ function extractClaudeWindow(label, block) {
   const resetMatch = getLastMatch(block, /(?:Resets?|Rests?)\s*([^\n]+)/g);
   const resetText = resetMatch ? cleanClaudeResetText(resetMatch[1]) : null;
 
-  return {
+  return sanitizeClaudeUsageWindow({
     label,
     usedPercent,
     remainingPercent: Math.max(0, 100 - usedPercent),
     resetText,
-    resetAt: parseClaudeResetAt(resetText)
-  };
+    resetAt: parseClaudeResetAt(resetText, now)
+  }, now);
+}
+
+function sanitizeClaudeUsageWindow(window, observedAt) {
+  if (!/5[-\s]?hour|5h|session/i.test(window?.label || "") || !window?.resetAt) {
+    return window;
+  }
+
+  const observedMs = observedAt instanceof Date
+    ? observedAt.getTime()
+    : Date.parse(observedAt);
+  const resetMs = Date.parse(window.resetAt);
+
+  if (
+    Number.isFinite(observedMs) &&
+    Number.isFinite(resetMs) &&
+    resetMs - observedMs > claudeFiveHourResetMaxMs
+  ) {
+    return {
+      ...window,
+      resetAt: null,
+      resetText: null
+    };
+  }
+
+  return window;
 }
 
 function cleanClaudeResetText(value) {

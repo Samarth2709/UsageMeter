@@ -52,11 +52,21 @@ The app's local state is under `~/.rate-limit-tool/`:
 | `window-points.json` | Recent window-scoped points used for runway/value calculations. |
 | `window-state.json` | Saved popover position. |
 | `runway-alert-state.json` | Per-window/reset alert records used to avoid duplicate forecast notifications. |
+| `runway-evaluation-state.json` | Active allowance observations and first/latest predictions used to match outcomes across restarts. |
+| `runway-evaluations.jsonl` | Append-only prediction, first-observed limit-hit, and unmatched-reset events for later accuracy analysis. |
 | `automation-state.json` | Optional 5-hour automation deduplication state. |
 | `cores/current.json` | Atomically written pointer to the active, previous, and pending verified Core. |
 | `cores/<version>/` | Verified Core files plus the signed manifest and signature used to activate them. |
 
 Transcript parsing is read-only. The cache stores aggregated contributions, not a copy of the raw transcript text.
+
+## Runway evaluation log
+
+Runway evaluation is observational and does not alter the forecast. For each unambiguous allowance, the app records an actionable prediction when it first appears, every 15 minutes while it remains actionable, or when its predicted limit-reached time moves by at least five minutes. Each prediction includes the forecast version, prediction horizon, used and estimated remaining tokens, allowance percentage, seven-day token pace, active-day count, and provider-reported reset.
+
+An actual limit hit is recorded only from a fresh provider observation at or above 100%. `actualLimitReachedAt` is therefore the first observed hit, not a falsely precise provider event timestamp. `lastBelowLimitAt` and `observationIntervalMinutes` preserve the polling uncertainty. `predictionErrorMinutes` is actual minus predicted, so a positive value means the limit was first observed later than predicted and a negative value means it was observed earlier.
+
+If a tracked allowance resets without a hit being observed, the log records `window_closed` with `outcome: "not_observed_before_reset"` and a null actual time. This is a censored/unmatched outcome, not evidence that the limit was never reached. Stale provider snapshots and ambiguous multi-account services are excluded.
 
 ## Refresh and resilience
 
@@ -64,6 +74,7 @@ Transcript parsing is read-only. The cache stores aggregated contributions, not 
 - Claude CLI and web refreshes are throttled to avoid repeatedly opening a renderer or pseudo-terminal.
 - Usage History is recomputed only while its window is open. In-memory history data is released when the window closes.
 - Runway forecasts use one rolling seven-day calendar pace, including breaks.
+- Runway evaluation state is written atomically after successful refreshes; its append-only log uses deterministic event IDs so duplicate recovery records can be identified.
 - Per-file caches use file identity and CLI tag, so a transcript changing source classification is re-parsed correctly.
 - Calendar ranges use local dates, not fixed 24-hour jumps, so daylight-saving transitions stay correct.
 - Limit windows use provider-reported duration/reset metadata. A weekly-only allowance does not get an invented five-hour window.

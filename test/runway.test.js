@@ -50,6 +50,7 @@ test("uses a seven-day calendar pace including breaks", () => withHome((home) =>
   assert.equal(runway.dailyActiveDays, 2);
   assert.ok(Math.abs(runway.tokensPerDay - (400 / 7)) < 0.000001);
   const fiveHour = runway.windows.find((window) => window.kind === "fiveHour");
+  assert.equal(fiveHour.usedPercent, 80);
   assert.ok(Math.abs(fiveHour.estimatedMinutes - 1260) < 0.000001);
   assert.equal(fiveHour.lastsUntilReset, true);
 }));

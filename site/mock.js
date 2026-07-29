@@ -33,21 +33,29 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   };
 
-  const emptyBuckets = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, prompts: 0 });
+  const emptyBuckets = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, calls: 0 });
   function add(t, s) {
     t.inputTokens += s.inputTokens; t.cachedReadTokens += s.cachedReadTokens;
-    t.cacheWriteTokens += s.cacheWriteTokens; t.outputTokens += s.outputTokens; t.prompts += s.prompts;
+    t.cacheWriteTokens += s.cacheWriteTokens; t.outputTokens += s.outputTokens; t.calls += s.calls;
     return t;
   }
   const withTotal = (b) => ({
     input: b.inputTokens, cachedRead: b.cachedReadTokens, cacheWrite: b.cacheWriteTokens,
-    output: b.outputTokens, total: b.inputTokens + b.cachedReadTokens + b.cacheWriteTokens + b.outputTokens, prompts: b.prompts
+    output: b.outputTokens, total: b.inputTokens + b.cachedReadTokens + b.cacheWriteTokens + b.outputTokens, calls: b.calls
+  });
+  const completePricing = (b) => ({
+    complete: true,
+    pricedTokens: withTotal(b).total,
+    unpricedTokens: 0,
+    pricedCalls: b.calls,
+    unpricedCalls: 0,
+    coverage: 1
   });
   function priceOf(rate, b) {
     const r = RATES[rate];
     return (b.inputTokens * r.input + b.cachedReadTokens * r.cachedRead + b.cacheWriteTokens * r.cacheWrite + b.outputTokens * r.output) / 1e6;
   }
-  const perPrompt = (d, p) => (p > 0 ? d / p : 0);
+  const perCall = (d, p) => (p > 0 ? d / p : 0);
 
   function makeData(rangeDays) {
     const now = Date.now();
@@ -75,15 +83,15 @@
       for (let mi = 0; mi < MODELS.length; mi++) {
         const m = MODELS[mi];
         const r2 = mulberry32(rangeDays * 104729 + i * 97 + mi * 13 + 1);
-        const prompts = Math.round(intensity * m.weight * 2200 * (0.6 + r2() * 0.9));
-        if (prompts <= 0) continue;
+        const calls = Math.round(intensity * m.weight * 2200 * (0.6 + r2() * 0.9));
+        if (calls <= 0) continue;
 
         const b = {
-          prompts,
-          outputTokens: Math.round(prompts * (400 + r2() * 700)),
-          inputTokens: Math.round(prompts * (4000 + r2() * 5000)),       // fresh (uncached) input
-          cachedReadTokens: Math.round(prompts * (70000 + r2() * 55000)), // cache-heavy
-          cacheWriteTokens: m.cli === "claude" ? Math.round(prompts * (2500 + r2() * 4000)) : 0
+          calls,
+          outputTokens: Math.round(calls * (400 + r2() * 700)),
+          inputTokens: Math.round(calls * (4000 + r2() * 5000)),       // fresh (uncached) input
+          cachedReadTokens: Math.round(calls * (70000 + r2() * 55000)), // cache-heavy
+          cacheWriteTokens: m.cli === "claude" ? Math.round(calls * (2500 + r2() * 4000)) : 0
         };
         const dollars = priceOf(m.rate, b);
         const key = `${m.cli}::${m.model}`;
@@ -99,6 +107,7 @@
         day: localDay(dayMs),
         tokens: withTotal(dayTotals),
         dollars: dayDollars,
+        pricing: completePricing(dayTotals),
         byCli: {
           claude: { tokens: withTotal(byCli.claude.b), dollars: byCli.claude.dollars },
           codex: { tokens: withTotal(byCli.codex.b), dollars: byCli.codex.dollars }
@@ -114,7 +123,7 @@
     let cacheSavings = 0;
     const byModel = [];
     for (const acc of Object.values(modelAcc)) {
-      if (acc.b.prompts === 0) continue;
+      if (acc.b.calls === 0) continue;
       const dollars = priceOf(acc.rate, acc.b);
       add(rangeB, acc.b);
       rangeDollars += dollars;
@@ -134,7 +143,7 @@
       const costDriver = Object.entries(modelCostByType).sort((a, b) => b[1] - a[1])[0][0];
       byModel.push({
         cli: acc.cli, model: acc.model, tokens: withTotal(acc.b), dollars,
-        prompts: acc.b.prompts, costPerPrompt: perPrompt(dollars, acc.b.prompts),
+        calls: acc.b.calls, costPerCall: perCall(dollars, acc.b.calls),
         cacheSavings: save, modelKnown: true, rateKey: acc.rate, costByType: modelCostByType, costDriver
       });
     }
@@ -142,7 +151,7 @@
 
     const projectAcc = {};
     for (const acc of Object.values(modelAcc)) {
-      if (!acc.b.prompts) continue;
+      if (!acc.b.calls) continue;
       const [key, label, parentLabel, projectPath] = acc.project;
       const project = projectAcc[key] || (projectAcc[key] = {
         key, label, parentLabel, path: projectPath, buckets: emptyBuckets(), dollars: 0, models: {}
@@ -157,7 +166,8 @@
       const primaryModel = Object.values(project.models).sort((a, b) => b.dollars - a.dollars)[0];
       return {
         key: project.key, label: project.label, parentLabel: project.parentLabel, path: project.path,
-        tokens: withTotal(project.buckets), dollars: project.dollars, prompts: project.buckets.prompts,
+        tokens: withTotal(project.buckets), dollars: project.dollars, calls: project.buckets.calls,
+        pricing: completePricing(project.buckets),
         share: rangeDollars > 0 ? project.dollars / rangeDollars : 0,
         primaryModel: primaryModel && { cli: primaryModel.cli, model: primaryModel.model }
       };
@@ -183,14 +193,16 @@
     const last = days[days.length - 1];
     const today = {
       tokens: last.tokens, dollars: last.dollars, byCli: last.byCli,
-      costPerPrompt: perPrompt(last.dollars, last.tokens.prompts)
+      pricing: last.pricing,
+      costPerCall: perCall(last.dollars, last.tokens.calls)
     };
 
     return {
       today,
       range: {
         tokens: withTotal(rangeB), dollars: rangeDollars, days, byModel, byProject,
-        avgCostPerPrompt: perPrompt(rangeDollars, rangeB.prompts),
+        pricing: completePricing(rangeB),
+        avgCostPerCall: perCall(rangeDollars, rangeB.calls),
         cacheSavings, costByType,
         modelInsights: {
           topModel: byModel[0] && { cli: byModel[0].cli, model: byModel[0].model, dollars: byModel[0].dollars, share: byModel[0].dollars / rangeDollars },
@@ -198,19 +210,19 @@
           scenarios
         }
       },
-      flags: { unknownModels: [] },
+      flags: { unknownModels: [], unpricedModels: [] },
       scannedAt: new Date(now).toISOString(),
       windowValues: [
-        { cli: "claude", kind: "fiveHour", label: "5-hour", usedPercent: 102, usedDollars: 9.8, projectedDollars: 9.8, full: true, resetAt: new Date(now + 1.3 * 3600e3).toISOString() },
-        { cli: "claude", kind: "week", label: "weekly", usedPercent: 35, usedDollars: 120, projectedDollars: 342.86, full: false, resetAt: new Date(now + 4 * 86400e3).toISOString() },
-        { cli: "codex", kind: "fiveHour", label: "5-hour", usedPercent: 100, usedDollars: 4.2, projectedDollars: 4.2, full: true, resetAt: new Date(now + 2 * 3600e3).toISOString() },
-        { cli: "codex", kind: "week", label: "weekly", usedPercent: 40, usedDollars: 52, projectedDollars: 130, full: false, resetAt: new Date(now + 1.6 * 86400e3).toISOString() }
+        { cli: "claude", kind: "fiveHour", label: "5-hour", usedPercent: 102, usedDollars: 9.8, pricedDollars: 9.8, unpricedTokens: 0, pricingComplete: true, projectedDollars: 9.8, full: true, resetAt: new Date(now + 1.3 * 3600e3).toISOString() },
+        { cli: "claude", kind: "week", label: "weekly", usedPercent: 35, usedDollars: 120, pricedDollars: 120, unpricedTokens: 0, pricingComplete: true, projectedDollars: 342.86, full: false, resetAt: new Date(now + 4 * 86400e3).toISOString() },
+        { cli: "codex", kind: "fiveHour", label: "5-hour", usedPercent: 100, usedDollars: 4.2, pricedDollars: 4.2, unpricedTokens: 0, pricingComplete: true, projectedDollars: 4.2, full: true, resetAt: new Date(now + 2 * 3600e3).toISOString() },
+        { cli: "codex", kind: "week", label: "weekly", usedPercent: 40, usedDollars: 52, pricedDollars: 52, unpricedTokens: 0, pricingComplete: true, projectedDollars: 130, full: false, resetAt: new Date(now + 1.6 * 86400e3).toISOString() }
       ],
       appVersion: "0.2.5",
       diagnostics: {
         homeDir: "/Users/you",
         env: { CLAUDE_CONFIG_DIR: null, CODEX_HOME: null },
-        cache: { path: "/Users/you/.rate-limit-tool/usage-history.json", version: 6 },
+        cache: { path: "/Users/you/.rate-limit-tool/usage-history.json", version: 7 },
         claude: { dir: "/Users/you/.claude/projects", exists: true, readable: true, files: 218 },
         configuredClaude: [],
         codex: [

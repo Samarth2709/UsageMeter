@@ -6,6 +6,7 @@ const DAILY_SAMPLE_DAYS = DAILY_PACE_WINDOW_MS / (24 * 60 * 60 * 1000);
 const MIN_POINTS = 2;
 const MIN_DAILY_ACTIVE_DAYS = 2;
 const MIN_PROJECT_PCT = 5;
+const RUNWAY_FORECAST_VERSION = "seven-day-calendar-v1";
 
 function insufficient(cli, reason) {
   return { cli, status: "insufficient_data", reason, windows: [] };
@@ -63,6 +64,10 @@ function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousSer
         kind: value.kind,
         label: value.label,
         resetAt: value.resetAt,
+        usedPercent,
+        usedTokens: value.usedTokens,
+        remainingTokens,
+        resetMinutes,
         estimatedMinutes,
         lastsUntilReset: estimatedMinutes >= resetMinutes
       });
@@ -76,6 +81,7 @@ function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousSer
     output.push({
       cli,
       status: "ready",
+      forecastVersion: RUNWAY_FORECAST_VERSION,
       dailySampleDays: DAILY_SAMPLE_DAYS,
       dailyActiveDays: dailyActiveDays.size,
       dailySampleTokens,
@@ -93,5 +99,6 @@ module.exports = {
   DAILY_SAMPLE_DAYS,
   MIN_POINTS,
   MIN_DAILY_ACTIVE_DAYS,
-  MIN_PROJECT_PCT
+  MIN_PROJECT_PCT,
+  RUNWAY_FORECAST_VERSION
 };

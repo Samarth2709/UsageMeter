@@ -17,9 +17,14 @@ function fmtTokens(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
   return String(Math.round(n));
 }
-const fmtDollars = (n) => "$" + (Number(n) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtPerPrompt = (n) => "$" + (Number(n) || 0).toFixed(4);
+const fmtDollars = (n) => n == null || !Number.isFinite(Number(n))
+  ? "—"
+  : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtPerCall = (n) => n == null || !Number.isFinite(Number(n)) ? "—" : "$" + Number(n).toFixed(4);
 const fmtDay = (s) => new Date(s + "T00:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+const pricingCoverageText = (pricing) => pricing && !pricing.complete
+  ? `${Math.round((Number(pricing.coverage) || 0) * 100)}% priced · ${fmtTokens(pricing.unpricedTokens)} tok unpriced`
+  : "";
 
 /* ---------- tooltip ---------- */
 let tooltipEl = null;
@@ -120,7 +125,10 @@ function heatmap(el, days) {
   el.innerHTML = `<div class="hm-grid">${cells.join("")}</div><div class="hm-legend">Less<span class="hm-cell hm-l0"></span><span class="hm-cell hm-l1"></span><span class="hm-cell hm-l2"></span><span class="hm-cell hm-l3"></span><span class="hm-cell hm-l4"></span>More</div>`;
   attachHover(el, ".hm-cell[data-idx]", (hit) => {
     const d = days[+hit.dataset.idx];
-    return `<div class="tt-date">${fmtDay(d.day)}</div><div class="tt-row"><span>Cost</span><b>${fmtDollars(d.dollars)}</b></div><div class="tt-row tt-claude"><span>Claude</span><span>${fmtDollars(d.byCli.claude.dollars)}</span></div><div class="tt-row tt-codex"><span>Codex</span><span>${fmtDollars(d.byCli.codex.dollars)}</span></div><div class="tt-row"><span>Prompts</span><b>${d.tokens.prompts.toLocaleString()}</b></div>`;
+    const unpriced = d.pricing && !d.pricing.complete
+      ? `<div class="tt-row"><span>Unpriced</span><b>${fmtTokens(d.pricing.unpricedTokens)} tok</b></div>`
+      : "";
+    return `<div class="tt-date">${fmtDay(d.day)}</div><div class="tt-row"><span>Priced cost</span><b>${fmtDollars(d.dollars)}</b></div><div class="tt-row tt-claude"><span>Claude</span><span>${fmtDollars(d.byCli.claude.dollars)}</span></div><div class="tt-row tt-codex"><span>Codex</span><span>${fmtDollars(d.byCli.codex.dollars)}</span></div><div class="tt-row"><span>Model calls</span><b>${d.tokens.calls.toLocaleString()}</b></div>${unpriced}`;
   });
 }
 
@@ -137,11 +145,14 @@ function dayTokenHover(d) {
     <div class="tt-row"><span>Cost</span><b>${fmtDollars(d.dollars)}</b></div>`;
 }
 function dayCostHover(d) {
+  const unpriced = d.pricing && !d.pricing.complete
+    ? `<div class="tt-row"><span>Unpriced</span><b>${fmtTokens(d.pricing.unpricedTokens)} tok</b></div>`
+    : "";
   return `<div class="tt-date">${fmtDay(d.day)}</div>
-    <div class="tt-row"><span>Cost</span><b>${fmtDollars(d.dollars)}</b></div>
+    <div class="tt-row"><span>Priced cost</span><b>${fmtDollars(d.dollars)}</b></div>
     <div class="tt-row tt-claude"><span>Claude</span><span>${fmtDollars(d.byCli.claude.dollars)}</span></div>
     <div class="tt-row tt-codex"><span>Codex</span><span>${fmtDollars(d.byCli.codex.dollars)}</span></div>
-    <div class="tt-row"><span>Prompts</span><b>${d.tokens.prompts.toLocaleString()}</b></div>`;
+    <div class="tt-row"><span>Model calls</span><b>${d.tokens.calls.toLocaleString()}</b></div>${unpriced}`;
 }
 
 /* ---------- subscription value (live windows) ---------- */
@@ -173,8 +184,11 @@ function renderWindowValues(rows) {
     const pct = Math.min(100, Math.max(0, w.usedPercent));
     const service = CLI_LABEL[w.cli] || w.cli;
     const window = WINDOW_LABEL[w.kind] || w.label;
-    const projectionLabel = w.full ? "Full-window value" : "Projected window value";
+    const pricingComplete = w.pricingComplete !== false;
+    const projectionLabel = !pricingComplete ? "Projection unavailable" : w.full ? "Full-window value" : "Projected window value";
     const projection = w.projectedDollars == null ? "—" : fmtDollars(w.projectedDollars);
+    const usedLabel = pricingComplete ? "Value used" : "Unpriced usage";
+    const usedValue = pricingComplete ? fmtDollars(w.usedDollars) : `${fmtTokens(w.unpricedTokens)} tok`;
     return `
     <article class="window-value-card window-value-card--${esc(w.cli)}">
       <div class="window-value-card-head">
@@ -183,8 +197,8 @@ function renderWindowValues(rows) {
       </div>
       <div class="window-value-card-main">
         <div>
-          <span class="window-value-kicker">Value used</span>
-          <strong>${fmtDollars(w.usedDollars)}</strong>
+          <span class="window-value-kicker">${usedLabel}</span>
+          <strong>${usedValue}</strong>
         </div>
         <span class="window-percent"><b>${Math.round(pct)}%</b><small>used</small></span>
       </div>
@@ -234,7 +248,8 @@ function diagnosticsReport(d) {
   }
   lines.push("");
   lines.push(`Found: claude ${dg.totals.claudeFiles} files, codex ${dg.totals.codexFiles} files`);
-  lines.push(`Parsed (${rangeDays}d): ${r.tokens.prompts.toLocaleString()} prompts, ${r.tokens.total.toLocaleString()} tokens, ${fmtDollars(r.dollars)}`);
+  lines.push(`Parsed (${rangeDays}d): ${r.tokens.calls.toLocaleString()} model calls, ${r.tokens.total.toLocaleString()} tokens, ${fmtDollars(r.dollars)} priced`);
+  if (r.pricing && !r.pricing.complete) lines.push(`Pricing coverage: ${pricingCoverageText(r.pricing)}`);
   return lines.join("\n");
 }
 
@@ -275,7 +290,8 @@ function renderDiagnostics(d) {
 
   out.push(head("Found / parsed"));
   out.push(row("Transcripts found", `Claude ${dg.totals.claudeFiles} · Codex ${dg.totals.codexFiles}`));
-  out.push(row(`Parsed (${rangeDays}d)`, `${r.tokens.prompts.toLocaleString()} prompts · ${r.tokens.total.toLocaleString()} tok · ${fmtDollars(r.dollars)}`));
+  out.push(row(`Parsed (${rangeDays}d)`, `${r.tokens.calls.toLocaleString()} calls · ${r.tokens.total.toLocaleString()} tok · ${fmtDollars(r.dollars)} priced`));
+  if (r.pricing && !r.pricing.complete) out.push(row("Pricing coverage", pricingCoverageText(r.pricing)));
   body.innerHTML = out.join("");
 
   renderHelp(dg);
@@ -377,11 +393,13 @@ function renderAll(d) {
   }
 
   // summary cards
+  const todayPricing = pricingCoverageText(d.today.pricing);
+  const rangePricing = pricingCoverageText(r.pricing);
   document.querySelector("#sum-cards").innerHTML =
-    card("Today", fmtDollars(d.today.dollars), fmtTokens(d.today.tokens.total) + " tok") +
-    card("Range total", fmtDollars(r.dollars), fmtTokens(r.tokens.total) + " tok") +
-    card("Avg / day", fmtDollars(r.dollars / rangeDays), "over " + rangeDays + "d") +
-    card("Prompts", r.tokens.prompts.toLocaleString(), fmtPerPrompt(r.avgCostPerPrompt) + " / prompt");
+    card(d.today.pricing?.complete === false ? "Today · priced" : "Today", fmtDollars(d.today.dollars), todayPricing || fmtTokens(d.today.tokens.total) + " tok") +
+    card(r.pricing?.complete === false ? "Range · priced" : "Range total", fmtDollars(r.dollars), rangePricing || fmtTokens(r.tokens.total) + " tok") +
+    card(r.pricing?.complete === false ? "Priced avg / day" : "Avg / day", fmtDollars(r.dollars / rangeDays), "over " + rangeDays + "d") +
+    card("Model calls", r.tokens.calls.toLocaleString(), fmtPerCall(r.avgCostPerCall) + " / call");
 
   // subscription value (live windows)
   renderWindowValues(d.windowValues);
@@ -406,7 +424,7 @@ function renderAll(d) {
   const ts = d.computedAt || d.scannedAt || "?";
   const footer = document.querySelector("#footer-transparency");
   if (footer) footer.textContent =
-    `Data: local Claude Code + Codex CLI transcripts only · $ = estimated API-equivalent pricing (built-in table) · last computed ${ts}`;
+    `Data: local Claude Code + Codex CLI transcripts only · $ = estimated API-equivalent priced subtotal (effective-dated catalog) · last computed ${ts}`;
 }
 
 /* ---------- data ---------- */
@@ -423,8 +441,9 @@ async function fetchUsageHistory() {
 async function load() {
   try {
     data = await fetchUsageHistory();
-    document.querySelector("#history-note").textContent = data.flags.unknownModels.length
-      ? `* unknown model, priced at fallback rate: ${data.flags.unknownModels.join(", ")}`
+    const unpriced = data.flags?.unpricedModels || [];
+    document.querySelector("#history-note").textContent = unpriced.length
+      ? `Unpriced model${unpriced.length === 1 ? "" : "s"}: ${unpriced.map(({ cli, model }) => `${CLI_LABEL[cli] || cli} · ${model}`).join(", ")}. Tokens and calls are included; dollar views show only models with known rates.`
       : "";
     renderAll(data);
   } catch (error) {
