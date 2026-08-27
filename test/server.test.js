@@ -583,7 +583,7 @@ test("parseClaudeUsageScreen recovers the 5-hour reset from a partial trailing r
     "█████████ 73% used"
   ].join("\n");
 
-  const now = new Date("2026-06-24T04:00:00.000Z");
+  const now = new Date(2026, 5, 24, 0, 0, 0, 0);
   const { windows } = _test.parseClaudeUsageScreen(screen, now);
   const session = windows.find((w) => w.label === "5-hour");
   assert.ok(session, "5-hour window should be parsed");

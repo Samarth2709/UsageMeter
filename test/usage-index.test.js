@@ -741,8 +741,11 @@ test("forced repair revalidates metadata-invisible aggregate losers", () => {
     assert.equal(Buffer.byteLength(newTranscript), Buffer.byteLength(oldTranscript));
     fs.writeFileSync(primaryFile, oldTranscript);
     fs.writeFileSync(oldSessionCopy, oldTranscript);
+    const stableTime = new Date(NOW - 60_000);
+    fs.utimesSync(primaryFile, stableTime, stableTime);
     const initial = updateUsageIndex({ homeDir: f.homeDir, dataDir: f.dataDir, nowMs: NOW });
     const originalMtimeMs = initial.index.files[primaryFile].mtimeMs;
+    assert.equal(originalMtimeMs, stableTime.getTime());
 
     fs.writeFileSync(primaryFile, newTranscript);
     fs.utimesSync(primaryFile, originalMtimeMs / 1000, originalMtimeMs / 1000);
@@ -781,8 +784,11 @@ test("a failed aggregate revalidation remains retryable after force repair", () 
     assert.equal(Buffer.byteLength(newTranscript), Buffer.byteLength(oldTranscript));
     fs.writeFileSync(primaryFile, oldTranscript);
     fs.writeFileSync(oldSessionCopy, oldTranscript);
+    const stableTime = new Date(NOW - 60_000);
+    fs.utimesSync(primaryFile, stableTime, stableTime);
     const initial = updateUsageIndex({ homeDir: f.homeDir, dataDir: f.dataDir, nowMs: NOW });
     const originalMtimeMs = initial.index.files[primaryFile].mtimeMs;
+    assert.equal(originalMtimeMs, stableTime.getTime());
 
     fs.writeFileSync(primaryFile, newTranscript);
     fs.utimesSync(primaryFile, originalMtimeMs / 1000, originalMtimeMs / 1000);
