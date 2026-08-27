@@ -6,6 +6,7 @@ const path = require("node:path");
 const {
   recordsToContribution, recordsToProjectContribution, contributionForFile, mergeAndPrice, rangeDaysList, scanUsageHistory
 } = require("../usage-history/aggregate");
+const { parseClaudeTranscript } = require("../usage-history/parseClaude");
 
 test("recordsToContribution groups buckets by day and cli::model", () => {
   const recs = [
@@ -14,6 +15,44 @@ test("recordsToContribution groups buckets by day and cli::model", () => {
   ];
   const c = recordsToContribution(recs);
   assert.deepEqual(c["2026-06-16"]["claude::claude-opus-4-8"], { inputTokens: 15, cachedReadTokens: 1, cacheWriteTokens: 2, outputTokens: 4, calls: 2 });
+});
+
+test("Claude usage corrections update tokens without adding model calls", () => {
+  const recs = [
+    { day: "2026-06-16", cli: "claude", model: "claude-opus-5", inputTokens: 2, outputTokens: 3 },
+    { day: "2026-06-16", cli: "claude", model: "claude-opus-5", inputTokens: 0, outputTokens: 37, isCorrection: true }
+  ];
+  const c = recordsToContribution(recs);
+  assert.deepEqual(c["2026-06-16"]["claude::claude-opus-5"], {
+    inputTokens: 2,
+    cachedReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 40,
+    calls: 1
+  });
+});
+
+test("Claude zero-to-nonzero streaming contributes one model call", () => {
+  const row = (outputTokens) => JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-06-16T18:00:00.000Z",
+    message: {
+      id: "msg_zero_stream",
+      model: "claude-opus-5",
+      usage: { input_tokens: 0, output_tokens: outputTokens }
+    }
+  });
+  const contribution = recordsToContribution(
+    parseClaudeTranscript([row(0), row(40)].join("\n"))
+  );
+
+  assert.deepEqual(contribution["2026-06-16"]["claude::claude-opus-5"], {
+    inputTokens: 0,
+    cachedReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 40,
+    calls: 1
+  });
 });
 
 test("recordsToProjectContribution retains an explicit project and falls back to Unattributed", () => {

@@ -1,18 +1,8 @@
 const fs = require("node:fs");
-const { parseClaudeTranscript } = require("./parseClaude");
-const { parseCodexTranscript } = require("./parseCodex");
 const { priceRecord } = require("./pricing");
 const { listAllTranscriptFiles } = require("./sources");
 const { usageWindowKey } = require("../usage-windows");
-const { loadCache, saveCache } = require("./store");
-
-// Disk cache for the recent-window points, mirroring scanUsageHistory's usage-history.json.
-// Lets a fresh open (after the window closed and the in-memory map was freed) re-parse only
-// the files whose mtime/size changed instead of all ~8 days of transcripts.
-const POINTS_FILE = "window-points.json";
-// Bump when the parser or cached record shape changes. Dollars are priced on read, so
-// pricing-table changes take effect without a version bump.
-const POINTS_VERSION = 3;
+const { updateUsageIndex } = require("./index");
 
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -51,104 +41,68 @@ function transcriptFingerprint(homeDir, extraRoots = {}) {
   return `${count}:${totalSize}:${maxMtime}`;
 }
 
-function recordTokens(r) {
-  return (r.inputTokens || 0) + (r.cachedReadTokens || 0) + (r.cacheWriteTokens || 0) + (r.outputTokens || 0);
-}
+let transientIndex = null;
+let transientHomeDir = null;
+let lastIndexStats = {
+  appendedFiles: 0,
+  rebuiltFiles: 0,
+  bytesRead: 0
+};
 
-// Parse a transcript into compact raw records (unpriced) for the points cache. Dollars
-// are computed on read in recentPricedPoints, so a pricing-table change applies to cached
-// records without invalidating the cache.
-function parseFileRecords(filePath, cli, cutoff) {
-  let text = "";
-  try { text = fs.readFileSync(filePath, "utf8"); } catch { return []; }
-  const records = cli === "codex" ? parseCodexTranscript(text) : parseClaudeTranscript(text);
-  return records
-    .filter((r) => r.timestampMs >= cutoff)
-    .map((r) => ({
-      timestampMs: r.timestampMs,
-      model: r.model,
-      inputTokens: r.inputTokens || 0,
-      cachedReadTokens: r.cachedReadTokens || 0,
-      cacheWriteTokens: r.cacheWriteTokens || 0,
-      outputTokens: r.outputTokens || 0
-    }));
-}
-
-// Per-file cache of parsed records in the lookback window, keyed by
-// path -> { mtimeMs, size, cli, records }.
-// Reused across recomputes so only files whose (mtimeMs,size) actually changed get
-// re-read+parsed — the same incremental strategy scanUsageHistory uses. Without this,
-// every ~60s recompute re-parsed the entire recent window (~GB), spiking CPU/RSS.
-// It's also persisted to disk (POINTS_FILE) so a fresh open after the window closed —
-// when this map is emptied to keep idle RAM low — still only re-parses changed files
-// instead of the whole ~8-day window (~3.5s → subsecond on a warm disk cache).
-const pointsCache = new Map();
-let lastParseCount = 0; // test seam: files (re)parsed on the most recent call
-
-// Parse the transcripts touched within the lookback window into priced, timestamped
-// points: { timestampMs, cli, dollars, tokens }. Each point is priced per token type
-// (input/output/cache at their own rates), so a point's dollars reflect its real mix.
-// When dataDir is given, the record cache is hydrated from / persisted to disk.
-function recentPricedPoints(homeDir, nowMs, extraRoots = {}, dataDir = null) {
+// Load compact minute buckets from the persisted index and price them on read so
+// pricing-table changes do not require reparsing transcripts.
+function recentPricedPoints(homeDir, nowMs, extraRoots = {}, dataDir = null, usageIndex = null) {
   const cutoff = nowMs - LOOKBACK_MS;
-  const livePaths = new Set();
   const points = [];
-  lastParseCount = 0;
 
-  // Hydrate the in-memory map from disk once (when empty) so the first open after the
-  // window closed doesn't re-parse everything — only (mtime,size)-changed files.
-  if (dataDir && pointsCache.size === 0) {
-    const disk = loadCache(dataDir, POINTS_FILE, POINTS_VERSION);
-    for (const [p, e] of Object.entries(disk.files)) pointsCache.set(p, e);
+  let index = usageIndex;
+  if (!index) {
+    if (!dataDir && transientHomeDir !== homeDir) {
+      transientIndex = null;
+      transientHomeDir = homeDir;
+    }
+    const updated = updateUsageIndex({
+      homeDir,
+      dataDir,
+      nowMs,
+      extraRoots,
+      index: dataDir ? null : transientIndex
+    });
+    index = updated.index;
+    lastIndexStats = updated.stats;
+    if (!dataDir) transientIndex = index;
+  } else {
+    lastIndexStats = {
+      appendedFiles: 0,
+      rebuiltFiles: 0,
+      bytesRead: 0
+    };
   }
 
-  let dirty = false;
-  for (const { path: filePath, cli } of listAllTranscriptFiles(homeDir, extraRoots)) {
-    let stat;
-    try { stat = fs.statSync(filePath); } catch { continue; }
-    if (stat.mtimeMs < cutoff) continue;
-    livePaths.add(filePath);
-
-    let entry = pointsCache.get(filePath);
-    if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size || entry.cli !== cli) {
-      entry = {
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-        cli,
-        records: parseFileRecords(filePath, cli, cutoff)
-      };
-      pointsCache.set(filePath, entry);
-      lastParseCount += 1;
-      dirty = true;
-    }
-
-    const recentRecords = entry.records.filter((rec) => rec.timestampMs >= cutoff);
-    if (recentRecords.length !== entry.records.length) {
-      entry = { ...entry, records: recentRecords };
-      pointsCache.set(filePath, entry);
-      dirty = true;
-    }
-    for (const rec of recentRecords) {
-      const priced = priceRecord(cli, rec.model, rec, rec.timestampMs);
+  const firstMinute = Math.floor(cutoff / 60000) * 60000;
+  for (const entry of Object.values(index.files || {})) {
+    for (const [minute, models] of Object.entries(entry.minuteContribution || {})) {
+      const timestampMs = Number(minute);
+      if (!Number.isFinite(timestampMs) || timestampMs < firstMinute || timestampMs > nowMs) continue;
+      for (const [key, buckets] of Object.entries(models)) {
+        const [cli, ...modelParts] = key.split("::");
+        const model = modelParts.join("::");
+        const priced = priceRecord(cli, model, buckets, timestampMs);
+        const tokens = (
+          (buckets.inputTokens || 0)
+          + (buckets.cachedReadTokens || 0)
+          + (buckets.cacheWriteTokens || 0)
+          + (buckets.outputTokens || 0)
+        );
       points.push({
-        timestampMs: rec.timestampMs,
+          timestampMs,
         cli,
         dollars: priced.dollars,
-        tokens: recordTokens(rec),
+          tokens,
         modelKnown: priced.modelKnown
       });
+      }
     }
-  }
-
-  // Evict files that dropped out of the recent window or were deleted, so the cache
-  // stays bounded to the current lookback set.
-  for (const key of pointsCache.keys()) {
-    if (!livePaths.has(key)) { pointsCache.delete(key); dirty = true; }
-  }
-
-  // Persist only when the cache actually changed, so a no-op open doesn't rewrite the file.
-  if (dataDir && dirty) {
-    saveCache(dataDir, { version: POINTS_VERSION, files: Object.fromEntries(pointsCache) }, POINTS_FILE);
   }
   return points;
 }
@@ -169,13 +123,27 @@ function projectFull(usedDollars, usedTokens, usedPercent, blendedRate) {
 
 // limits: [{ cli, label, usedPercent, resetAt }] from the live snapshot.
 // Returns one row per resolvable window with the API-dollar value used in it.
-function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [], extraRoots = {}, dataDir = null } = {}) {
+function computeWindowValues({
+  homeDir,
+  nowMs = Date.now(),
+  limits = [],
+  extraRoots = {},
+  dataDir = null,
+  usageIndex = null,
+  points: providedPoints = null
+} = {}) {
   const resolvable = limits
     .map((w) => ({ ...w, kind: usageWindowKey(w), durationMs: windowDurationMs(w) }))
     .filter((w) => w.cli && w.durationMs && w.resetAt && Number.isFinite(Date.parse(w.resetAt)));
   if (!resolvable.length) return [];
 
-  const points = recentPricedPoints(homeDir, nowMs, extraRoots, dataDir);
+  const points = providedPoints || recentPricedPoints(
+    homeDir,
+    nowMs,
+    extraRoots,
+    dataDir,
+    usageIndex
+  );
 
   // Per-CLI blended $/token over the whole lookback baseline — the stable rate used
   // to value each window's unspent remainder.
@@ -199,13 +167,17 @@ function computeWindowValues({ homeDir, nowMs = Date.now(), limits = [], extraRo
   return resolvable.map((w) => {
     const resetMs = Date.parse(w.resetAt);
     const start = resetMs - w.durationMs;
+    // The index intentionally aggregates recent usage by minute. Include the
+    // first partial minute so a turn exactly on the boundary is never dropped;
+    // this can conservatively include at most 59.999 seconds before the window.
+    const firstMinute = Math.floor(start / 60000) * 60000;
     const end = Math.min(nowMs, resetMs);
     let pricedDollars = 0;
     let usedTokens = 0;
     let unpricedTokens = 0;
     for (const p of points) {
       if (p.cli !== w.cli) continue;
-      if (p.timestampMs >= start && p.timestampMs <= end) {
+      if (p.timestampMs >= firstMinute && p.timestampMs <= end) {
         usedTokens += p.tokens;
         if (p.modelKnown) pricedDollars += p.dollars;
         else unpricedTokens += p.tokens;
@@ -238,9 +210,12 @@ module.exports = {
   windowDurationMs,
   recentPricedPoints,
   transcriptFingerprint,
-  // Free the per-file points cache (e.g. when the history window closes) so it isn't
-  // held resident while nobody is viewing history.
-  clearPointsCache: () => pointsCache.clear(),
-  // test seam: files (re)parsed on the most recent recentPricedPoints call
-  _lastParseCount: () => lastParseCount
+  clearPointsCache: () => {
+    transientIndex = null;
+    transientHomeDir = null;
+  },
+  _lastParseCount: () => (
+    lastIndexStats.appendedFiles + lastIndexStats.rebuiltFiles
+  ),
+  _lastIndexStats: () => lastIndexStats
 };

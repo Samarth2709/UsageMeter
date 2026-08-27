@@ -81,6 +81,28 @@ test("computeWindowValues sums only the priced turns inside the window", () => {
   });
 });
 
+test("computeWindowValues includes an event on a non-minute-aligned boundary", () => {
+  withTempHome((home) => {
+    const resetAt = NOW + 30_000;
+    const start = resetAt - 5 * 3600 * 1000;
+    writeCodexFixture(home, [codexTurn(start)]);
+
+    const [row] = computeWindowValues({
+      homeDir: home,
+      nowMs: NOW,
+      limits: [{
+        cli: "codex",
+        label: "5 hour",
+        usedPercent: 50,
+        resetAt: iso(resetAt)
+      }]
+    });
+
+    assert.equal(row.usedTokens, 300000);
+    assert.equal(Math.round(row.usedDollars), 4);
+  });
+});
+
 test("computeWindowValues values the remainder at the blended rate, not the window's mix", () => {
   withTempHome((home) => {
     // In-window turn is output-heavy ($9, expensive); an out-of-window turn is
@@ -191,10 +213,10 @@ test("recentPricedPoints keeps only lookback records in its disk cache", () => {
       const points = recentPricedPoints(home, NOW, {}, dataDir);
       assert.equal(points.length, 1);
 
-      const disk = JSON.parse(fs.readFileSync(path.join(dataDir, "window-points.json"), "utf8"));
-      const records = Object.values(disk.files).flatMap((entry) => entry.records);
-      assert.equal(records.length, 1);
-      assert.ok(records[0].timestampMs >= NOW - 8 * 86400000);
+      const disk = JSON.parse(fs.readFileSync(path.join(dataDir, "usage-index.json"), "utf8"));
+      const minutes = Object.values(disk.files).flatMap((entry) => Object.keys(entry.minuteContribution));
+      assert.equal(minutes.length, 1);
+      assert.ok(Number(minutes[0]) >= Math.floor((NOW - 8 * 86400000) / 60000) * 60000);
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }

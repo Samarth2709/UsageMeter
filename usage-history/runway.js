@@ -12,15 +12,37 @@ function insufficient(cli, reason) {
   return { cli, status: "insufficient_data", reason, windows: [] };
 }
 
-function computeRunways({ homeDir, nowMs = Date.now(), limits = [], ambiguousServices = [], extraRoots = {}, dataDir = null } = {}) {
+function computeRunways({
+  homeDir,
+  nowMs = Date.now(),
+  limits = [],
+  ambiguousServices = [],
+  extraRoots = {},
+  dataDir = null,
+  usageIndex = null
+} = {}) {
   const ambiguous = new Set(ambiguousServices);
   const services = new Set(limits.map((limit) => limit.cli).filter(Boolean));
   for (const cli of ambiguous) services.add(cli);
 
   const output = [];
   const usableLimits = limits.filter((limit) => !ambiguous.has(limit.cli));
-  const windowValues = computeWindowValues({ homeDir, nowMs, limits: usableLimits, extraRoots, dataDir });
-  const points = recentPricedPoints(homeDir, nowMs, extraRoots, dataDir);
+  const points = recentPricedPoints(
+    homeDir,
+    nowMs,
+    extraRoots,
+    dataDir,
+    usageIndex
+  );
+  const windowValues = computeWindowValues({
+    homeDir,
+    nowMs,
+    limits: usableLimits,
+    extraRoots,
+    dataDir,
+    usageIndex,
+    points
+  });
 
   for (const cli of services) {
     if (ambiguous.has(cli)) {

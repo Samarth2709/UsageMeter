@@ -43,7 +43,7 @@ test("buildDiagnostics counts transcripts per location", () => {
     assert.equal(defaultCodex.sessionsFiles, 1);
     assert.equal(d.totals.claudeFiles, 2);
     assert.equal(d.totals.codexFiles, 1);
-    assert.ok(d.cache.path.endsWith("usage-history.json"));
+    assert.ok(d.cache.path.endsWith("usage-index.json"));
     assert.equal(typeof d.cache.version, "number");
   });
 });

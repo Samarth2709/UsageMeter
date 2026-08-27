@@ -1,15 +1,21 @@
 const { localDay } = require("./day");
 const path = require("node:path");
+const { structuralSessionIdentity } = require("./session-identity");
 
 function structuralCwd(obj) {
   const cwd = typeof obj?.cwd === "string" ? obj.cwd : obj?.payload?.cwd;
   return typeof cwd === "string" && path.isAbsolute(cwd) ? cwd : null;
 }
 
-function parseClaudeTranscript(text) {
+function parseClaudeTranscriptChunk(text, initialState = {}) {
   const records = [];
-  const seen = new Set();
-  let currentProjectPath = null;
+  const usageById = { ...(initialState.usageById || {}) };
+  const uncountedUsageIds = new Set(initialState.uncountedUsageIds || []);
+  for (const id of initialState.seenIds || []) {
+    if (!(id in usageById)) usageById[id] = null;
+  }
+  let currentProjectPath = initialState.currentProjectPath || null;
+  let sessionIdentity = initialState.sessionIdentity || null;
 
   for (const rawLine of String(text || "").split("\n")) {
     const trimmed = rawLine.trim();
@@ -18,6 +24,17 @@ function parseClaudeTranscript(text) {
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
     currentProjectPath = structuralCwd(obj) || currentProjectPath;
+    const structuralIdentity = structuralSessionIdentity("claude", obj);
+    if (
+      structuralIdentity
+      && (
+        !sessionIdentity
+        || structuralIdentity.startsWith("agent-")
+        || !sessionIdentity.startsWith("agent-")
+      )
+    ) {
+      sessionIdentity = structuralIdentity;
+    }
     if (obj.type !== "assistant") continue;
 
     const msg = obj.message || {};
@@ -28,37 +45,59 @@ function parseClaudeTranscript(text) {
     // carry no real token usage and are not billable API calls.
     if (msg.model === "<synthetic>") continue;
 
-    const id = msg.id || obj.requestId;
-    if (id) {
-      if (seen.has(id)) continue;
-      seen.add(id);
-    }
-
     const ts = Date.parse(obj.timestamp);
     if (!Number.isFinite(ts)) continue;
 
-    const inputTokens = Number(usage.input_tokens) || 0;
-    const cachedReadTokens = Number(usage.cache_read_input_tokens) || 0;
-    const cacheWriteTokens = Number(usage.cache_creation_input_tokens) || 0;
-    const outputTokens = Number(usage.output_tokens) || 0;
-    if (inputTokens + cachedReadTokens + cacheWriteTokens + outputTokens === 0) continue;
+    const currentUsage = {
+      inputTokens: Number(usage.input_tokens) || 0,
+      cachedReadTokens: Number(usage.cache_read_input_tokens) || 0,
+      cacheWriteTokens: Number(usage.cache_creation_input_tokens) || 0,
+      outputTokens: Number(usage.output_tokens) || 0
+    };
+    const id = msg.id || obj.requestId;
+    const previousUsage = id ? usageById[id] : undefined;
+    const tokenUsage = previousUsage
+      ? {
+        inputTokens: currentUsage.inputTokens - previousUsage.inputTokens,
+        cachedReadTokens: currentUsage.cachedReadTokens - previousUsage.cachedReadTokens,
+        cacheWriteTokens: currentUsage.cacheWriteTokens - previousUsage.cacheWriteTokens,
+        outputTokens: currentUsage.outputTokens - previousUsage.outputTokens
+      }
+      : currentUsage;
+    if (id) usageById[id] = currentUsage;
+    if (previousUsage === null) continue;
+    if (!Object.values(tokenUsage).some((tokens) => tokens !== 0)) {
+      if (id && previousUsage === undefined) uncountedUsageIds.add(id);
+      continue;
+    }
 
     const record = {
       timestampMs: ts,
       day: localDay(ts),
       cli: "claude",
       model: msg.model || "unknown",
-      inputTokens,
-      cachedReadTokens,
-      cacheWriteTokens,
-      outputTokens,
+      ...tokenUsage,
       isSidechain: Boolean(obj.isSidechain)
     };
+    if (previousUsage && !uncountedUsageIds.has(id)) record.isCorrection = true;
+    if (id) uncountedUsageIds.delete(id);
     if (currentProjectPath) record.projectPath = currentProjectPath;
     records.push(record);
   }
 
-  return records;
+  return {
+    records,
+    state: {
+      currentProjectPath,
+      usageById,
+      uncountedUsageIds: [...uncountedUsageIds],
+      ...(sessionIdentity ? { sessionIdentity } : {})
+    }
+  };
 }
 
-module.exports = { parseClaudeTranscript };
+function parseClaudeTranscript(text) {
+  return parseClaudeTranscriptChunk(text).records;
+}
+
+module.exports = { parseClaudeTranscript, parseClaudeTranscriptChunk };

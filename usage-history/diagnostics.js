@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { codexHomeRoots, listAllTranscriptFiles } = require("./sources");
-const { FILE_NAME, CACHE_VERSION } = require("./store");
+const { INDEX_FILE, INDEX_VERSION } = require("./index");
 
 // Count .jsonl files under a directory (recursively), and report whether the
 // directory exists and was readable. Used to show exactly what the usage-history
@@ -69,7 +69,7 @@ function buildDiagnostics({ homeDir, dataDir, extraRoots = {} } = {}) {
       CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || null,
       CODEX_HOME: process.env.CODEX_HOME || null
     },
-    cache: { path: path.join(dataDir || "", FILE_NAME), version: CACHE_VERSION },
+    cache: { path: path.join(dataDir || "", INDEX_FILE), version: INDEX_VERSION },
     claude,
     configuredClaude,
     codex,

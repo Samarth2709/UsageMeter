@@ -2,22 +2,21 @@
 
 This is a concise record of shipped milestones. It is not a substitute for Git history; use `git log` for the exact code-level change record.
 
-## Next release
+## 0.2.5 — 2026-08-27
 
 - Added a fixed Electron bootstrap shell and signed, versioned Core updates with a safe staging path, atomic activation, rollback, and user-controlled restart.
 - Added desktop-release automation that publishes the initial/shell DMG and ZIP alongside signed Core update assets. The shell still requires manual DMG replacement without an Apple Developer ID.
-
-## Current source: 0.2.5 — 2026-07-17
-
 - Added current model pricing and richer Usage History insights: Usage Runway, Project Ledger, and Model Lens.
 - Generalized Codex allowance handling so weekly-only or otherwise dynamic windows use server-reported metadata instead of a fabricated five-hour window.
-- Improved Claude five-hour refresh recovery, identity deduplication, popover lifecycle recovery, and history project grouping.
-- Added regression coverage for pricing, runway estimation, popover lifecycle, dynamic windows, cache behavior, parsing, and diagnostics.
+- Replaced whole-transcript background reparsing with a compact incremental index in short-lived utility workers.
+- Corrected Claude streaming totals, repeated Codex cumulative snapshots, renamed-session deduplication, and retained 90-day history.
+- Added a Diagnostics index repair for non-append transcript rewrites and strengthened worker timeout serialization.
+- Fixed popover visibility across macOS Spaces.
 
 ## Packaging and desktop integration — 2026-07-17
 
 - Added the native Usage Meter icon, packaged-app launch-at-login behavior, and clean replacement of legacy installed bundles.
-- Updated the installed app to v0.2.5. The source release has not yet been tagged/published; see [Releasing](RELEASING.md).
+- Updated the installed app and release artifacts to v0.2.5; see [Releasing](RELEASING.md).
 
 ## 0.2.3 — 2026-07-01
 

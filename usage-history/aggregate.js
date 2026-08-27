@@ -1,23 +1,15 @@
-const fs = require("node:fs");
-const path = require("node:path");
 const { localDay } = require("./day");
 const { parseClaudeTranscript } = require("./parseClaude");
 const { parseCodexTranscript } = require("./parseCodex");
 const { priceRecord, cacheSavings, priceBreakdown } = require("./pricing");
 const { buildModelInsights } = require("./model-insights");
-const { listAllTranscriptFiles } = require("./sources");
-const { loadCache, saveCache } = require("./store");
-
-const EMPTY = () => ({ inputTokens: 0, cachedReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, calls: 0 });
-
-function addBuckets(target, src) {
-  target.inputTokens += src.inputTokens || 0;
-  target.cachedReadTokens += src.cachedReadTokens || 0;
-  target.cacheWriteTokens += src.cacheWriteTokens || 0;
-  target.outputTokens += src.outputTokens || 0;
-  target.calls += src.calls || 0;
-  return target;
-}
+const {
+  EMPTY,
+  addBuckets,
+  recordsToContribution,
+  recordsToProjectContribution
+} = require("./contributions");
+const { updateUsageIndex } = require("./index");
 
 function bucketTokens(buckets) {
   return (
@@ -38,56 +30,6 @@ function pricingCoverage(pricedTokens, unpricedTokens, pricedCalls = 0, unpriced
     unpricedCalls,
     coverage: totalTokens > 0 ? pricedTokens / totalTokens : 1
   };
-}
-
-function recordsToContribution(records) {
-  const contribution = {};
-  for (const r of records) {
-    const dayMap = (contribution[r.day] = contribution[r.day] || {});
-    const key = `${r.cli}::${r.model}`;
-    const bucket = dayMap[key] || EMPTY();
-    addBuckets(bucket, r);
-    bucket.calls += 1; // each normalized token record is one model call
-    dayMap[key] = bucket;
-  }
-  return contribution;
-}
-
-function projectForRecord(record, filePath, cli) {
-  if (typeof record.projectPath === "string" && path.isAbsolute(record.projectPath)) {
-    return {
-      key: `path:${record.projectPath}`,
-      path: record.projectPath,
-      label: path.basename(record.projectPath) || record.projectPath,
-      parentLabel: path.basename(path.dirname(record.projectPath)) || null
-    };
-  }
-
-  if (cli === "claude") {
-    const parts = filePath.split(path.sep);
-    const projectsIndex = parts.lastIndexOf("projects");
-    const folder = projectsIndex >= 0 ? parts[projectsIndex + 1] : null;
-    if (folder) {
-      return { key: `claude-folder:${folder}`, path: null, label: folder, parentLabel: null };
-    }
-  }
-
-  return { key: "unattributed", path: null, label: "Unattributed", parentLabel: null };
-}
-
-function recordsToProjectContribution(records, filePath, cli) {
-  const contribution = {};
-  for (const record of records) {
-    const project = projectForRecord(record, filePath, cli);
-    const dayMap = (contribution[record.day] = contribution[record.day] || {});
-    const entry = (dayMap[project.key] = dayMap[project.key] || { ...project, models: {} });
-    const modelKey = `${record.cli}::${record.model}`;
-    const bucket = entry.models[modelKey] || EMPTY();
-    addBuckets(bucket, record);
-    bucket.calls += 1;
-    entry.models[modelKey] = bucket;
-  }
-  return contribution;
 }
 
 function parseRecords(text, cli) {
@@ -377,34 +319,8 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
 }
 
 function scanUsageHistory({ homeDir, dataDir, nowMs = Date.now(), rangeDays = 30, extraRoots = {} }) {
-  const cache = loadCache(dataDir);
-  const found = listAllTranscriptFiles(homeDir, extraRoots);
-  const foundPaths = new Set(found.map((f) => f.path));
-
-  // drop deleted files
-  for (const p of Object.keys(cache.files)) {
-    if (!foundPaths.has(p)) delete cache.files[p];
-  }
-
-  for (const { path: p, cli } of found) {
-    let stat;
-    try { stat = fs.statSync(p); } catch { continue; }
-    const cached = cache.files[p];
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.cli === cli) continue;
-    let text = "";
-    try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
-    const records = parseRecords(text, cli);
-    cache.files[p] = {
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-      cli,
-      contribution: recordsToContribution(records),
-      projectContribution: recordsToProjectContribution(records, p, cli)
-    };
-  }
-
-  saveCache(dataDir, cache);
-  return mergeAndPrice(cache.files, { rangeDays, nowMs });
+  const { index } = updateUsageIndex({ homeDir, dataDir, nowMs, extraRoots });
+  return mergeAndPrice(index.files, { rangeDays, nowMs });
 }
 
 module.exports = {

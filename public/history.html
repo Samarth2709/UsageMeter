@@ -75,6 +75,7 @@
           <h2>Diagnostics</h2>
           <span style="display:flex;gap:6px">
             <button id="diag-help" class="mini-toggle" title="What do I need to do?">? Help</button>
+            <button id="diag-repair" class="mini-toggle" title="Rebuild the local usage index from current transcripts">Rebuild index</button>
             <button id="diag-copy" class="mini-toggle">Copy diagnostics</button>
           </span>
         </div>
@@ -82,7 +83,7 @@
         <div id="diag-body"></div>
         <h2>Session folders</h2>
         <div id="diag-folders"></div>
-        <p class="history-note">Usage history is built only from local Claude Code and Codex CLI transcripts — API/SDK and IDE usage isn't counted. Add a folder above if your sessions live somewhere non-standard. If your history is empty, hit “? Help”, or Copy diagnostics and send it over.</p>
+        <p class="history-note">Usage history is built only from local Claude Code and Codex CLI transcripts — API/SDK and IDE usage isn't counted. Add a folder above if your sessions live somewhere non-standard. Rebuild index performs a full repair from current transcripts while preserving retained 90-day history for cleaned-up files.</p>
       </section>
     </main>
 

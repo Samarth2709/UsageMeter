@@ -36,10 +36,12 @@ This is not macOS bundle auto-update: without an Apple Developer ID, Electron/se
 
 Usage Meter is designed around local CLI state:
 
-- Usage History parses local `.jsonl` transcripts and writes an incremental local cache. It does not upload transcript contents.
+- Usage History indexes local `.jsonl` transcripts in a short-lived worker, reads only newly appended bytes after the first pass, and saves compact 90-day aggregates under `~/.rate-limit-tool/`. Indexed history stays available when a CLI cleans up an old transcript. It does not upload transcript contents.
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
 - Claude limits use the installed `claude` CLI's Usage screen and may supplement it with the existing authenticated `claude.ai` session.
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
+
+Append validation detects truncation, replacement, source reclassification, and changes at the saved file tail. An in-place rewrite earlier in an already-indexed prefix cannot be detected without rereading the whole prefix, so **Usage History → Diagnostics → Rebuild index** provides an explicit full repair from current transcripts while preserving retained 90-day history for files the CLIs already cleaned up.
 - Runway prediction and outcome records stay local under `~/.rate-limit-tool/`; they are not uploaded.
 
 See [Architecture](docs/ARCHITECTURE.md) for the exact data flow and [Development](docs/DEVELOPMENT.md) for environment overrides.

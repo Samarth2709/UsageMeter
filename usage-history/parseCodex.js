@@ -1,5 +1,6 @@
 const { localDay } = require("./day");
 const path = require("node:path");
+const { structuralSessionIdentity } = require("./session-identity");
 
 function structuralCwd(obj) {
   const cwd = typeof obj?.cwd === "string" ? obj.cwd : obj?.payload?.cwd;
@@ -15,10 +16,12 @@ function extractModel(obj) {
   return null;
 }
 
-function parseCodexTranscript(text) {
+function parseCodexTranscriptChunk(text, initialState = {}) {
   const records = [];
-  let currentModel = null;
-  let currentProjectPath = null;
+  let currentModel = initialState.currentModel || null;
+  let currentProjectPath = initialState.currentProjectPath || null;
+  let lastTotalUsage = initialState.lastTotalUsage || null;
+  let sessionIdentity = initialState.sessionIdentity || null;
 
   for (const rawLine of String(text || "").split("\n")) {
     const trimmed = rawLine.trim();
@@ -27,6 +30,7 @@ function parseCodexTranscript(text) {
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
     currentProjectPath = structuralCwd(obj) || currentProjectPath;
+    sessionIdentity = structuralSessionIdentity("codex", obj) || sessionIdentity;
 
     const model = extractModel(obj);
     if (model) currentModel = model;
@@ -39,8 +43,30 @@ function parseCodexTranscript(text) {
     if (!currentModel) continue;
 
     const last = (p.info && p.info.last_token_usage) || null;
+    const total = (p.info && p.info.total_token_usage) || null;
     const ts = Date.parse(obj.timestamp);
     if (!last || !Number.isFinite(ts)) continue;
+
+    const hasTotalUsage = total && [
+      "input_tokens",
+      "cached_input_tokens",
+      "cache_write_input_tokens",
+      "output_tokens"
+    ].some((key) => Number(total[key]) > 0);
+    const totalUsage = hasTotalUsage ? {
+      inputTokens: Number(total.input_tokens) || 0,
+      cachedReadTokens: Number(total.cached_input_tokens) || 0,
+      cacheWriteTokens: Number(total.cache_write_input_tokens) || 0,
+      outputTokens: Number(total.output_tokens) || 0
+    } : null;
+    if (
+      totalUsage
+      && lastTotalUsage
+      && Object.keys(totalUsage).every((key) => totalUsage[key] === lastTotalUsage[key])
+    ) {
+      continue;
+    }
+    if (totalUsage) lastTotalUsage = totalUsage;
 
     const input = Number(last.input_tokens) || 0;
     const cached = Number(last.cached_input_tokens) || 0;
@@ -63,7 +89,13 @@ function parseCodexTranscript(text) {
     records.push(record);
   }
 
-  return records;
+  const state = { currentModel, currentProjectPath, lastTotalUsage };
+  if (sessionIdentity) state.sessionIdentity = sessionIdentity;
+  return { records, state };
 }
 
-module.exports = { parseCodexTranscript };
+function parseCodexTranscript(text) {
+  return parseCodexTranscriptChunk(text).records;
+}
+
+module.exports = { parseCodexTranscript, parseCodexTranscriptChunk };

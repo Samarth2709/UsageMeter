@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { parseCodexTranscript } = require("../usage-history/parseCodex");
+const { parseCodexTranscript, parseCodexTranscriptChunk } = require("../usage-history/parseCodex");
 
 const L = (obj) => JSON.stringify(obj);
 const meta = (model) => L({ type: "session_meta", timestamp: "2026-06-16T18:00:00.000Z", payload: { model } });
@@ -51,6 +51,34 @@ test("skips zero-token token_count events", () => {
   assert.equal(parseCodexTranscript(text).length, 0);
 });
 
+test("skips a repeated cumulative usage snapshot", () => {
+  const last = { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 };
+  const total = { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 };
+  const text = [
+    meta("gpt-5.5"),
+    tc("2026-06-16T18:00:01.000Z", last, total),
+    tc("2026-06-16T18:01:01.000Z", last, total)
+  ].join("\n");
+
+  assert.equal(parseCodexTranscript(text).length, 1);
+});
+
+test("skips a repeated cumulative snapshot in a later chunk", () => {
+  const last = { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 };
+  const total = { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 };
+  const first = parseCodexTranscriptChunk([
+    meta("gpt-5.5"),
+    tc("2026-06-16T18:00:01.000Z", last, total)
+  ].join("\n"));
+  const second = parseCodexTranscriptChunk(
+    tc("2026-06-16T18:01:01.000Z", last, total),
+    first.state
+  );
+
+  assert.equal(first.records.length, 1);
+  assert.equal(second.records.length, 0);
+});
+
 test("skips malformed lines without throwing", () => {
   const text = ["garbage", meta("gpt-5.4"), tc("2026-06-16T18:00:01.000Z", { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1 }, { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1 })].join("\n");
   const recs = parseCodexTranscript(text);
@@ -65,4 +93,26 @@ test("carries payload working-directory metadata into token records", () => {
   ].join("\n");
   const [record] = parseCodexTranscript(text);
   assert.equal(record.projectPath, "/Users/you/Projects/kernel");
+});
+
+test("incremental parsing carries model and project context across appended chunks", () => {
+  const first = parseCodexTranscriptChunk([
+    L({ type: "session_meta", timestamp: "2026-06-16T18:00:00.000Z", payload: { model: "gpt-5.5", cwd: "/Users/you/Projects/kernel" } }),
+    tc("2026-06-16T18:00:01.000Z", { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1 }, {})
+  ].join("\n"));
+  const second = parseCodexTranscriptChunk(
+    tc("2026-06-16T18:00:02.000Z", { input_tokens: 8, cached_input_tokens: 3, output_tokens: 2 }, {}),
+    first.state
+  );
+
+  assert.equal(first.records.length, 1);
+  assert.equal(second.records.length, 1);
+  assert.equal(second.records[0].model, "gpt-5.5");
+  assert.equal(second.records[0].projectPath, "/Users/you/Projects/kernel");
+  assert.equal(second.records[0].inputTokens, 5);
+  assert.deepEqual(second.state, {
+    currentModel: "gpt-5.5",
+    currentProjectPath: "/Users/you/Projects/kernel",
+    lastTotalUsage: null
+  });
 });

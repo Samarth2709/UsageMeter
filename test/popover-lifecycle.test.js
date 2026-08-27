@@ -9,6 +9,7 @@ class FakeBrowserWindow {
     this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
     this.destroyed = false;
     this.visible = false;
+    this.visibleOnAllWorkspacesCalls = [];
     this.handlers = new Map();
     this._webContents = { id: 1 };
   }
@@ -23,7 +24,9 @@ class FakeBrowserWindow {
   }
 
   setAlwaysOnTop() {}
-  setVisibleOnAllWorkspaces() {}
+  setVisibleOnAllWorkspaces(visible, options) {
+    this.visibleOnAllWorkspacesCalls.push({ visible, options });
+  }
   loadFile() {}
   setBounds(bounds) { this.bounds = bounds; }
   getBounds() { return this.bounds; }
@@ -88,6 +91,12 @@ test("shortcut recreates a popover destroyed by macOS", async () => {
   context.popoverLifecycle.togglePopover();
   assert.equal(windows.length, 1);
   assert.equal(windows[0].isVisible(), true);
+  assert.equal(windows[0].visibleOnAllWorkspacesCalls.length, 2);
+  for (const call of windows[0].visibleOnAllWorkspacesCalls) {
+    assert.equal(call.visible, true);
+    assert.equal(call.options.visibleOnFullScreen, true);
+    assert.equal(call.options.skipTransformProcessType, true);
+  }
 
   windows[0].destroy();
   assert.equal(context.popoverLifecycle.getPopover(), null);

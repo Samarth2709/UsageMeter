@@ -11,7 +11,8 @@ const {
   nativeImage,
   Notification,
   screen,
-  dialog
+  dialog,
+  utilityProcess
 } = require("electron");
 
 const {
@@ -25,16 +26,13 @@ const {
   openLoginForAccountById
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
-const { scanUsageHistory } = require("./usage-history/aggregate");
-const { computeWindowValues, transcriptFingerprint, clearPointsCache } = require("./usage-history/windows");
-const { computeRunways } = require("./usage-history/runway");
 const { emptyAlertState, normalizeAlertState, selectRunwayAlerts, markRunwayAlertSent } = require("./usage-history/runway-alerts");
 const {
   emptyEvaluationState,
   normalizeEvaluationState,
   selectRunwayEvaluationEvents
 } = require("./usage-history/runway-evaluation");
-const { buildDiagnostics } = require("./usage-history/diagnostics");
+const { runIndexWorkerProcess } = require("./usage-history/index-worker-client");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
@@ -80,11 +78,16 @@ let claudeWebOrgId = null;
 // "View usage history" window opens instantly instead of scanning transcripts on click.
 let historyCache = new Map();
 let historyRecomputeQueued = false;
-let historyFingerprint = null;
+let historyCacheGeneration = 0;
+let indexWorkerQueue = Promise.resolve();
+const activeIndexWorkers = new Set();
+let latestRunways = [];
 let runwayAlertState = emptyAlertState();
 let runwayAlertPromise = null;
 let runwayEvaluationState = emptyEvaluationState();
 let runwayEvaluationPromise = null;
+let runwayRefreshPromise = null;
+let pendingRunwaySnapshot = null;
 // User-configured extra transcript folders (absolute paths), mirrored from config so
 // the synchronous history path can read them without an async config load each time.
 let scanRoots = { claude: [], codex: [] };
@@ -169,7 +172,10 @@ function createPopover() {
   popover = window;
   globalThis.__usageMeterRegisterCoreWebContents?.(popoverWebContents);
   window.setAlwaysOnTop(true, "floating");
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true
+  });
   window.loadFile(path.join(__dirname, "public", "index.html"));
 
   window.on("move", queueSavePopoverPosition);
@@ -396,7 +402,10 @@ function showPopover() {
   // whichever Space the window was last shown on. showInactive() simply orders
   // it onto the desktop you're currently looking at — the behavior we want for a
   // pinned top-right widget.
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true
+  });
   window.setAlwaysOnTop(true, "floating");
   window.setBounds(bounds);
   window.showInactive();
@@ -1050,19 +1059,7 @@ function liveRunwayInput(snapshot = latestSnapshot) {
 }
 
 function getRunways(snapshot = latestSnapshot) {
-  if (!snapshot?.results?.length) {
-    return [];
-  }
-  const { limits, ambiguousServices } = liveRunwayInput(snapshot);
-  const refreshedAt = Date.parse(snapshot.refreshedAt);
-  return computeRunways({
-    homeDir: os.homedir(),
-    nowMs: Number.isFinite(refreshedAt) ? refreshedAt : Date.now(),
-    limits,
-    ambiguousServices,
-    extraRoots: scanRoots,
-    dataDir: appDataDir
-  });
+  return snapshot?.results?.length ? latestRunways : [];
 }
 
 async function loadRunwayAlertState() {
@@ -1186,9 +1183,8 @@ function startUpdateChecks() {
   globalThis.usageMeterCoreUpdater?.start();
 }
 
-// Mirror the user's configured scan folders from config into the module-level cache
-// (as absolute paths) so the synchronous history path can use them. Called at startup
-// and whenever the config is saved.
+// Mirror the user's configured scan folders into the small request passed to the
+// short-lived index worker. Called at startup and whenever the config is saved.
 async function refreshScanRoots() {
   try {
     const state = await getState();
@@ -1202,67 +1198,143 @@ async function refreshScanRoots() {
   }
 }
 
-// windowValues and diagnostics are range-independent (they scan the recent window and
-// the current limits, not the N-day range), so compute them once per recompute and
-// share across ranges instead of redoing the scan per range.
-function computeSharedHistoryParts() {
+function runIndexWorker(request) {
+  return runIndexWorkerProcess({
+    fork: (...args) => utilityProcess.fork(...args),
+    workerPath: path.join(__dirname, "usage-history", "index-worker.js"),
+    cwd: __dirname,
+    request,
+    activeWorkers: activeIndexWorkers
+  });
+}
+
+function queueIndexWorker(request) {
+  if (isQuitting) {
+    return Promise.reject(new Error("Usage Meter is quitting."));
+  }
+  const queued = indexWorkerQueue
+    .catch(() => {})
+    .then(() => runIndexWorker(request));
+  indexWorkerQueue = queued.catch(() => {});
+  return queued;
+}
+
+function baseIndexRequest(nowMs) {
   return {
-    windowValues: computeWindowValues({ homeDir: os.homedir(), limits: liveLimitWindows(), extraRoots: scanRoots, dataDir: appDataDir }),
-    diagnostics: buildDiagnostics({ homeDir: os.homedir(), dataDir: appDataDir, extraRoots: scanRoots }),
-    appVersion: app.getVersion(),
-    computedAt: new Date().toISOString()
+    homeDir: os.homedir(),
+    dataDir: appDataDir,
+    nowMs,
+    extraRoots: scanRoots
   };
 }
 
-function computeHistoryPayload(rangeDays, shared) {
-  const s = shared || computeSharedHistoryParts();
-  const payload = scanUsageHistory({ homeDir: os.homedir(), dataDir: appDataDir, rangeDays, extraRoots: scanRoots });
-  payload.windowValues = s.windowValues;
-  payload.diagnostics = s.diagnostics;
-  payload.appVersion = s.appVersion;
-  payload.computedAt = s.computedAt;
-  return payload;
+async function refreshRunways(snapshot = latestSnapshot) {
+  if (!snapshot?.results?.length) {
+    return [];
+  }
+  const { limits, ambiguousServices } = liveRunwayInput(snapshot);
+  const refreshedAt = Date.parse(snapshot.refreshedAt);
+  const startedAt = nowMs();
+  const result = await queueIndexWorker({
+    ...baseIndexRequest(
+      Number.isFinite(refreshedAt) ? refreshedAt : Date.now()
+    ),
+    operation: "runways",
+    limits,
+    ambiguousServices
+  });
+  logRefreshMetric({
+    event: "usage_index",
+    durationMs: nowMs() - startedAt,
+    ...result.stats
+  });
+  return result.runways || [];
+}
+
+// Provider limits must remain responsive even if the disposable index worker is
+// doing a first migration or rebuild. Coalesce refreshes to the newest snapshot,
+// then publish the corresponding runway state in a second renderer update.
+function scheduleRunwayRefresh(snapshot) {
+  pendingRunwaySnapshot = snapshot;
+  if (runwayRefreshPromise) return runwayRefreshPromise;
+
+  runwayRefreshPromise = (async () => {
+    while (pendingRunwaySnapshot) {
+      const currentSnapshot = pendingRunwaySnapshot;
+      pendingRunwaySnapshot = null;
+      let runways = null;
+      try {
+        runways = await refreshRunways(currentSnapshot);
+      } catch (error) {
+        console.warn(`Could not compute runway forecast: ${error.message}`);
+      }
+
+      if (currentSnapshot !== latestSnapshot) continue;
+      latestRunways = runways || [];
+      broadcastSnapshot(currentSnapshot);
+      if (runways) {
+        queueRunwayEvaluations(currentSnapshot, runways)
+          .catch((error) => console.warn(`Could not record runway evaluation: ${error.message}`));
+        queueRunwayAlerts(runways)
+          .catch((error) => console.warn(`Could not process runway alerts: ${error.message}`));
+      }
+    }
+  })().finally(() => {
+    runwayRefreshPromise = null;
+    if (pendingRunwaySnapshot) scheduleRunwayRefresh(pendingRunwaySnapshot);
+  });
+  return runwayRefreshPromise;
+}
+
+async function computeHistoryPayload(rangeDays, { forceRebuild = false } = {}) {
+  const result = await queueIndexWorker({
+    ...baseIndexRequest(Date.now()),
+    operation: "history",
+    rangeDays,
+    limits: liveLimitWindows(),
+    appVersion: app.getVersion(),
+    forceRebuild
+  });
+  return result.payload;
+}
+
+async function computeHistoryPayloads(rangeDays) {
+  const result = await queueIndexWorker({
+    ...baseIndexRequest(Date.now()),
+    operation: "history",
+    rangeDays,
+    limits: liveLimitWindows(),
+    appVersion: app.getVersion()
+  });
+  return result.payloads;
 }
 
 function historyWindowOpen() {
   return Boolean(historyWindow && !historyWindow.isDestroyed());
 }
 
-// Refresh the cached payload on the limit-refresh cadence — but ONLY while the history
-// window is actually open. When it's closed there's nobody to show it to, so we skip
-// the expensive scan entirely (the window's caches are also freed on close). This is
-// what keeps the app idle-cheap; the ~1.4 GB re-parse no longer runs every ~60s.
-function recomputeHistoryCache() {
+// Refresh History only while its window is open. Parsing and index loading happen in
+// the utility process; the main process retains only the compact renderer payload.
+async function recomputeHistoryCache() {
   if (!historyWindowOpen()) {
     return;
   }
-  // Skip when BOTH transcripts AND live limits are unchanged. windowValues derives from
-  // the limit %/resetAt, which move independently of transcript writes.
-  const limitsSignature = JSON.stringify(
-    liveLimitWindows().map((w) => [w.cli, w.label, w.usedPercent, w.resetAt])
-  );
-  const fingerprint = `${transcriptFingerprint(os.homedir(), scanRoots)}|${limitsSignature}`;
-  if (fingerprint === historyFingerprint && historyCache.size) {
-    return;
-  }
-  historyFingerprint = fingerprint;
-
-  const shared = computeSharedHistoryParts();
-  for (const rangeDays of historyCache.keys()) {
-    try {
-      historyCache.set(rangeDays, computeHistoryPayload(rangeDays, shared));
-    } catch (error) {
-      logRefreshMetric({ event: "history_cache_error", rangeDays, error: error.message });
-    }
+  const rangeDays = Array.from(historyCache.keys());
+  if (!rangeDays.length) return;
+  const generation = historyCacheGeneration;
+  try {
+    const payloads = await computeHistoryPayloads(rangeDays);
+    if (!historyWindowOpen() || generation !== historyCacheGeneration) return;
+    for (const days of rangeDays) historyCache.set(days, payloads[days]);
+  } catch (error) {
+    logRefreshMetric({ event: "history_cache_error", error: error.message });
   }
 }
 
-// Drop the cached payloads and the per-file points cache when the history window closes,
-// so nothing heavy stays resident while nobody's viewing history.
+// Drop renderer payloads when the History window closes.
 function releaseHistoryMemory() {
+  historyCacheGeneration += 1;
   historyCache.clear();
-  historyFingerprint = null;
-  clearPointsCache();
 }
 
 // Debounce: a single refresh cycle can broadcast more than once (web + background).
@@ -1274,15 +1346,20 @@ function scheduleHistoryRecompute() {
   historyRecomputeQueued = true;
   setImmediate(() => {
     historyRecomputeQueued = false;
-    recomputeHistoryCache();
+    recomputeHistoryCache().catch((error) => {
+      logRefreshMetric({ event: "history_cache_error", error: error.message });
+    });
   });
 }
 
-function getHistoryPayload(rangeDays) {
+async function getHistoryPayload(rangeDays) {
   if (!historyCache.has(rangeDays)) {
-    // First request for this range before the cache warmed — compute once, then it
-    // rides the broadcast cadence from here on.
-    historyCache.set(rangeDays, computeHistoryPayload(rangeDays));
+    const generation = historyCacheGeneration;
+    const payload = await computeHistoryPayload(rangeDays);
+    if (historyWindowOpen() && generation === historyCacheGeneration) {
+      historyCache.set(rangeDays, payload);
+    }
+    return payload;
   }
   return historyCache.get(rangeDays);
 }
@@ -1361,9 +1438,9 @@ function startClaudeWebUsageRefresh() {
   }, claudeWebRefreshMs);
 }
 
-function broadcastSnapshot(snapshot) {
+function broadcastSnapshot(snapshot, { refreshHistory = true } = {}) {
   // Refresh the cached usage-history payload on the same cadence as the limits.
-  scheduleHistoryRecompute();
+  if (refreshHistory) scheduleHistoryRecompute();
 
   if (!popover || popover.isDestroyed()) {
     return;
@@ -1468,16 +1545,9 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     latestSnapshot = await mergeClaudeWebUsage(snapshot);
     const mergeMs = nowMs() - mergeStartedAt;
 
-    broadcastSnapshot(latestSnapshot);
-    try {
-      const runways = getRunways(latestSnapshot);
-      queueRunwayEvaluations(latestSnapshot, runways)
-        .catch((error) => console.warn(`Could not record runway evaluation: ${error.message}`));
-      queueRunwayAlerts(runways)
-        .catch((error) => console.warn(`Could not process runway alerts: ${error.message}`));
-    } catch (error) {
-      console.warn(`Could not compute runway forecast: ${error.message}`);
-    }
+    latestRunways = [];
+    broadcastSnapshot(latestSnapshot, { refreshHistory: false });
+    scheduleRunwayRefresh(latestSnapshot);
     queueAutoStart(latestSnapshot);
     logRefreshMetric({
       event: "manual_refresh",
@@ -1519,8 +1589,8 @@ function registerIpcHandlers() {
     await saveConfig(config);
     await refreshScanRoots();
     // Configured folders changed — drop the cached history so it rescans next fetch.
-    historyCache.clear();
-    historyFingerprint = null;
+    releaseHistoryMemory();
+    latestRunways = [];
     return getState();
   });
   ipcMain.handle("rate-limit:open-login", async (event, accountId) => {
@@ -1540,9 +1610,21 @@ function registerIpcHandlers() {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
   });
   ipcMain.on("rate-limit:move-top-right", moveToTopRight);
-  ipcMain.handle("usage-history:get", (event, options = {}) => {
+  ipcMain.handle("usage-history:get", async (event, options = {}) => {
     const rangeDays = [7, 30, 90].includes(Number(options.rangeDays)) ? Number(options.rangeDays) : 30;
     return getHistoryPayload(rangeDays);
+  });
+  ipcMain.handle("usage-history:repair", async (event, options = {}) => {
+    const rangeDays = [7, 30, 90].includes(Number(options.rangeDays)) ? Number(options.rangeDays) : 30;
+    releaseHistoryMemory();
+    const generation = historyCacheGeneration;
+    const payload = await computeHistoryPayload(rangeDays, { forceRebuild: true });
+    if (historyWindowOpen() && generation === historyCacheGeneration) {
+      historyCache.set(rangeDays, payload);
+    }
+    latestRunways = [];
+    scheduleRunwayRefresh(latestSnapshot);
+    return payload;
   });
   ipcMain.on("usage-history:open", openHistoryWindow);
   ipcMain.handle("usage-history:pick-folder", async () => {
@@ -1606,5 +1688,6 @@ app.on("will-quit", () => {
   clearInterval(backgroundRefreshTimer);
   clearInterval(claudeWebRefreshTimer);
   clearTimeout(popoverPositionSaveTimer);
+  for (const child of activeIndexWorkers) child.kill();
   globalShortcut.unregisterAll();
 });

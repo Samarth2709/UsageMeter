@@ -256,6 +256,7 @@ function diagnosticsReport(d) {
 function renderDiagnostics(d) {
   const body = document.querySelector("#diag-body");
   const copyBtn = document.querySelector("#diag-copy");
+  const repairBtn = document.querySelector("#diag-repair");
   if (!body) return;
   const dg = d.diagnostics;
   if (!dg) {
@@ -264,6 +265,7 @@ function renderDiagnostics(d) {
     return;
   }
   if (copyBtn) copyBtn.style.display = "";
+  if (repairBtn) repairBtn.style.display = nativeApi?.repairUsageHistory ? "" : "none";
 
   const mark = (b) => (b ? "✓" : "✗");
   const row = (label, val) =>
@@ -308,6 +310,34 @@ function renderDiagnostics(d) {
         copyBtn.textContent = "Copy failed";
       }
       setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    });
+  }
+
+  if (repairBtn && nativeApi?.repairUsageHistory && !repairBtn.dataset.wired) {
+    repairBtn.dataset.wired = "1";
+    repairBtn.addEventListener("click", async () => {
+      const confirmed = window.confirm(
+        "Rebuild the local usage index from current transcripts? This can take about a minute."
+      );
+      if (!confirmed) return;
+
+      const original = repairBtn.textContent;
+      repairBtn.disabled = true;
+      repairBtn.textContent = "Rebuilding…";
+      try {
+        data = await nativeApi.repairUsageHistory({ rangeDays });
+        renderAll(data);
+        document.querySelector("#history-note").textContent = "Usage index rebuilt from current transcripts.";
+        repairBtn.textContent = "Rebuilt";
+      } catch (error) {
+        document.querySelector("#history-note").textContent = `Index rebuild failed: ${error.message}`;
+        repairBtn.textContent = "Rebuild failed";
+      } finally {
+        setTimeout(() => {
+          repairBtn.disabled = false;
+          repairBtn.textContent = original;
+        }, 1800);
+      }
     });
   }
 }
