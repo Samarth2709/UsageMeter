@@ -398,8 +398,11 @@ function renderConnected(accountId, data, metadata = {}) {
 
   const summary = buildSummary(data);
   renderLimitWindows(elements, data);
+  const staleMessage = isLoginNeededError(metadata.error)
+    ? "Last known · Sign in to refresh"
+    : "Last known · Refresh unavailable";
   elements.summary.textContent = metadata.stale
-    ? `Last known · ${metadata.error || "Live refresh unavailable"}`
+    ? staleMessage
     : "";
   elements.summary.title = metadata.stale
     ? `Last known usage. Live refresh failed: ${metadata.error || "Unavailable"}`

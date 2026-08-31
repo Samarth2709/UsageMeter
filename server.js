@@ -1322,12 +1322,34 @@ async function fetchClaudeUsage(account) {
   };
 }
 
-async function getClaudeAuthStatus(workspace = defaultWorkspace) {
-  const { stdout } = await execFilePromise(claudeBin, ["auth", "status", "--json"], {
-    cwd: workspace,
-    timeout: 2000
-  });
-  return JSON.parse(stdout);
+async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = execFilePromise) {
+  try {
+    const { stdout } = await runCommand(claudeBin, ["auth", "status", "--json"], {
+      cwd: workspace,
+      timeout: 2000
+    });
+    return JSON.parse(stdout);
+  } catch (error) {
+    // Claude exits with status 1 when logged out even though --json emits a valid,
+    // useful status payload. Preserve that result instead of surfacing the raw
+    // child-process command failure to the user.
+    if (error.stdout) {
+      try {
+        const status = JSON.parse(error.stdout);
+        if (
+          status &&
+          typeof status === "object" &&
+          !Array.isArray(status) &&
+          status.loggedIn === false
+        ) {
+          return status;
+        }
+      } catch {
+        // The original process error is more actionable than a secondary parse error.
+      }
+    }
+    throw error;
+  }
 }
 
 async function fetchUsageForAccount(account) {

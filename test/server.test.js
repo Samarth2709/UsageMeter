@@ -4,7 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { _test } = require("../server");
+const { getClaudeAuthStatus, _test } = require("../server");
 const packageJson = require("../package.json");
 
 function base64UrlJson(value) {
@@ -626,6 +626,39 @@ test("stored Claude usage drops impossible 5-hour reset timestamps", () => {
 
   assert.equal(session.resetAt, null);
   assert.equal(session.resetText, null);
+});
+
+test("Claude auth status accepts logged-out JSON from a nonzero CLI exit", async () => {
+  const error = new Error("Command failed");
+  error.stdout = JSON.stringify({
+    loggedIn: false,
+    authMethod: "none",
+    apiProvider: "firstParty"
+  });
+
+  const result = await getClaudeAuthStatus("/tmp", async () => {
+    throw error;
+  });
+
+  assert.deepEqual(result, {
+    loggedIn: false,
+    authMethod: "none",
+    apiProvider: "firstParty"
+  });
+});
+
+test("Claude auth status preserves a failed command with unrelated valid JSON", async () => {
+  for (const payload of [{}, { loggedIn: true }, []]) {
+    const error = new Error("Command failed");
+    error.stdout = JSON.stringify(payload);
+
+    await assert.rejects(
+      getClaudeAuthStatus("/tmp", async () => {
+        throw error;
+      }),
+      (received) => received === error
+    );
+  }
 });
 
 test("production package config does not force unsigned mac builds", () => {
