@@ -82,7 +82,7 @@ function loadSnapshot() {
 }
 
 function isLoginNeededError(error) {
-  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|web login|login_required/i.test(error || "");
+  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|web login|login_required|claude auth status --json/i.test(error || "");
 }
 
 function compactWindowLabel(label) {

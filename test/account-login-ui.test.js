@@ -60,7 +60,7 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
       target.limitGrid.replaceChildren({ textContent: "100%" });
     },
     buildResetTitle: () => "reset detail",
-    isLoginNeededError: (error) => /not logged in/i.test(error || ""),
+    isLoginNeededError: (error) => /not logged in|claude auth status --json/i.test(error || ""),
     showStatusSummary(target, text, className, title = "") {
       target.limitGrid.replaceChildren();
       target.limitGrid.classList.add("hidden");
@@ -104,6 +104,14 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
   assert.equal(renderedWindows, 1);
   assert.equal(elements.limitGrid.children.length, 0);
   assert.equal(latestState.data, null);
+  assert.equal(latestState.kind, "disconnected");
+
+  context.renderConnected("claude-1", freshUsage, {
+    stale: true,
+    error: "Command failed: /Users/example/.local/bin/claude auth status --json"
+  });
+  assert.equal(elements.connectButton.textContent, "Sign in");
+  assert.equal(elements.deleteButton.classList.values.has("hidden"), false);
   assert.equal(latestState.kind, "disconnected");
 
   accountType = "codex";
