@@ -205,12 +205,15 @@ h1 {
   margin: 0;
 }
 
-.account-right .connect-button {
-  align-self: flex-end;
+.account-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 3px;
 }
 
 .account-row-claude .connect-button {
-  margin-top: 3px;
   padding: 2px 8px;
   border-color: var(--claude-line);
   background: rgba(244, 171, 94, 0.16);
@@ -220,6 +223,20 @@ h1 {
 
 .account-row-claude .connect-button:hover {
   background: rgba(244, 171, 94, 0.3);
+}
+
+.delete-button {
+  padding: 2px 7px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.66rem;
+  font-weight: 650;
+}
+
+.delete-button:hover {
+  border-color: rgba(209, 95, 85, 0.7);
+  color: #ff9b91;
+  background: rgba(209, 95, 85, 0.1);
 }
 
 .account-name {

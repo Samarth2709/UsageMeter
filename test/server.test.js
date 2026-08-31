@@ -32,13 +32,13 @@ test("default config does not pre-create Codex account slots", () => {
   );
 });
 
-test("empty configs normalize without Codex placeholders", () => {
+test("an explicit empty identity list stays empty while a missing list gets the default Claude slot", () => {
   const normalized = _test.normalizeConfig({ identities: [] });
   const serialized = _test.serializeConfig(normalized);
+  const defaults = _test.normalizeConfig({});
 
-  assert.equal(serialized.accounts.length, 1);
-  assert.equal(serialized.accounts[0].id, "claude-1");
-  assert.equal(serialized.accounts[0].type, "claude");
+  assert.equal(serialized.accounts.length, 0);
+  assert.deepEqual(defaults.identities.map((identity) => identity.id), ["claude-1"]);
 });
 
 test("Codex usage windows use reported durations and do not invent a missing 5-hour limit", () => {
@@ -145,6 +145,160 @@ test("stored Codex identity homes load dynamically", async () => {
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("removing a Codex account deletes every matching UsageMeter auth copy only", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-remove-codex-"));
+  const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-external-codex-"));
+
+  try {
+    const matchingByEmail = path.join(root, "matching-email");
+    const matchingById = path.join(root, "matching-id");
+    const otherAccount = path.join(root, "other-account");
+    await Promise.all([
+      fs.mkdir(matchingByEmail),
+      fs.mkdir(matchingById),
+      fs.mkdir(otherAccount)
+    ]);
+    const matchingAuth = JSON.stringify({
+      email: "saved@example.com",
+      tokens: { account_id: "acct_saved" }
+    });
+    await Promise.all([
+      fs.writeFile(path.join(matchingByEmail, "auth.json"), matchingAuth),
+      fs.writeFile(path.join(matchingById, "auth.json"), matchingAuth),
+      fs.writeFile(
+        path.join(otherAccount, "auth.json"),
+        JSON.stringify({ email: "other@example.com", tokens: { account_id: "acct_other" } })
+      ),
+      fs.writeFile(path.join(externalRoot, "auth.json"), matchingAuth)
+    ]);
+
+    const removed = await _test.removeManagedCodexIdentityHomes({
+      id: "codex-saved",
+      type: "codex",
+      email: "saved@example.com",
+      providerAccountId: "acct_saved"
+    }, root);
+
+    assert.deepEqual(new Set(removed), new Set([matchingByEmail, matchingById]));
+    await assert.rejects(fs.access(matchingByEmail), { code: "ENOENT" });
+    await assert.rejects(fs.access(matchingById), { code: "ENOENT" });
+    await fs.access(otherAccount);
+    await fs.access(path.join(externalRoot, "auth.json"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(externalRoot, { recursive: true, force: true });
+  }
+});
+
+test("a removed identity is filtered from stale config and managed auth hydration", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-removed-race-"));
+  const account = {
+    id: "codex-removed",
+    type: "codex",
+    label: "Removed",
+    codeHome: path.join(root, "removed"),
+    email: "removed@example.com",
+    providerAccountId: "acct_removed"
+  };
+
+  try {
+    await fs.mkdir(account.codeHome);
+    await fs.writeFile(
+      path.join(account.codeHome, "auth.json"),
+      JSON.stringify({
+        email: account.email,
+        tokens: { account_id: account.providerAccountId }
+      })
+    );
+    _test.removedIdentities.set(account.id, account);
+    const staleConfig = _test.normalizeConfig({ identities: [account] });
+    const hydrated = await _test.hydrateConfigFromStoredIdentities(staleConfig, root);
+    const merged = _test.mergeRefreshedConfig({
+      identities: [],
+      scanRoots: { claude: [], codex: [] }
+    }, staleConfig);
+
+    assert.deepEqual(hydrated.identities, []);
+    assert.deepEqual(merged.identities, []);
+  } finally {
+    _test.removedIdentities.delete(account.id);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed auth hydration resolves an id collision with an unrelated config identity", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-hydration-id-"));
+  const storedProviderAccountId = "acct_stored";
+  const collidingId = _test.buildIdentityId("codex", {
+    providerAccountId: storedProviderAccountId
+  });
+
+  try {
+    const storedHome = path.join(root, "stored");
+    await fs.mkdir(storedHome);
+    await fs.writeFile(
+      path.join(storedHome, "auth.json"),
+      JSON.stringify({
+        email: "stored@example.com",
+        tokens: { account_id: storedProviderAccountId }
+      })
+    );
+    const config = _test.normalizeConfig({
+      identities: [{
+        id: collidingId,
+        type: "codex",
+        label: "Configured",
+        codeHome: "/tmp/configured-codex",
+        email: "configured@example.com",
+        providerAccountId: "acct_configured"
+      }]
+    });
+    const hydrated = await _test.hydrateConfigFromStoredIdentities(config, root);
+
+    assert.equal(hydrated.identities.length, 2);
+    assert.equal(new Set(hydrated.identities.map((identity) => identity.id)).size, 2);
+    assert.deepEqual(
+      hydrated.identities.map((identity) => identity.providerAccountId),
+      ["acct_configured", storedProviderAccountId]
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a tombstone does not match the same local id with a conflicting provider account", async () => {
+  const removed = {
+    id: "codex-shared-local-id",
+    type: "codex",
+    label: "Removed",
+    codeHome: "/tmp/codex-removed",
+    email: "shared@example.com",
+    providerAccountId: "acct_removed"
+  };
+  const unrelated = {
+    ...removed,
+    label: "Unrelated",
+    codeHome: "/tmp/codex-unrelated",
+    providerAccountId: "acct_unrelated"
+  };
+
+  try {
+    _test.removedIdentities.set(removed.id, removed);
+    const refreshed = _test.normalizeConfig({ identities: [unrelated] });
+    const merged = _test.mergeRefreshedConfig({
+      identities: [],
+      scanRoots: { claude: [], codex: [] }
+    }, refreshed);
+
+    assert.deepEqual(
+      merged.identities.map((identity) => identity.providerAccountId),
+      ["acct_unrelated"]
+    );
+  } finally {
+    _test.removedIdentities.delete(removed.id);
   }
 });
 
@@ -263,6 +417,38 @@ test("same email cannot merge identities with conflicting provider ids", () => {
   assert.deepEqual(
     normalized.identities.filter((identity) => identity.type === "codex").map((identity) => identity.providerAccountId),
     ["acct-one", "acct-two"]
+  );
+});
+
+test("conflicting provider accounts receive unique local ids and delete independently", () => {
+  const normalized = _test.normalizeConfig({
+    identities: [
+      {
+        id: "codex-shared-local-id",
+        type: "codex",
+        label: "One",
+        codeHome: "/tmp/codex-one",
+        email: "shared@example.com",
+        providerAccountId: "acct-one"
+      },
+      {
+        id: "codex-shared-local-id",
+        type: "codex",
+        label: "Two",
+        codeHome: "/tmp/codex-two",
+        email: "shared@example.com",
+        providerAccountId: "acct-two"
+      }
+    ]
+  });
+  const ids = normalized.identities.map((identity) => identity.id);
+
+  assert.equal(new Set(ids).size, 2);
+  const removal = _test.removeIdentityFromConfig(normalized, ids[0]);
+  assert.equal(removal.account.providerAccountId, "acct-one");
+  assert.deepEqual(
+    removal.config.identities.map((identity) => identity.providerAccountId),
+    ["acct-two"]
   );
 });
 
@@ -696,6 +882,14 @@ test("Electron refresh uses the throttled Claude CLI usage supplement", async ()
   assert.equal(electronSource.includes('skipDiscoveryTypes: ["claude"]'), false);
   assert.ok(electronSource.includes('onlyAccountTypes: ["claude"]'));
   assert.ok(electronSource.includes("Never fan one"));
+});
+
+test("Electron account deletion invalidates and reconciles in-flight refresh snapshots", async () => {
+  const electronSource = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
+
+  assert.ok(electronSource.includes("accountMutationGeneration += 1"));
+  assert.ok(electronSource.includes("refreshAccountGeneration !== accountMutationGeneration"));
+  assert.ok(electronSource.includes("reconcileSnapshotWithConfig(nextSnapshot, currentState.config)"));
 });
 
 test("Claude CLI capture opens the usage screen, not status", async () => {

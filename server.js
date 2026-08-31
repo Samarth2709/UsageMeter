@@ -23,6 +23,7 @@ const timerKickPrompt = "Reply with exactly OK.";
 const browserServerHost = "127.0.0.1";
 const browserServerToken = crypto.randomBytes(32).toString("base64url");
 let configWriteQueue = Promise.resolve();
+const removedIdentities = new Map();
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -318,6 +319,10 @@ function identitiesMatch(left, right) {
   return same("id") || same("email");
 }
 
+function identityWasRemoved(identity) {
+  return [...removedIdentities.values()].some((removed) => identitiesMatch(removed, identity));
+}
+
 function mergeIdentity(existing, incoming) {
   return {
     ...existing,
@@ -358,19 +363,41 @@ function mergeIdentities(identities) {
   return merged;
 }
 
+function makeIdentityIdsUnique(identities) {
+  const usedIds = new Set();
+
+  return identities.map((identity) => {
+    let id = identity.id;
+
+    if (usedIds.has(id)) {
+      const baseId = buildIdentityId(identity.type, identity);
+      id = baseId;
+      let suffix = 2;
+      while (usedIds.has(id)) {
+        id = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+    }
+
+    usedIds.add(id);
+    return id === identity.id ? identity : { ...identity, id };
+  });
+}
+
 function normalizeConfig(raw) {
   const base = defaultConfig();
+  const hasIdentityList = Array.isArray(raw?.identities) || Array.isArray(raw?.accounts);
   const incomingIdentities = Array.isArray(raw?.identities)
     ? raw.identities
     : Array.isArray(raw?.accounts)
       ? raw.accounts.map(legacyAccountToIdentity)
       : base.identities;
-  const normalized = (incomingIdentities.length ? incomingIdentities : base.identities)
+  const normalized = (hasIdentityList ? incomingIdentities : base.identities)
     .map(normalizeIdentity)
     .filter((identity) => !isLegacyDefaultCodexPlaceholder(identity));
 
   return {
-    identities: mergeIdentities(normalized),
+    identities: makeIdentityIdsUnique(mergeIdentities(normalized)),
     scanRoots: normalizeScanRoots(raw?.scanRoots)
   };
 }
@@ -485,15 +512,33 @@ async function loadStoredCodexIdentities(root = codexIdentityRoot) {
   return identities;
 }
 
-async function hydrateConfigFromStoredIdentities(config) {
-  const storedCodexIdentities = await loadStoredCodexIdentities();
+async function removeManagedCodexIdentityHomes(account, root = codexIdentityRoot) {
+  if (account?.type !== "codex") {
+    return [];
+  }
+
+  const storedIdentities = await loadStoredCodexIdentities(root);
+  const homes = [...new Set(
+    storedIdentities
+      .filter((identity) => identitiesMatch(account, identity))
+      .map((identity) => identity.codeHome)
+  )];
+
+  await Promise.all(homes.map((home) => fs.rm(home, { recursive: true, force: true })));
+  return homes;
+}
+
+async function hydrateConfigFromStoredIdentities(config, root = codexIdentityRoot) {
+  const storedCodexIdentities = await loadStoredCodexIdentities(root);
 
   return {
     ...config,
-    identities: mergeIdentities([
-      ...config.identities,
-      ...storedCodexIdentities
-    ])
+    identities: makeIdentityIdsUnique(
+      mergeIdentities([
+        ...config.identities.filter((identity) => !identityWasRemoved(identity)),
+        ...storedCodexIdentities.filter((identity) => !identityWasRemoved(identity))
+      ])
+    )
   };
 }
 
@@ -543,13 +588,19 @@ function mergeRefreshedConfig(latestConfig, refreshedConfig) {
     ...latestConfig,
     identities: mergeIdentities([
       ...latestConfig.identities,
-      ...refreshedConfig.identities
+      ...refreshedConfig.identities.filter((identity) => !identityWasRemoved(identity))
     ])
   };
 }
 
 function saveRefreshedConfig(refreshedConfig) {
   return queueConfigWrite(async () => {
+    const removedRefreshIdentities = refreshedConfig.identities.filter((identity) =>
+      identityWasRemoved(identity)
+    );
+    await Promise.all(
+      removedRefreshIdentities.map((identity) => removeManagedCodexIdentityHomes(identity))
+    );
     const latestConfig = await ensureConfig();
     return writeConfig(mergeRefreshedConfig(latestConfig, refreshedConfig));
   });
@@ -2056,6 +2107,49 @@ async function openLoginForAccountById(accountId) {
   return { ok: true };
 }
 
+function removeIdentityFromConfig(config, accountId) {
+  const index = config.identities.findIndex((entry) => entry.id === accountId);
+  if (index < 0) {
+    return null;
+  }
+
+  return {
+    account: config.identities[index],
+    config: {
+      ...config,
+      identities: config.identities.filter((entry, entryIndex) => entryIndex !== index)
+    }
+  };
+}
+
+async function removeAccountById(accountId) {
+  return queueConfigWrite(async () => {
+    const config = await ensureConfig();
+    const removal = removeIdentityFromConfig(config, accountId);
+
+    if (!removal) {
+      throw new Error("Account not found.");
+    }
+
+    const { account } = removal;
+    removedIdentities.set(account.id, account);
+    let saved;
+
+    try {
+      await removeManagedCodexIdentityHomes(account);
+      saved = await writeConfig(removal.config);
+    } catch (error) {
+      removedIdentities.delete(account.id);
+      throw error;
+    }
+
+    return {
+      config: serializeConfig(saved),
+      appDataDir: compactHome(appDataDir)
+    };
+  });
+}
+
 async function getState() {
   const config = await ensureConfig();
   return {
@@ -2089,6 +2183,15 @@ app.post("/api/accounts/:id/login", async (request, response) => {
     response.json(await openLoginForAccountById(request.params.id));
   } catch (error) {
     response.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/accounts/:id", async (request, response) => {
+  try {
+    response.json(await removeAccountById(request.params.id));
+  } catch (error) {
+    const status = error.message === "Account not found." ? 404 : 500;
+    response.status(status).json({ error: error.message });
   }
 });
 
@@ -2136,10 +2239,12 @@ module.exports = {
   getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById,
+  removeAccountById,
   startServer,
   _test: {
     defaultConfig,
     normalizeConfig,
+    makeIdentityIdsUnique,
     normalizeScanRoots,
     serializeConfig,
     buildIdentityId,
@@ -2150,6 +2255,10 @@ module.exports = {
     usageBelongsToIdentity,
     createBrowserIndexHtml,
     loadStoredCodexIdentities,
+    removeManagedCodexIdentityHomes,
+    hydrateConfigFromStoredIdentities,
+    removedIdentities,
+    removeIdentityFromConfig,
     refreshIdentity,
     codexUsageRequestTimeoutMs,
     codexAccessTokenNeedsRefresh,

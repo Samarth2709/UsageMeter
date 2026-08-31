@@ -22,7 +22,8 @@ const {
   saveUsageForAccount,
   findIdentityForUsage,
   processAutoStartSnapshot,
-  openLoginForAccountById
+  openLoginForAccountById,
+  removeAccountById
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { runIndexWorkerProcess } = require("./usage-history/index-worker-client");
@@ -57,6 +58,7 @@ let popoverPositionSaveTimer = null;
 let isQuitting = false;
 let latestSnapshot = null;
 let refreshPromise = null;
+let accountMutationGeneration = 0;
 let backgroundRefreshTimer = null;
 let autoStartPromise = null;
 let claudeUsageWindow = null;
@@ -1253,6 +1255,15 @@ function broadcastSnapshot(snapshot, { refreshHistory = true } = {}) {
   popover.webContents.send("rate-limit:snapshot", snapshot);
 }
 
+function reconcileSnapshotWithConfig(snapshot, config) {
+  const accountIds = new Set((config?.accounts || []).map((account) => account.id));
+  return {
+    ...snapshot,
+    config,
+    results: (snapshot?.results || []).filter((result) => accountIds.has(result.accountId))
+  };
+}
+
 function queueAutoStart(snapshot) {
   if (!autoStartEnabled) {
     return Promise.resolve(null);
@@ -1322,6 +1333,7 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
   }
 
   refreshPromise = (async () => {
+    const refreshAccountGeneration = accountMutationGeneration;
     const refreshStartedAt = nowMs();
     let snapshot;
     const previousSnapshot = latestSnapshot;
@@ -1347,7 +1359,12 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     snapshot = preserveRecentSuccessfulResults(snapshot, previousSnapshot);
     snapshot = mergeAccountRefresh(snapshot, claudeCliSnapshot);
     snapshot = preserveStoredClaudeUsage(snapshot);
-    latestSnapshot = await mergeClaudeWebUsage(snapshot);
+    let nextSnapshot = await mergeClaudeWebUsage(snapshot);
+    if (refreshAccountGeneration !== accountMutationGeneration) {
+      const currentState = await getState();
+      nextSnapshot = reconcileSnapshotWithConfig(nextSnapshot, currentState.config);
+    }
+    latestSnapshot = nextSnapshot;
     const mergeMs = nowMs() - mergeStartedAt;
 
     broadcastSnapshot(latestSnapshot, { refreshHistory: false });
@@ -1404,6 +1421,16 @@ function registerIpcHandlers() {
     }
 
     return openLoginForAccountById(accountId);
+  });
+  ipcMain.handle("rate-limit:remove-account", async (event, accountId) => {
+    const removed = await removeAccountById(accountId);
+    accountMutationGeneration += 1;
+    latestSnapshot = reconcileSnapshotWithConfig(
+      latestSnapshot || { refreshedAt: new Date().toISOString(), results: [] },
+      removed.config
+    );
+    broadcastSnapshot(latestSnapshot, { refreshHistory: false });
+    return removed;
   });
   ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeCliUsage: true }));
   ipcMain.handle("rate-limit:toggle", togglePopover);

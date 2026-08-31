@@ -33,10 +33,16 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
     },
     summary: { textContent: "", title: "", className: "" },
     row: { classList: classList() },
+    actions: { classList: classList() },
     connectButton: {
       classList: classList(),
       dataset: {},
       textContent: "",
+      title: ""
+    },
+    deleteButton: {
+      classList: classList(),
+      textContent: "Delete",
       title: ""
     }
   };
@@ -93,6 +99,8 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
   assert.equal(elements.connectButton.textContent, "Sign in");
   assert.equal(elements.connectButton.dataset.action, "login");
   assert.equal(elements.connectButton.classList.values.has("hidden"), false);
+  assert.equal(elements.deleteButton.classList.values.has("hidden"), false);
+  assert.equal(elements.deleteButton.title, "Delete this account from Usage Meter");
   assert.equal(renderedWindows, 1);
   assert.equal(elements.limitGrid.children.length, 0);
   assert.equal(latestState.data, null);
@@ -109,6 +117,7 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
   assert.match(elements.summary.textContent, /^Unavailable/);
   assert.equal(elements.connectButton.textContent, "Retry");
   assert.equal(elements.connectButton.classList.values.has("hidden"), false);
+  assert.equal(elements.deleteButton.classList.values.has("hidden"), true);
   assert.equal(renderedWindows, 2);
   assert.equal(elements.limitGrid.children.length, 0);
   assert.equal(latestState.data, null);
@@ -126,7 +135,7 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
   assert.equal(elements.connectButton.dataset.action, "retry");
 });
 
-test("account login click returns to the minimal sign-in action", async () => {
+test("account login click returns to the minimal account actions", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const start = source.indexOf("function createAccountRow(");
   const end = source.indexOf("function renderCurrentRows(");
@@ -144,12 +153,20 @@ test("account login click returns to the minimal sign-in action", async () => {
         if (event === "click") clickHandler = handler;
       }
     };
+    const deleteButton = {
+      classList: classList(),
+      disabled: false,
+      textContent: "Delete",
+      addEventListener() {}
+    };
     const elements = {
       name: { textContent: "" },
       typeTag: { textContent: "" },
       limitGrid: { classList: classList() },
       summary: { textContent: "", className: "", title: "" },
-      connectButton
+      actions: { classList: classList() },
+      connectButton,
+      deleteButton
     };
     const node = {
       classList: classList(),
@@ -159,7 +176,9 @@ test("account login click returns to the minimal sign-in action", async () => {
           ".account-type": elements.typeTag,
           ".limit-grid": elements.limitGrid,
           ".account-summary": elements.summary,
-          ".connect-button": elements.connectButton
+          ".account-actions": elements.actions,
+          ".connect-button": elements.connectButton,
+          ".delete-button": elements.deleteButton
         }[selector];
       }
     };
@@ -183,7 +202,10 @@ test("account login click returns to the minimal sign-in action", async () => {
       renderConnected: () => {},
       renderDisconnected: () => {
         connectButton.textContent = "Sign in";
-      }
+      },
+      confirmAccountRemoval: () => false,
+      removeAccount: async () => ({ config: { accounts: [] } }),
+      syncAccountsFromConfig: () => {}
     };
 
     vm.runInNewContext(
@@ -205,4 +227,84 @@ test("account login click returns to the minimal sign-in action", async () => {
   const codex = await clickLogin("codex");
   assert.equal(codex.openedAccountId, "codex-1");
   assert.equal(codex.connectButton.textContent, "Sign in");
+});
+
+test("account delete confirms, removes the account, and syncs the returned config", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("function createAccountRow(");
+  const end = source.indexOf("function renderCurrentRows(");
+  let deleteHandler = null;
+  let removedAccountId = null;
+  let syncedConfig = null;
+  const connectButton = {
+    classList: classList(),
+    dataset: { action: "login" },
+    disabled: false,
+    textContent: "Sign in",
+    addEventListener() {}
+  };
+  const deleteButton = {
+    classList: classList(),
+    disabled: false,
+    textContent: "Delete",
+    addEventListener(event, handler) {
+      if (event === "click") deleteHandler = handler;
+    }
+  };
+  const elements = {
+    name: { textContent: "" },
+    typeTag: { textContent: "" },
+    limitGrid: { classList: classList() },
+    summary: { textContent: "", className: "", title: "" },
+    actions: { classList: classList() },
+    connectButton,
+    deleteButton
+  };
+  const node = {
+    classList: classList(),
+    querySelector(selector) {
+      return {
+        ".account-name": elements.name,
+        ".account-type": elements.typeTag,
+        ".limit-grid": elements.limitGrid,
+        ".account-summary": elements.summary,
+        ".account-actions": elements.actions,
+        ".connect-button": elements.connectButton,
+        ".delete-button": elements.deleteButton
+      }[selector];
+    }
+  };
+  const nextConfig = { accounts: [] };
+  const context = {
+    accountTemplate: { content: { firstElementChild: { cloneNode: () => node } } },
+    accountElements: new Map(),
+    accountStates: new Map(),
+    buildAccountName: () => "samarth@example.com",
+    showStatusSummary: () => {},
+    refreshAll: async () => {},
+    openAccountLogin: async () => {},
+    updateAccountState: () => {},
+    renderDisconnected: () => {},
+    renderError: () => {},
+    confirmAccountRemoval: () => true,
+    removeAccount: async (accountId) => {
+      removedAccountId = accountId;
+      return { config: nextConfig };
+    },
+    syncAccountsFromConfig: (config) => {
+      syncedConfig = config;
+    }
+  };
+
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nthis.createAccountRow = createAccountRow;`,
+    context
+  );
+
+  context.createAccountRow({ id: "claude-1", type: "claude", label: "Account" });
+  assert.equal(typeof deleteHandler, "function");
+  await deleteHandler();
+
+  assert.equal(removedAccountId, "claude-1");
+  assert.equal(syncedConfig, nextConfig);
 });

@@ -53,6 +53,16 @@ function openAccountLogin(accountId) {
   });
 }
 
+function removeAccount(accountId) {
+  if (nativeApi) {
+    return nativeApi.removeAccount(accountId);
+  }
+
+  return requestJson(`/api/accounts/${accountId}`, {
+    method: "DELETE"
+  });
+}
+
 function refreshAppUsage() {
   if (nativeApi) {
     return nativeApi.refresh();
@@ -281,6 +291,15 @@ function buildAccountName(account, data) {
   return emailLabel;
 }
 
+function confirmAccountRemoval(account) {
+  const name = buildAccountName(account);
+  return window.confirm(
+    `Delete ${name} from Usage Meter?\n\n` +
+    "This removes its cached usage and any UsageMeter-managed login copy. " +
+    "It will not sign you out of the main Claude Code or Codex app."
+  );
+}
+
 function setOverallStatus(statusText, className) {
   overallStatus.className = `header-status ${className}`;
   overallStatus.title = statusText;
@@ -364,7 +383,9 @@ function setLoading(accountId) {
 
   showStatusSummary(elements, "Loading…", "pending");
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.add("hidden");
   elements.connectButton.classList.add("hidden");
+  elements.deleteButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
   updateAccountState(accountId, {
     kind: "pending",
@@ -380,7 +401,9 @@ function setIdle(accountId) {
 
   showStatusSummary(elements, "Waiting…", "pending");
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.add("hidden");
   elements.connectButton.classList.add("hidden");
+  elements.deleteButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
   updateAccountState(accountId, {
     kind: "pending",
@@ -409,7 +432,9 @@ function renderConnected(accountId, data, metadata = {}) {
   elements.summary.title = buildResetTitle(data);
   elements.summary.className = "account-summary hidden";
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.add("hidden");
   elements.connectButton.classList.add("hidden");
+  elements.deleteButton.classList.add("hidden");
   elements.connectButton.textContent = "Sign in";
   elements.connectButton.title = "";
   elements.connectButton.dataset.action = "login";
@@ -430,10 +455,14 @@ function renderDisconnected(accountId) {
 
   showStatusSummary(elements, "", "hidden");
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.remove("hidden");
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Sign in";
   elements.connectButton.title = "Open sign-in";
   elements.connectButton.dataset.action = "login";
+  elements.deleteButton.classList.remove("hidden");
+  elements.deleteButton.textContent = "Delete";
+  elements.deleteButton.title = "Delete this account from Usage Meter";
   updateAccountState(accountId, {
     kind: "disconnected",
     detail: "Sign in required",
@@ -452,10 +481,12 @@ function renderError(accountId, error) {
   const detail = String(error || "Unavailable");
   showStatusSummary(elements, `Unavailable · ${detail}`, "error", detail);
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.remove("hidden");
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Retry";
   elements.connectButton.title = "Try refreshing usage again";
   elements.connectButton.dataset.action = "retry";
+  elements.deleteButton.classList.add("hidden");
   updateAccountState(accountId, {
     kind: "error",
     detail,
@@ -544,7 +575,9 @@ function createAccountRow(account) {
   const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
   const summary = node.querySelector(".account-summary");
+  const actions = node.querySelector(".account-actions");
   const connectButton = node.querySelector(".connect-button");
+  const deleteButton = node.querySelector(".delete-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
   typeTag.textContent = account.type === "claude" ? "Claude" : "Codex";
@@ -583,12 +616,48 @@ function createAccountRow(account) {
     }
   });
 
+  deleteButton.addEventListener("click", async () => {
+    if (!confirmAccountRemoval(account)) {
+      return;
+    }
+
+    connectButton.disabled = true;
+    deleteButton.disabled = true;
+    deleteButton.textContent = "Deleting…";
+    updateAccountState(account.id, {
+      kind: "pending",
+      detail: "Deleting account",
+      data: null,
+      stale: false,
+      error: null
+    });
+
+    try {
+      const removed = await removeAccount(account.id);
+      syncAccountsFromConfig(removed.config);
+    } catch (error) {
+      renderDisconnected(account.id);
+      showStatusSummary(
+        { limitGrid, summary },
+        "Couldn’t delete",
+        "error",
+        error?.message || "Account deletion failed."
+      );
+    } finally {
+      connectButton.disabled = false;
+      deleteButton.disabled = false;
+      deleteButton.textContent = "Delete";
+    }
+  });
+
   accountElements.set(account.id, {
     row: node,
     name,
     limitGrid,
     summary,
-    connectButton
+    actions,
+    connectButton,
+    deleteButton
   });
 
   return node;
