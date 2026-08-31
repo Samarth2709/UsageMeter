@@ -2099,19 +2099,32 @@ function codexLoginCommandForAccount(account) {
   return `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && (${shellQuote(googleChromeBin)} ${shellQuote(codexDeviceAuthUrl)} >/dev/null 2>&1 &) && ${shellQuote(codexBin)} login --device-auth`;
 }
 
-async function startClaudeLoginInChrome(spawnCommand = spawn) {
+async function startClaudeLoginInChrome(spawnCommand = spawn, startupGraceMs = 1500) {
   await new Promise((resolve, reject) => {
-    const child = spawnCommand(claudeBin, ["auth", "login"], {
+    const child = spawnCommand(scriptBin, ["-q", "/dev/null", claudeBin, "auth", "login"], {
       cwd: defaultWorkspace,
       detached: true,
       env: { ...process.env, BROWSER: googleChromeBin },
       stdio: "ignore"
     });
+    let startupTimer = null;
 
-    child.once("error", reject);
+    child.once("error", (error) => {
+      clearTimeout(startupTimer);
+      reject(error);
+    });
+    const onEarlyExit = (code, signal) => {
+      clearTimeout(startupTimer);
+      const detail = signal ? ` (signal ${signal})` : ` (exit ${code})`;
+      reject(new Error(`Claude sign-in exited before opening Google Chrome${detail}.`));
+    };
+    child.once("exit", onEarlyExit);
     child.once("spawn", () => {
-      child.unref();
-      resolve();
+      startupTimer = setTimeout(() => {
+        child.off("exit", onEarlyExit);
+        child.unref();
+        resolve();
+      }, startupGraceMs);
     });
   });
 }

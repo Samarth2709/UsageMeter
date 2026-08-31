@@ -18,16 +18,33 @@ test("Claude sign-in launches directly with Google Chrome as its browser", async
     invocation = { command, args, options };
     process.nextTick(() => child.emit("spawn"));
     return child;
-  });
+  }, 0);
 
   await started;
 
-  assert.match(invocation.command, /claude$/);
-  assert.deepEqual(invocation.args, ["auth", "login"]);
+  assert.match(invocation.command, /script$/);
+  assert.match(invocation.args[2], /claude$/);
+  assert.deepEqual(invocation.args.slice(0, 2), ["-q", "/dev/null"]);
+  assert.deepEqual(invocation.args.slice(3), ["auth", "login"]);
   assert.equal(invocation.options.env.BROWSER, chromePath);
   assert.equal(invocation.options.detached, true);
   assert.equal(invocation.options.stdio, "ignore");
   assert.equal(unrefCalled, true);
+});
+
+test("Claude sign-in reports an inner CLI that exits during startup", async () => {
+  const child = new EventEmitter();
+  child.unref = () => {};
+
+  const started = _test.startClaudeLoginInChrome(() => {
+    process.nextTick(() => {
+      child.emit("spawn");
+      child.emit("exit", 1, null);
+    });
+    return child;
+  }, 50);
+
+  await assert.rejects(started, /exited before opening Google Chrome \(exit 1\)/);
 });
 
 test("Codex sign-in opens its device authorization page in Google Chrome", () => {
