@@ -3,7 +3,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const os = require("os");
 const { existsSync } = require("fs");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const crypto = require("crypto");
 const { atomicWriteFile, atomicWriteJson } = require("./atomic-file");
 
@@ -2095,14 +2095,25 @@ async function processAutoStartSnapshot(snapshot) {
   };
 }
 
-function loginCommandForAccount(account) {
-  const chromeEnvironment = `export BROWSER=${shellQuote(googleChromeBin)}`;
+function codexLoginCommandForAccount(account) {
+  return `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && (${shellQuote(googleChromeBin)} ${shellQuote(codexDeviceAuthUrl)} >/dev/null 2>&1 &) && ${shellQuote(codexBin)} login --device-auth`;
+}
 
-  if (account.type === "codex") {
-    return `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && (${shellQuote(googleChromeBin)} ${shellQuote(codexDeviceAuthUrl)} >/dev/null 2>&1 &) && ${shellQuote(codexBin)} login --device-auth`;
-  }
+async function startClaudeLoginInChrome(spawnCommand = spawn) {
+  await new Promise((resolve, reject) => {
+    const child = spawnCommand(claudeBin, ["auth", "login"], {
+      cwd: defaultWorkspace,
+      detached: true,
+      env: { ...process.env, BROWSER: googleChromeBin },
+      stdio: "ignore"
+    });
 
-  return `${chromeEnvironment} && ${shellQuote(claudeBin)} auth login`;
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 async function openLoginForAccount(account) {
@@ -2112,9 +2123,11 @@ async function openLoginForAccount(account) {
 
   if (account.type === "codex") {
     await fs.mkdir(account.codeHome, { recursive: true });
+    await openTerminalCommand(codexLoginCommandForAccount(account));
+    return;
   }
 
-  await openTerminalCommand(loginCommandForAccount(account));
+  await startClaudeLoginInChrome();
 }
 
 async function openLoginForAccountById(accountId) {
@@ -2276,7 +2289,8 @@ module.exports = {
     findIdentityForUsage,
     usageBelongsToIdentity,
     createBrowserIndexHtml,
-    loginCommandForAccount,
+    codexLoginCommandForAccount,
+    startClaudeLoginInChrome,
     loadStoredCodexIdentities,
     removeManagedCodexIdentityHomes,
     hydrateConfigFromStoredIdentities,
