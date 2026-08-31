@@ -1384,9 +1384,13 @@ async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = ex
     // Claude exits with status 1 when logged out even though --json emits a valid,
     // useful status payload. Preserve that result instead of surfacing the raw
     // child-process command failure to the user.
-    if (error.stdout) {
+    for (const output of [error.stdout, error.stderr]) {
+      if (!output) {
+        continue;
+      }
+
       try {
-        const status = JSON.parse(error.stdout);
+        const status = JSON.parse(output);
         if (
           status &&
           typeof status === "object" &&

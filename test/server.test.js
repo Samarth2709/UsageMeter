@@ -815,22 +815,24 @@ test("stored Claude usage drops impossible 5-hour reset timestamps", () => {
 });
 
 test("Claude auth status accepts logged-out JSON from a nonzero CLI exit", async () => {
-  const error = new Error("Command failed");
-  error.stdout = JSON.stringify({
-    loggedIn: false,
-    authMethod: "none",
-    apiProvider: "firstParty"
-  });
+  for (const outputField of ["stdout", "stderr"]) {
+    const error = new Error("Command failed");
+    error[outputField] = JSON.stringify({
+      loggedIn: false,
+      authMethod: "none",
+      apiProvider: "firstParty"
+    });
 
-  const result = await getClaudeAuthStatus("/tmp", async () => {
-    throw error;
-  });
+    const result = await getClaudeAuthStatus("/tmp", async () => {
+      throw error;
+    });
 
-  assert.deepEqual(result, {
-    loggedIn: false,
-    authMethod: "none",
-    apiProvider: "firstParty"
-  });
+    assert.deepEqual(result, {
+      loggedIn: false,
+      authMethod: "none",
+      apiProvider: "firstParty"
+    });
+  }
 });
 
 test("Claude auth status preserves a failed command with unrelated valid JSON", async () => {
