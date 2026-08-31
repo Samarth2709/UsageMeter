@@ -835,6 +835,20 @@ test("Claude auth status accepts logged-out JSON from a nonzero CLI exit", async
   }
 });
 
+test("Claude auth status allows enough time for a cold CLI startup", async () => {
+  let receivedOptions = null;
+
+  const result = await getClaudeAuthStatus("/tmp", async (command, args, options) => {
+    receivedOptions = options;
+    return {
+      stdout: JSON.stringify({ loggedIn: false, authMethod: "none" })
+    };
+  });
+
+  assert.equal(receivedOptions.timeout, 10000);
+  assert.deepEqual(result, { loggedIn: false, authMethod: "none" });
+});
+
 test("Claude auth status preserves a failed command with unrelated valid JSON", async () => {
   for (const payload of [{}, { loggedIn: true }, []]) {
     const error = new Error("Command failed");

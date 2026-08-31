@@ -1380,7 +1380,7 @@ async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = ex
   try {
     const { stdout } = await runCommand(claudeBin, ["auth", "status", "--json"], {
       cwd: workspace,
-      timeout: 2000
+      timeout: 10000
     });
     return JSON.parse(stdout);
   } catch (error) {
