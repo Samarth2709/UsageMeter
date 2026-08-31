@@ -397,10 +397,13 @@ function renderConnected(accountId, data, metadata = {}) {
   }
 
   const summary = buildSummary(data);
+  const loginNeeded = Boolean(
+    metadata.stale &&
+    getAccount(accountId)?.type === "claude" &&
+    isLoginNeededError(metadata.error)
+  );
   renderLimitWindows(elements, data);
-  const staleMessage = isLoginNeededError(metadata.error)
-    ? "Last known · Sign in to refresh"
-    : "Last known · Refresh unavailable";
+  const staleMessage = loginNeeded ? "Last known" : "Last known · Refresh unavailable";
   elements.summary.textContent = metadata.stale
     ? staleMessage
     : "";
@@ -409,8 +412,12 @@ function renderConnected(accountId, data, metadata = {}) {
     : buildResetTitle(data);
   elements.summary.className = `account-summary${metadata.stale ? " stale" : " hidden"}`;
   elements.row.classList.toggle("expanded", rowsExpanded);
-  elements.connectButton.classList.add("hidden");
-  elements.connectButton.textContent = "Connect";
+  elements.connectButton.classList.toggle("hidden", !loginNeeded);
+  elements.connectButton.textContent = loginNeeded ? "Sign in" : "Connect";
+  elements.connectButton.title = loginNeeded
+    ? "Open Claude sign-in to refresh usage"
+    : "";
+  elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
     kind: metadata.stale ? "stale" : "ok",
     detail: metadata.stale ? `Last known: ${summary}` : summary,
@@ -426,10 +433,12 @@ function renderDisconnected(accountId) {
     return;
   }
 
+  const isClaude = getAccount(accountId)?.type === "claude";
   showStatusSummary(elements, "Not connected", "error");
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.remove("hidden");
-  elements.connectButton.textContent = "Connect";
+  elements.connectButton.textContent = isClaude ? "Sign in" : "Connect";
+  elements.connectButton.title = isClaude ? "Open Claude sign-in" : "Connect account";
   elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
     kind: "disconnected",
@@ -448,6 +457,7 @@ function renderError(accountId, error) {
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Retry";
+  elements.connectButton.title = "Try refreshing usage again";
   elements.connectButton.dataset.action = "retry";
   updateAccountState(accountId, {
     kind: "error",
@@ -553,26 +563,46 @@ function createAccountRow(account) {
       await refreshAll();
       return;
     }
+    const current = accountStates.get(account.id);
+    const preserveLastKnownUsage = Boolean(current?.stale && current.data);
     connectButton.disabled = true;
     connectButton.textContent = "Opening…";
-    showStatusSummary(
-      {
-        limitGrid,
-        summary
-      },
-      "Waiting for login…",
-      "pending"
-    );
-    updateAccountState(account.id, {
-      kind: "pending",
-      detail: "Waiting for login"
-    });
+    if (preserveLastKnownUsage) {
+      summary.textContent = "Last known · Opening sign-in…";
+    } else {
+      showStatusSummary(
+        {
+          limitGrid,
+          summary
+        },
+        "Waiting for sign-in…",
+        "pending"
+      );
+      updateAccountState(account.id, {
+        kind: "pending",
+        detail: "Waiting for sign-in"
+      });
+    }
 
     try {
       await openAccountLogin(account.id);
-      connectButton.textContent = "Connect";
+      if (preserveLastKnownUsage) {
+        renderConnected(account.id, current.data, {
+          stale: true,
+          error: current.error
+        });
+      } else {
+        connectButton.textContent = account.type === "claude" ? "Sign in" : "Connect";
+      }
     } catch {
-      renderDisconnected(account.id);
+      if (preserveLastKnownUsage) {
+        renderConnected(account.id, current.data, {
+          stale: true,
+          error: current.error
+        });
+      } else {
+        renderDisconnected(account.id);
+      }
     } finally {
       connectButton.disabled = false;
     }

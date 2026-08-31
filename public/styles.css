@@ -209,6 +209,19 @@ h1 {
   align-self: flex-end;
 }
 
+.account-row-claude .connect-button {
+  margin-top: 3px;
+  padding: 2px 8px;
+  border-color: var(--claude-line);
+  background: rgba(244, 171, 94, 0.16);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.account-row-claude .connect-button:hover {
+  background: rgba(244, 171, 94, 0.3);
+}
+
 .account-name {
   overflow: hidden;
   color: var(--muted);
