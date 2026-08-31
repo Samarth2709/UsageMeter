@@ -17,13 +17,20 @@ function classList() {
   };
 }
 
-test("cached Claude usage exposes a sign-in action when login is required", async () => {
+test("stale usage is hidden behind a minimal sign-in or retry action", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const start = source.indexOf("function renderConnected(");
   const end = source.indexOf("function renderResult(");
   assert.ok(start >= 0 && end > start, "connected account renderer must be present");
 
   const elements = {
+    limitGrid: {
+      children: [],
+      classList: classList(),
+      replaceChildren(...children) {
+        this.children = children;
+      }
+    },
     summary: { textContent: "", title: "", className: "" },
     row: { classList: classList() },
     connectButton: {
@@ -34,20 +41,34 @@ test("cached Claude usage exposes a sign-in action when login is required", asyn
     }
   };
   let accountType = "claude";
+  let renderedWindows = 0;
+  let latestState = null;
   const context = {
     accountElements: new Map([["claude-1", elements]]),
     rowsExpanded: true,
     getAccount: () => ({ type: accountType }),
     buildSummary: () => "5h 100%",
-    renderLimitWindows: () => {},
+    renderLimitWindows(target) {
+      renderedWindows += 1;
+      target.limitGrid.classList.remove("hidden");
+      target.limitGrid.replaceChildren({ textContent: "100%" });
+    },
     buildResetTitle: () => "reset detail",
     isLoginNeededError: (error) => /not logged in/i.test(error || ""),
     showStatusSummary(target, text, className, title = "") {
+      target.limitGrid.replaceChildren();
+      target.limitGrid.classList.add("hidden");
       target.summary.textContent = text;
       target.summary.className = `account-summary ${className}`;
       target.summary.title = title;
     },
-    updateAccountState: () => {}
+    updateAccountState(accountId, next) {
+      latestState = {
+        ...(latestState || {}),
+        ...next,
+        data: next.data !== undefined ? next.data : latestState?.data
+      };
+    }
   };
 
   vm.runInNewContext(
@@ -55,41 +76,57 @@ test("cached Claude usage exposes a sign-in action when login is required", asyn
     context
   );
 
-  context.renderConnected("claude-1", { windows: [] }, {
+  const freshUsage = { windows: [{ remainingPercent: 100 }] };
+  context.renderConnected("claude-1", freshUsage, { stale: false });
+  assert.equal(renderedWindows, 1);
+  assert.equal(elements.limitGrid.children.length, 1);
+  assert.equal(latestState.data, freshUsage);
+
+  context.renderConnected("claude-1", freshUsage, {
     stale: true,
     error: "Claude is not logged in on this machine."
   });
 
-  assert.equal(elements.summary.textContent, "Last known");
+  assert.equal(elements.summary.textContent, "");
+  assert.equal(elements.summary.className, "account-summary hidden");
+  assert.equal(elements.limitGrid.classList.values.has("hidden"), true);
   assert.equal(elements.connectButton.textContent, "Sign in");
   assert.equal(elements.connectButton.dataset.action, "login");
   assert.equal(elements.connectButton.classList.values.has("hidden"), false);
+  assert.equal(renderedWindows, 1);
+  assert.equal(elements.limitGrid.children.length, 0);
+  assert.equal(latestState.data, null);
+  assert.equal(latestState.kind, "disconnected");
 
   accountType = "codex";
-  context.renderConnected("claude-1", { windows: [] }, {
+  context.renderConnected("claude-1", freshUsage, { stale: false });
+  assert.equal(elements.limitGrid.children.length, 1);
+  context.renderConnected("claude-1", freshUsage, {
     stale: true,
-    error: "Account is not logged in."
+    error: "Refresh timed out."
   });
 
-  assert.equal(elements.summary.textContent, "Last known · Refresh unavailable");
-  assert.equal(elements.connectButton.classList.values.has("hidden"), true);
+  assert.match(elements.summary.textContent, /^Unavailable/);
+  assert.equal(elements.connectButton.textContent, "Retry");
+  assert.equal(elements.connectButton.classList.values.has("hidden"), false);
+  assert.equal(renderedWindows, 2);
+  assert.equal(elements.limitGrid.children.length, 0);
+  assert.equal(latestState.data, null);
+  assert.equal(latestState.stale, false);
+  assert.equal(latestState.error, "Refresh timed out.");
 
   context.renderDisconnected("claude-1");
-  assert.equal(elements.connectButton.textContent, "Connect");
-  assert.equal(elements.connectButton.title, "Connect account");
+  assert.equal(elements.connectButton.textContent, "Sign in");
+  assert.equal(elements.connectButton.title, "Open sign-in");
 
   accountType = "claude";
-  context.renderConnected("claude-1", { windows: [] }, {
-    stale: true,
-    error: "Claude is not logged in on this machine."
-  });
   context.renderError("claude-1", "Refresh timed out.");
   assert.equal(elements.connectButton.textContent, "Retry");
   assert.equal(elements.connectButton.title, "Try refreshing usage again");
   assert.equal(elements.connectButton.dataset.action, "retry");
 });
 
-test("account login click preserves provider-specific action copy", async () => {
+test("account login click returns to the minimal sign-in action", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const start = source.indexOf("function createAccountRow(");
   const end = source.indexOf("function renderCurrentRows(");
@@ -102,7 +139,7 @@ test("account login click preserves provider-specific action copy", async () => 
       classList: classList(),
       dataset: { action: "login" },
       disabled: false,
-      textContent: type === "claude" ? "Sign in" : "Connect",
+      textContent: "Sign in",
       addEventListener(event, handler) {
         if (event === "click") clickHandler = handler;
       }
@@ -144,7 +181,9 @@ test("account login click preserves provider-specific action copy", async () => 
       },
       updateAccountState: () => {},
       renderConnected: () => {},
-      renderDisconnected: () => {}
+      renderDisconnected: () => {
+        connectButton.textContent = "Sign in";
+      }
     };
 
     vm.runInNewContext(
@@ -165,5 +204,5 @@ test("account login click preserves provider-specific action copy", async () => 
 
   const codex = await clickLogin("codex");
   assert.equal(codex.openedAccountId, "codex-1");
-  assert.equal(codex.connectButton.textContent, "Connect");
+  assert.equal(codex.connectButton.textContent, "Sign in");
 });

@@ -252,10 +252,6 @@ h1 {
   background: var(--danger);
 }
 
-.status-stale {
-  background: var(--accent);
-}
-
 .status-text {
   max-width: 150px;
   overflow: hidden;
@@ -387,12 +383,6 @@ h1 {
   color: var(--fg);
   font-size: 0.74rem;
   font-weight: 600;
-}
-
-.account-summary.stale {
-  margin-top: 4px;
-  color: var(--accent);
-  font-size: 0.66rem;
 }
 
 .pending,

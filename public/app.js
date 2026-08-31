@@ -241,6 +241,7 @@ function renderLimitWindows(elements, data) {
 }
 
 function showStatusSummary(elements, text, className, title = "") {
+  elements.limitGrid.replaceChildren();
   elements.limitGrid.classList.add("hidden");
   elements.summary.textContent = text;
   elements.summary.title = title;
@@ -318,9 +319,6 @@ function syncOverallStatus() {
   } else if (entries.every((entry) => entry.kind === "ok")) {
     headline = "All accounts connected";
     className = "status-ok";
-  } else if (entries.some((entry) => entry.kind === "stale")) {
-    headline = "Some usage is last known";
-    className = "status-stale";
   } else if (entries.some((entry) => entry.detail === "Loading…")) {
     headline = "Refreshing usage";
   }
@@ -396,34 +394,31 @@ function renderConnected(accountId, data, metadata = {}) {
     return;
   }
 
+  if (metadata.stale) {
+    if (isLoginNeededError(metadata.error)) {
+      renderDisconnected(accountId);
+    } else {
+      renderError(accountId, metadata.error);
+    }
+    return;
+  }
+
   const summary = buildSummary(data);
-  const loginNeeded = Boolean(
-    metadata.stale &&
-    getAccount(accountId)?.type === "claude" &&
-    isLoginNeededError(metadata.error)
-  );
   renderLimitWindows(elements, data);
-  const staleMessage = loginNeeded ? "Last known" : "Last known · Refresh unavailable";
-  elements.summary.textContent = metadata.stale
-    ? staleMessage
-    : "";
-  elements.summary.title = metadata.stale
-    ? `Last known usage. Live refresh failed: ${metadata.error || "Unavailable"}`
-    : buildResetTitle(data);
-  elements.summary.className = `account-summary${metadata.stale ? " stale" : " hidden"}`;
+  elements.summary.textContent = "";
+  elements.summary.title = buildResetTitle(data);
+  elements.summary.className = "account-summary hidden";
   elements.row.classList.toggle("expanded", rowsExpanded);
-  elements.connectButton.classList.toggle("hidden", !loginNeeded);
-  elements.connectButton.textContent = loginNeeded ? "Sign in" : "Connect";
-  elements.connectButton.title = loginNeeded
-    ? "Open Claude sign-in to refresh usage"
-    : "";
+  elements.connectButton.classList.add("hidden");
+  elements.connectButton.textContent = "Sign in";
+  elements.connectButton.title = "";
   elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
-    kind: metadata.stale ? "stale" : "ok",
-    detail: metadata.stale ? `Last known: ${summary}` : summary,
+    kind: "ok",
+    detail: summary,
     data,
-    stale: Boolean(metadata.stale),
-    error: metadata.error || null
+    stale: false,
+    error: null
   });
 }
 
@@ -433,16 +428,18 @@ function renderDisconnected(accountId) {
     return;
   }
 
-  const isClaude = getAccount(accountId)?.type === "claude";
-  showStatusSummary(elements, "Not connected", "error");
+  showStatusSummary(elements, "", "hidden");
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.remove("hidden");
-  elements.connectButton.textContent = isClaude ? "Sign in" : "Connect";
-  elements.connectButton.title = isClaude ? "Open Claude sign-in" : "Connect account";
+  elements.connectButton.textContent = "Sign in";
+  elements.connectButton.title = "Open sign-in";
   elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
     kind: "disconnected",
-    detail: "Not connected"
+    detail: "Sign in required",
+    data: null,
+    stale: false,
+    error: null
   });
 }
 
@@ -461,7 +458,10 @@ function renderError(accountId, error) {
   elements.connectButton.dataset.action = "retry";
   updateAccountState(accountId, {
     kind: "error",
-    detail
+    detail,
+    data: null,
+    stale: false,
+    error: detail
   });
 }
 
@@ -563,46 +563,21 @@ function createAccountRow(account) {
       await refreshAll();
       return;
     }
-    const current = accountStates.get(account.id);
-    const preserveLastKnownUsage = Boolean(current?.stale && current.data);
     connectButton.disabled = true;
     connectButton.textContent = "Opening…";
-    if (preserveLastKnownUsage) {
-      summary.textContent = "Last known · Opening sign-in…";
-    } else {
-      showStatusSummary(
-        {
-          limitGrid,
-          summary
-        },
-        "Waiting for sign-in…",
-        "pending"
-      );
-      updateAccountState(account.id, {
-        kind: "pending",
-        detail: "Waiting for sign-in"
-      });
-    }
+    updateAccountState(account.id, {
+      kind: "pending",
+      detail: "Opening sign-in",
+      data: null,
+      stale: false,
+      error: null
+    });
 
     try {
       await openAccountLogin(account.id);
-      if (preserveLastKnownUsage) {
-        renderConnected(account.id, current.data, {
-          stale: true,
-          error: current.error
-        });
-      } else {
-        connectButton.textContent = account.type === "claude" ? "Sign in" : "Connect";
-      }
+      renderDisconnected(account.id);
     } catch {
-      if (preserveLastKnownUsage) {
-        renderConnected(account.id, current.data, {
-          stale: true,
-          error: current.error
-        });
-      } else {
-        renderDisconnected(account.id);
-      }
+      renderDisconnected(account.id);
     } finally {
       connectButton.disabled = false;
     }
@@ -627,11 +602,6 @@ function renderCurrentRows() {
     if (existing?.kind === "ok" && existing.data) {
       renderConnected(accountId, existing.data, {
         stale: existing.stale,
-        error: existing.error
-      });
-    } else if (existing?.kind === "stale" && existing.data) {
-      renderConnected(accountId, existing.data, {
-        stale: true,
         error: existing.error
       });
     }
@@ -768,12 +738,6 @@ document.addEventListener("visibilitychange", () => {
 
 for (const account of state.config.accounts) {
   setIdle(account.id);
-  if (account.lastUsage) {
-    renderConnected(account.id, account.lastUsage, {
-      stale: true,
-      error: "Waiting for live refresh"
-    });
-  }
 }
 
 syncViewSize();
