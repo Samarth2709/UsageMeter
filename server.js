@@ -25,6 +25,7 @@ const browserServerToken = crypto.randomBytes(32).toString("base64url");
 let configWriteQueue = Promise.resolve();
 const removedIdentities = new Map();
 let activeClaudeLogin = null;
+let activeClaudeLoginRestart = null;
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -2100,11 +2101,7 @@ function codexLoginCommandForAccount(account) {
   return `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && (${shellQuote(googleChromeBin)} ${shellQuote(codexDeviceAuthUrl)} >/dev/null 2>&1 &) && ${shellQuote(codexBin)} login --device-auth`;
 }
 
-async function startClaudeLoginInChrome(spawnCommand = spawn, startupGraceMs = 1500) {
-  if (activeClaudeLogin) {
-    return activeClaudeLogin.startup;
-  }
-
+function spawnClaudeLoginInChrome(spawnCommand, startupGraceMs) {
   const child = spawnCommand(claudeBin, ["auth", "login"], {
     cwd: defaultWorkspace,
     detached: true,
@@ -2135,6 +2132,7 @@ async function startClaudeLoginInChrome(spawnCommand = spawn, startupGraceMs = 1
     child.once("spawn", () => {
       startupTimer = setTimeout(() => {
         startupComplete = true;
+        if (activeClaudeLogin?.child === child) activeClaudeLogin.started = true;
         child.stdin?.unref?.();
         child.unref();
         resolve();
@@ -2142,8 +2140,57 @@ async function startClaudeLoginInChrome(spawnCommand = spawn, startupGraceMs = 1
     });
   });
 
-  activeClaudeLogin = { child, startup };
+  activeClaudeLogin = { child, startup, started: false };
   return startup;
+}
+
+function waitForClaudeLoginExit(child, signal, graceMs) {
+  if (child.exitCode != null || child.signalCode != null) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = (exited) => {
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+
+    child.once("exit", onExit);
+    timer = setTimeout(() => finish(false), graceMs);
+    try { child.kill(signal); } catch {}
+  });
+}
+
+async function stopClaudeLogin(child, terminationGraceMs) {
+  try { child.stdin?.end(); } catch {}
+  if (await waitForClaudeLoginExit(child, "SIGTERM", terminationGraceMs)) return;
+  if (await waitForClaudeLoginExit(child, "SIGKILL", terminationGraceMs)) return;
+  throw new Error("The previous Claude sign-in could not be stopped. Try again.");
+}
+
+async function startClaudeLoginInChrome(
+  spawnCommand = spawn,
+  startupGraceMs = 1500,
+  terminationGraceMs = 1000
+) {
+  if (activeClaudeLoginRestart) return activeClaudeLoginRestart;
+  if (!activeClaudeLogin) return spawnClaudeLoginInChrome(spawnCommand, startupGraceMs);
+  if (!activeClaudeLogin.started) return activeClaudeLogin.startup;
+
+  const previousLogin = activeClaudeLogin;
+  const restart = (async () => {
+    await stopClaudeLogin(previousLogin.child, terminationGraceMs);
+    if (activeClaudeLogin === previousLogin) activeClaudeLogin = null;
+    return spawnClaudeLoginInChrome(spawnCommand, startupGraceMs);
+  })();
+  activeClaudeLoginRestart = restart;
+
+  try {
+    return await restart;
+  } finally {
+    if (activeClaudeLoginRestart === restart) activeClaudeLoginRestart = null;
+  }
 }
 
 async function openLoginForAccount(account) {

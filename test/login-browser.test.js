@@ -36,7 +36,7 @@ test("Claude sign-in launches directly with Google Chrome as its browser", async
   assert.equal(_test.getActiveClaudeLoginProcess(), null);
 });
 
-test("concurrent Claude sign-in requests reuse the active OAuth process", async () => {
+test("concurrent Claude sign-in requests reuse the process while it starts", async () => {
   const child = new EventEmitter();
   child.stdin = { unref: () => {} };
   child.unref = () => {};
@@ -53,6 +53,111 @@ test("concurrent Claude sign-in requests reuse the active OAuth process", async 
 
   assert.equal(spawnCount, 1);
   child.emit("exit", 0, null);
+});
+
+test("a later Claude sign-in click replaces the active OAuth process", async () => {
+  const children = [new EventEmitter(), new EventEmitter()];
+  let spawnCount = 0;
+  let firstStdinEnded = false;
+  const events = [];
+
+  for (const [index, child] of children.entries()) {
+    child.stdin = {
+      unref: () => {},
+      end: () => { if (index === 0) firstStdinEnded = true; }
+    };
+    child.unref = () => {};
+    child.kill = (signal) => {
+      events.push(`kill:${index}:${signal}`);
+      if (index === 0 && signal === "SIGKILL") {
+        events.push("exit:0");
+        child.emit("exit", null, signal);
+      }
+      return true;
+    };
+  }
+
+  const spawnCommand = () => {
+    const child = children[spawnCount];
+    events.push(`spawn:${spawnCount}`);
+    spawnCount += 1;
+    process.nextTick(() => child.emit("spawn"));
+    return child;
+  };
+
+  await _test.startClaudeLoginInChrome(spawnCommand, 0);
+  await _test.startClaudeLoginInChrome(spawnCommand, 0, 0);
+
+  assert.equal(spawnCount, 2);
+  assert.equal(firstStdinEnded, true);
+  assert.deepEqual(events, [
+    "spawn:0",
+    "kill:0:SIGTERM",
+    "kill:0:SIGKILL",
+    "exit:0",
+    "spawn:1"
+  ]);
+  assert.equal(_test.getActiveClaudeLoginProcess(), children[1]);
+  children[1].emit("exit", 0, null);
+});
+
+test("overlapping Claude sign-in restarts share one replacement process", async () => {
+  const children = [new EventEmitter(), new EventEmitter()];
+  let spawnCount = 0;
+
+  for (const child of children) {
+    child.stdin = { unref: () => {}, end: () => {} };
+    child.unref = () => {};
+    child.kill = () => true;
+  }
+
+  const spawnCommand = () => {
+    const child = children[spawnCount];
+    spawnCount += 1;
+    process.nextTick(() => child.emit("spawn"));
+    return child;
+  };
+
+  await _test.startClaudeLoginInChrome(spawnCommand, 0);
+  const firstRestart = _test.startClaudeLoginInChrome(spawnCommand, 0, 50);
+  const secondRestart = _test.startClaudeLoginInChrome(spawnCommand, 0, 50);
+
+  assert.equal(spawnCount, 1);
+  children[0].emit("exit", null, "SIGTERM");
+  await Promise.all([firstRestart, secondRestart]);
+
+  assert.equal(spawnCount, 2);
+  assert.equal(_test.getActiveClaudeLoginProcess(), children[1]);
+  children[1].emit("exit", 0, null);
+});
+
+test("Claude sign-in does not replace a process whose exit cannot be confirmed", async () => {
+  const child = new EventEmitter();
+  const signals = [];
+  let spawnCount = 0;
+  child.stdin = { unref: () => {}, end: () => {} };
+  child.unref = () => {};
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+
+  const spawnCommand = () => {
+    spawnCount += 1;
+    process.nextTick(() => child.emit("spawn"));
+    return child;
+  };
+
+  await _test.startClaudeLoginInChrome(spawnCommand, 0);
+  await assert.rejects(
+    _test.startClaudeLoginInChrome(spawnCommand, 0, 0),
+    /previous Claude sign-in could not be stopped/
+  );
+
+  assert.equal(spawnCount, 1);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(_test.getActiveClaudeLoginProcess(), child);
+  child.emit("exit", null, "SIGKILL");
 });
 
 test("Claude sign-in reports an inner CLI that exits during startup", async () => {
