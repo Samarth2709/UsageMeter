@@ -5,6 +5,7 @@ This is a concise record of shipped milestones. It is not a substitute for Git h
 ## 0.2.6 — 2026-08-30
 
 - Removed limit-exhaustion runway predictions, forecast notifications, and local prediction evaluation logging from the runtime and popover.
+- Replaced signed-out cached usage with minimal Sign in and Delete actions, and routed account sign-in through Google Chrome.
 
 ## 0.2.5 — 2026-08-27
 

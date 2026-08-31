@@ -126,7 +126,18 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
 
   context.renderDisconnected("claude-1");
   assert.equal(elements.connectButton.textContent, "Sign in");
-  assert.equal(elements.connectButton.title, "Open sign-in");
+  assert.equal(elements.connectButton.title, "Open sign-in in Google Chrome");
+
+  context.renderDisconnected("claude-1", new Error("Google Chrome is required."));
+  assert.equal(
+    elements.summary.textContent,
+    "Could not open sign-in · Google Chrome is required."
+  );
+  assert.equal(elements.summary.className, "account-summary error");
+  assert.equal(elements.connectButton.textContent, "Sign in");
+  assert.equal(elements.deleteButton.classList.values.has("hidden"), false);
+  assert.equal(latestState.kind, "disconnected");
+  assert.equal(latestState.error, "Google Chrome is required.");
 
   accountType = "claude";
   context.renderError("claude-1", "Refresh timed out.");
@@ -141,9 +152,10 @@ test("account login click returns to the minimal account actions", async () => {
   const end = source.indexOf("function renderCurrentRows(");
   assert.ok(start >= 0 && end > start, "account row factory must be present");
 
-  async function clickLogin(type) {
+  async function clickLogin(type, loginError = null) {
     let clickHandler = null;
     let openedAccountId = null;
+    let disconnectedError = null;
     const connectButton = {
       classList: classList(),
       dataset: { action: "login" },
@@ -197,10 +209,12 @@ test("account login click returns to the minimal account actions", async () => {
       refreshAll: async () => {},
       openAccountLogin: async (accountId) => {
         openedAccountId = accountId;
+        if (loginError) throw loginError;
       },
       updateAccountState: () => {},
       renderConnected: () => {},
-      renderDisconnected: () => {
+      renderDisconnected: (accountId, error) => {
+        disconnectedError = error;
         connectButton.textContent = "Sign in";
       },
       confirmAccountRemoval: () => false,
@@ -217,7 +231,7 @@ test("account login click returns to the minimal account actions", async () => {
     assert.equal(typeof clickHandler, "function");
     await clickHandler();
 
-    return { connectButton, openedAccountId };
+    return { connectButton, openedAccountId, disconnectedError };
   }
 
   const claude = await clickLogin("claude");
@@ -227,6 +241,11 @@ test("account login click returns to the minimal account actions", async () => {
   const codex = await clickLogin("codex");
   assert.equal(codex.openedAccountId, "codex-1");
   assert.equal(codex.connectButton.textContent, "Sign in");
+
+  const failure = new Error("Google Chrome is required.");
+  const failed = await clickLogin("claude", failure);
+  assert.equal(failed.disconnectedError, failure);
+  assert.equal(failed.connectButton.textContent, "Sign in");
 });
 
 test("account delete confirms, removes the account, and syncs the returned config", async () => {

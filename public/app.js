@@ -447,28 +447,34 @@ function renderConnected(accountId, data, metadata = {}) {
   });
 }
 
-function renderDisconnected(accountId) {
+function renderDisconnected(accountId, error = null) {
   const elements = accountElements.get(accountId);
   if (!elements) {
     return;
   }
 
-  showStatusSummary(elements, "", "hidden");
+  const detail = error?.message || String(error || "");
+  showStatusSummary(
+    elements,
+    detail ? `Could not open sign-in · ${detail}` : "",
+    detail ? "error" : "hidden",
+    detail
+  );
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.actions.classList.remove("hidden");
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Sign in";
-  elements.connectButton.title = "Open sign-in";
+  elements.connectButton.title = "Open sign-in in Google Chrome";
   elements.connectButton.dataset.action = "login";
   elements.deleteButton.classList.remove("hidden");
   elements.deleteButton.textContent = "Delete";
   elements.deleteButton.title = "Delete this account from Usage Meter";
   updateAccountState(accountId, {
     kind: "disconnected",
-    detail: "Sign in required",
+    detail: detail || "Sign in required",
     data: null,
     stale: false,
-    error: null
+    error: detail || null
   });
 }
 
@@ -609,8 +615,8 @@ function createAccountRow(account) {
     try {
       await openAccountLogin(account.id);
       renderDisconnected(account.id);
-    } catch {
-      renderDisconnected(account.id);
+    } catch (error) {
+      renderDisconnected(account.id, error);
     } finally {
       connectButton.disabled = false;
     }

@@ -62,7 +62,6 @@ let accountMutationGeneration = 0;
 let backgroundRefreshTimer = null;
 let autoStartPromise = null;
 let claudeUsageWindow = null;
-let claudeLoginWindow = null;
 let claudeWebRefreshTimer = null;
 let claudeWebRefreshPromise = null;
 let claudeCliUsageRefreshPromise = null;
@@ -407,6 +406,17 @@ function togglePopover() {
   showPopover();
 }
 
+async function openClaudeLoginInChrome() {
+  const state = await getState();
+  const account = state.config.accounts.find((entry) => entry.type === "claude");
+
+  if (!account) {
+    throw new Error("Claude account not found.");
+  }
+
+  return openLoginForAccountById(account.id);
+}
+
 function createTray() {
   tray = new Tray(createTrayIcon());
   tray.setToolTip("Usage Meter");
@@ -415,7 +425,14 @@ function createTray() {
     tray.popUpContextMenu(
       Menu.buildFromTemplate([
         { label: "Show / Hide", accelerator: toggleShortcut, click: togglePopover },
-        { label: "Open Claude Usage Login", click: showClaudeUsageLogin },
+        {
+          label: "Sign in to Claude with Chrome",
+          click: () => {
+            openClaudeLoginInChrome().catch((error) => {
+              dialog.showErrorBox("Could not open Claude sign-in", error.message);
+            });
+          }
+        },
         { type: "separator" },
         {
           label: "Quit",
@@ -739,36 +756,6 @@ function getOrCreateClaudeUsageWindow() {
   });
 
   return claudeUsageWindow;
-}
-
-function showClaudeUsageLogin() {
-  claudeWebIdentity = null;
-
-  if (claudeLoginWindow && !claudeLoginWindow.isDestroyed()) {
-    claudeLoginWindow.show();
-    claudeLoginWindow.focus();
-    return;
-  }
-
-  claudeLoginWindow = new BrowserWindow({
-    width: 1080,
-    height: 820,
-    show: true,
-    title: "Claude Usage Login",
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      partition: "persist:claude-usage"
-    }
-  });
-
-  claudeLoginWindow.loadURL(claudeUsageUrl);
-  claudeLoginWindow.on("closed", () => {
-    claudeLoginWindow = null;
-    if (isQuitting) return;
-    // Just logged in — bypass the throttle to pick up fresh usage immediately.
-    refreshClaudeWebUsage({ force: true }).catch(() => {});
-  });
 }
 
 async function readClaudeUsagePage() {
@@ -1412,14 +1399,6 @@ function registerIpcHandlers() {
     return getState();
   });
   ipcMain.handle("rate-limit:open-login", async (event, accountId) => {
-    const state = await getState();
-    const account = state.config.accounts.find((entry) => entry.id === accountId);
-
-    if (account?.type === "claude") {
-      showClaudeUsageLogin();
-      return { ok: true };
-    }
-
     return openLoginForAccountById(accountId);
   });
   ipcMain.handle("rate-limit:remove-account", async (event, accountId) => {

@@ -51,6 +51,9 @@ const claudeBin = resolveExecutable("claude", [
     "Library/Application Support/Claude/claude-code-vm/2.1.111/claude"
   )
 ]);
+const googleChromeBin = process.env.RATE_LIMIT_TOOL_LOGIN_BROWSER
+  || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const codexDeviceAuthUrl = "https://auth.openai.com/codex/device";
 const scriptBin = resolveExecutable("script", ["/usr/bin/script"]);
 const codexUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
 const codexOAuthTokenEndpoint = "https://auth.openai.com/oauth/token";
@@ -2087,16 +2090,26 @@ async function processAutoStartSnapshot(snapshot) {
   };
 }
 
-async function openLoginForAccount(account) {
+function loginCommandForAccount(account) {
+  const chromeEnvironment = `export BROWSER=${shellQuote(googleChromeBin)}`;
+
   if (account.type === "codex") {
-    await fs.mkdir(account.codeHome, { recursive: true });
-    await openTerminalCommand(
-      `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && ${shellQuote(codexBin)} login`
-    );
-    return;
+    return `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && (${shellQuote(googleChromeBin)} ${shellQuote(codexDeviceAuthUrl)} >/dev/null 2>&1 &) && ${shellQuote(codexBin)} login --device-auth`;
   }
 
-  await openTerminalCommand(`${shellQuote(claudeBin)} auth login`);
+  return `${chromeEnvironment} && ${shellQuote(claudeBin)} auth login`;
+}
+
+async function openLoginForAccount(account) {
+  if (!existsSync(googleChromeBin)) {
+    throw new Error("Google Chrome is required to sign in from Usage Meter.");
+  }
+
+  if (account.type === "codex") {
+    await fs.mkdir(account.codeHome, { recursive: true });
+  }
+
+  await openTerminalCommand(loginCommandForAccount(account));
 }
 
 async function openLoginForAccountById(accountId) {
@@ -2258,6 +2271,7 @@ module.exports = {
     findIdentityForUsage,
     usageBelongsToIdentity,
     createBrowserIndexHtml,
+    loginCommandForAccount,
     loadStoredCodexIdentities,
     removeManagedCodexIdentityHomes,
     hydrateConfigFromStoredIdentities,
