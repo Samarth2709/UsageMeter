@@ -849,6 +849,23 @@ test("Claude auth status allows enough time for a cold CLI startup", async () =>
   assert.deepEqual(result, { loggedIn: false, authMethod: "none" });
 });
 
+test("Claude auth status retries one transient cold-start failure", async () => {
+  let attempts = 0;
+
+  const result = await getClaudeAuthStatus("/tmp", async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new Error("Cold start failed");
+    }
+    return {
+      stdout: JSON.stringify({ loggedIn: false, authMethod: "none" })
+    };
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(result, { loggedIn: false, authMethod: "none" });
+});
+
 test("Claude auth status preserves a failed command with unrelated valid JSON", async () => {
   for (const payload of [{}, { loggedIn: true }, []]) {
     const error = new Error("Command failed");

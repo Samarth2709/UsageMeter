@@ -1377,36 +1377,41 @@ async function fetchClaudeUsage(account) {
 }
 
 async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = execFilePromise) {
-  try {
-    const { stdout } = await runCommand(claudeBin, ["auth", "status", "--json"], {
-      cwd: workspace,
-      timeout: 10000
-    });
-    return JSON.parse(stdout);
-  } catch (error) {
-    // Claude exits with status 1 when logged out even though --json emits a valid,
-    // useful status payload. Preserve that result instead of surfacing the raw
-    // child-process command failure to the user.
-    for (const output of [error.stdout, error.stderr]) {
-      if (!output) {
-        continue;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { stdout } = await runCommand(claudeBin, ["auth", "status", "--json"], {
+        cwd: workspace,
+        timeout: 10000
+      });
+      return JSON.parse(stdout);
+    } catch (error) {
+      // Claude exits with status 1 when logged out even though --json emits a valid,
+      // useful status payload. Preserve that result instead of surfacing the raw
+      // child-process command failure to the user.
+      for (const output of [error.stdout, error.stderr]) {
+        if (!output) {
+          continue;
+        }
+
+        try {
+          const status = JSON.parse(output);
+          if (
+            status &&
+            typeof status === "object" &&
+            !Array.isArray(status) &&
+            status.loggedIn === false
+          ) {
+            return status;
+          }
+        } catch {
+          // The original process error is more actionable than a secondary parse error.
+        }
       }
 
-      try {
-        const status = JSON.parse(output);
-        if (
-          status &&
-          typeof status === "object" &&
-          !Array.isArray(status) &&
-          status.loggedIn === false
-        ) {
-          return status;
-        }
-      } catch {
-        // The original process error is more actionable than a secondary parse error.
+      if (attempt === 1) {
+        throw error;
       }
     }
-    throw error;
   }
 }
 
