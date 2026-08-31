@@ -1,7 +1,6 @@
 const { mergeAndPrice } = require("./aggregate");
 const { buildDiagnostics } = require("./diagnostics");
 const { updateUsageIndex } = require("./index");
-const { computeRunways } = require("./runway");
 const { computeWindowValues } = require("./windows");
 
 function performIndexWork({
@@ -11,7 +10,6 @@ function performIndexWork({
   nowMs = Date.now(),
   extraRoots = {},
   limits = [],
-  ambiguousServices = [],
   rangeDays = 30,
   appVersion = null,
   forceRebuild = false
@@ -30,17 +28,6 @@ function performIndexWork({
     dataDir,
     usageIndex: updated.index
   };
-
-  if (operation === "runways") {
-    return {
-      stats: updated.stats,
-      runways: computeRunways({
-        ...common,
-        limits,
-        ambiguousServices
-      })
-    };
-  }
 
   if (operation === "history") {
     const ranges = Array.isArray(rangeDays) ? rangeDays : [rangeDays];

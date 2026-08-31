@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { atomicWriteJsonSync } = require("../atomic-file");
 
 const FILE_NAME = "usage-history.json";
 // Bump whenever parser/aggregation logic changes so cached contributions from an
@@ -24,8 +25,7 @@ function loadCache(dataDir, fileName = FILE_NAME, version = CACHE_VERSION) {
 }
 
 function saveCache(dataDir, cache, fileName = FILE_NAME) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(path.join(dataDir, fileName), JSON.stringify(cache));
+  atomicWriteJsonSync(path.join(dataDir, fileName), cache, { pretty: false });
 }
 
 module.exports = { loadCache, saveCache, freshCache, FILE_NAME, CACHE_VERSION };

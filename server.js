@@ -5,11 +5,13 @@ const os = require("os");
 const { existsSync } = require("fs");
 const { execFile } = require("child_process");
 const crypto = require("crypto");
+const { atomicWriteFile, atomicWriteJson } = require("./atomic-file");
 
 const app = express();
 const port = Number(process.env.PORT || 4545);
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const configPath = path.join(appDataDir, "accounts.json");
+const configBackupPath = `${configPath}.bak`;
 const automationStatePath = path.join(appDataDir, "automation-state.json");
 const automationWorkspaceRoot = path.join(appDataDir, "automation-workspaces");
 const claudeWorkspaceRoot = path.join(appDataDir, "claude-workspaces");
@@ -177,6 +179,13 @@ function safeSegment(value) {
   return cleaned || "unknown";
 }
 
+function collisionSafeSegment(value) {
+  const raw = String(value || "unknown");
+  const prefix = safeSegment(raw).slice(0, 48);
+  const digest = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+  return `${prefix}-${digest}`;
+}
+
 function timestampOrNull(value) {
   if (typeof value !== "string" || !value.trim()) {
     return null;
@@ -213,7 +222,7 @@ function identityType(raw) {
 
 function buildIdentityId(type, identity) {
   const source = identity.providerAccountId || identity.email || identity.label || "current";
-  return `${type}-${safeSegment(source)}`;
+  return `${type}-${collisionSafeSegment(source)}`;
 }
 
 function normalizeIdentity(raw) {
@@ -294,9 +303,19 @@ function legacyAccountToIdentity(account, index) {
   };
 }
 
-function identityDedupKey(identity) {
-  const identityValue = identity.providerAccountId || identity.email || identity.id;
-  return `${identity.type}:${String(identityValue).trim().toLowerCase()}`;
+function identitiesMatch(left, right) {
+  if (left.type !== right.type) return false;
+  const same = (key) => {
+    const a = normalizeIdentityValue(left[key]);
+    const b = normalizeIdentityValue(right[key]);
+    return Boolean(a && b && a === b);
+  };
+  const leftProviderId = normalizeIdentityValue(left.providerAccountId);
+  const rightProviderId = normalizeIdentityValue(right.providerAccountId);
+  if (leftProviderId && rightProviderId) {
+    return leftProviderId === rightProviderId;
+  }
+  return same("id") || same("email");
 }
 
 function mergeIdentity(existing, incoming) {
@@ -327,19 +346,16 @@ function isLegacyDefaultCodexPlaceholder(identity) {
 }
 
 function mergeIdentities(identities) {
-  const byKey = new Map();
-
+  const merged = [];
   for (const identity of identities) {
-    const key = identityDedupKey(identity);
-    const existing = byKey.get(key);
-    if (existing) {
-      byKey.set(key, mergeIdentity(existing, identity));
+    const index = merged.findIndex((candidate) => identitiesMatch(candidate, identity));
+    if (index >= 0) {
+      merged[index] = mergeIdentity(merged[index], identity);
     } else {
-      byKey.set(key, identity);
+      merged.push(identity);
     }
   }
-
-  return Array.from(byKey.values());
+  return merged;
 }
 
 function normalizeConfig(raw) {
@@ -482,17 +498,26 @@ async function hydrateConfigFromStoredIdentities(config) {
 }
 
 async function ensureConfig() {
-  await fs.mkdir(appDataDir, { recursive: true });
+  await fs.mkdir(appDataDir, { recursive: true, mode: 0o700 });
+  await fs.chmod(appDataDir, 0o700);
   let config;
 
   if (!existsSync(configPath)) {
     config = defaultConfig();
   } else {
-    const raw = JSON.parse(await fs.readFile(configPath, "utf8"));
-    config = normalizeConfig(raw);
+    try {
+      config = normalizeConfig(JSON.parse(await fs.readFile(configPath, "utf8")));
+    } catch (error) {
+      try {
+        config = normalizeConfig(JSON.parse(await fs.readFile(configBackupPath, "utf8")));
+      } catch {
+        throw new Error(`Usage Meter account settings are unreadable: ${error.message}`);
+      }
+    }
   }
 
   const normalized = await hydrateConfigFromStoredIdentities(config);
+  if (existsSync(configPath)) await fs.chmod(configPath, 0o600);
   return normalized;
 }
 
@@ -504,8 +529,8 @@ function queueConfigWrite(operation) {
 
 async function writeConfig(config) {
   const normalized = normalizeConfig(config);
-  await fs.mkdir(appDataDir, { recursive: true });
-  await fs.writeFile(configPath, JSON.stringify(normalized, null, 2));
+  await atomicWriteJson(configPath, normalized);
+  await atomicWriteJson(configBackupPath, normalized);
   return normalized;
 }
 
@@ -566,24 +591,23 @@ function normalizeAutomationState(raw) {
 }
 
 async function ensureAutomationState() {
-  await fs.mkdir(appDataDir, { recursive: true });
+  await fs.mkdir(appDataDir, { recursive: true, mode: 0o700 });
 
   if (!existsSync(automationStatePath)) {
     const initial = defaultAutomationState();
-    await fs.writeFile(automationStatePath, JSON.stringify(initial, null, 2));
+    await atomicWriteJson(automationStatePath, initial);
     return initial;
   }
 
   const raw = JSON.parse(await fs.readFile(automationStatePath, "utf8"));
   const normalized = normalizeAutomationState(raw);
-  await fs.writeFile(automationStatePath, JSON.stringify(normalized, null, 2));
+  await atomicWriteJson(automationStatePath, normalized);
   return normalized;
 }
 
 async function saveAutomationState(state) {
   const normalized = normalizeAutomationState(state);
-  await fs.mkdir(appDataDir, { recursive: true });
-  await fs.writeFile(automationStatePath, JSON.stringify(normalized, null, 2));
+  await atomicWriteJson(automationStatePath, normalized);
   return normalized;
 }
 
@@ -599,6 +623,38 @@ function execFilePromise(command, args, options = {}) {
 
       resolve({ stdout, stderr });
     });
+  });
+}
+
+function execFileProcessGroupPromise(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeoutMs = Number(options.timeout) || 0;
+    const child = execFile(
+      command,
+      args,
+      { ...options, timeout: undefined, detached: true },
+      (error, stdout, stderr) => {
+        clearTimeout(timeout);
+        clearTimeout(killTimeout);
+        if (error) {
+          error.stdout = stdout;
+          error.stderr = stderr;
+          error.timedOut = timedOut;
+          reject(error);
+          return;
+        }
+        resolve({ stdout, stderr });
+      }
+    );
+    let timedOut = false;
+    let killTimeout = null;
+    const timeout = timeoutMs > 0 ? setTimeout(() => {
+      timedOut = true;
+      try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill(); }
+      killTimeout = setTimeout(() => {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+      }, 1000);
+    }, timeoutMs) : null;
   });
 }
 
@@ -724,15 +780,22 @@ function codexAccessTokenNeedsRefresh(accessToken, nowMs = Date.now()) {
   return expiresAtSeconds * 1000 <= nowMs + codexTokenRefreshSkewMs;
 }
 
-async function fetchWithTimeout(url, options, timeoutMs, timeoutMessage) {
+async function fetchJsonWithTimeout(url, options, timeoutMs, timeoutMessage) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...options,
       signal: controller.signal
     });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (response.ok) throw error;
+    }
+    return { response, payload };
   } catch (error) {
     if (error.name === "AbortError") {
       throw new Error(timeoutMessage);
@@ -785,7 +848,7 @@ async function refreshCodexAuth(authPath, auth) {
     throw new Error("Saved Codex auth is missing a refresh token. Re-run login for this account.");
   }
 
-  const response = await fetchWithTimeout(
+  const { response, payload } = await fetchJsonWithTimeout(
     codexOAuthTokenEndpoint,
     {
       method: "POST",
@@ -811,18 +874,17 @@ async function refreshCodexAuth(authPath, auth) {
     throw new Error(`Codex auth refresh failed with ${response.status}.`);
   }
 
-  const payload = await response.json();
   const nextAuth = mergeRefreshedCodexAuth(auth, payload);
   codexUsageCredentials(nextAuth);
 
-  await fs.writeFile(authPath, `${JSON.stringify(nextAuth, null, 2)}\n`);
+  await atomicWriteJson(authPath, nextAuth);
   return nextAuth;
 }
 
 async function requestCodexUsage(auth) {
   const { accessToken, accountId } = codexUsageCredentials(auth);
 
-  return fetchWithTimeout(
+  return fetchJsonWithTimeout(
     codexUsageEndpoint,
     {
       headers: {
@@ -849,11 +911,13 @@ async function fetchCodexUsage(account) {
     auth = await refreshCodexAuth(authPath, auth);
   }
 
-  response = await requestCodexUsage(auth);
+  let requested = await requestCodexUsage(auth);
+  response = requested.response;
 
   if (response.status === 401 || response.status === 403) {
     auth = await refreshCodexAuth(authPath, auth);
-    response = await requestCodexUsage(auth);
+    requested = await requestCodexUsage(auth);
+    response = requested.response;
   }
 
   if (response.status === 401 || response.status === 403) {
@@ -864,7 +928,7 @@ async function fetchCodexUsage(account) {
     throw new Error(`Codex usage request failed with ${response.status}.`);
   }
 
-  const payload = await response.json();
+  const payload = requested.payload;
   const { accountId } = codexUsageCredentials(auth);
   const windows = normalizeCodexRateWindows(payload?.rate_limit);
 
@@ -1117,10 +1181,46 @@ function parseClaudeResetAt(value, now = new Date()) {
     return null;
   }
 
+  const timeZoneMatch = text.match(/\(([^()]+)\)/);
+  const timeZone = timeZoneMatch?.[1]?.trim() || null;
+  if (timeZone) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone }).format(now);
+    } catch {
+      return null;
+    }
+  }
   const dateMatch = text.match(
     /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|My|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})\b/i
   );
-  const year = now.getFullYear();
+  const zonedParts = (date, zone) => Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      hourCycle: "h23"
+    }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)])
+  );
+  const localParts = timeZone ? zonedParts(now, timeZone) : {
+    year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate()
+  };
+  const zonedDate = (year, month, day) => {
+    if (!timeZone) return new Date(year, month - 1, day, time.hour, time.minute, 0, 0);
+    const localUtc = Date.UTC(year, month - 1, day, time.hour, time.minute, 0, 0);
+    let candidate = localUtc;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const actual = zonedParts(new Date(candidate), timeZone);
+      const represented = Date.UTC(
+        actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second
+      );
+      candidate += localUtc - represented;
+    }
+    return new Date(candidate);
+  };
   let resetDate;
 
   if (dateMatch) {
@@ -1131,32 +1231,16 @@ function parseClaudeResetAt(value, now = new Date()) {
       return null;
     }
 
-    resetDate = new Date(year, month, day, time.hour, time.minute, 0, 0);
+    resetDate = zonedDate(localParts.year, month + 1, day);
 
     if (resetDate.getTime() < now.getTime() - 60000) {
-      resetDate = new Date(year + 1, month, day, time.hour, time.minute, 0, 0);
+      resetDate = zonedDate(localParts.year + 1, month + 1, day);
     }
   } else {
-    resetDate = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      time.hour,
-      time.minute,
-      0,
-      0
-    );
+    resetDate = zonedDate(localParts.year, localParts.month, localParts.day);
 
     if (resetDate.getTime() < now.getTime() - 60000) {
-      resetDate = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() + 1,
-        time.hour,
-        time.minute,
-        0,
-        0
-      );
+      resetDate = zonedDate(localParts.year, localParts.month, localParts.day + 1);
     }
   }
 
@@ -1192,7 +1276,7 @@ async function captureClaudeUsage(account) {
 
   try {
     const workspace = await ensureClaudeWorkspace(account.id || "status");
-    const { stdout } = await execFilePromise("/bin/zsh", ["-lc", command], {
+    const { stdout } = await execFileProcessGroupPromise("/bin/zsh", ["-lc", command], {
       cwd: workspace,
       timeout: 20000,
       maxBuffer: 2 * 1024 * 1024,
@@ -1205,7 +1289,7 @@ async function captureClaudeUsage(account) {
   } catch (error) {
     const stdout = error.stdout ? stripTerminalControl(error.stdout) : "";
 
-    if (stdout) {
+    if (stdout && !error.timedOut) {
       return stdout;
     }
 
@@ -1232,7 +1316,7 @@ async function fetchClaudeUsage(account) {
   return {
     service: "claude",
     planType: account.planType || null,
-    organization: account.organization || null,
+    organization: authStatus.orgId || account.organization || null,
     email: authStatus.email || account.email || null,
     ...usageData
   };
@@ -1258,21 +1342,67 @@ function identityLabelFromUsage(data) {
   return data?.email || data?.providerAccountId || "unknown account";
 }
 
-function findIdentityForUsage(identities, type, data) {
+function findIdentityForUsage(identities, type, data, { requireStrong = false } = {}) {
   const providerAccountId = normalizeIdentityValue(data?.providerAccountId);
+  const organization = normalizeIdentityValue(data?.organization);
   const email = normalizeIdentityValue(data?.email);
+  const eligible = identities.filter((identity) => identity.type === type);
 
-  return identities.find((identity) => {
-    if (identity.type !== type) {
-      return false;
+  if (providerAccountId) {
+    const providerMatch = eligible.find(
+      (identity) => normalizeIdentityValue(identity.providerAccountId) === providerAccountId
+    );
+    if (providerMatch) return providerMatch;
+
+    // Email may claim a legacy identity that has no provider id yet, but it must
+    // never override a conflicting strong provider id.
+    return eligible.find((identity) => (
+      !normalizeIdentityValue(identity.providerAccountId)
+      && email
+      && normalizeIdentityValue(identity.email) === email
+    )) || null;
+  }
+
+  if (organization) {
+    const organizationMatches = eligible.filter(
+      (identity) => normalizeIdentityValue(identity.organization) === organization
+    );
+    if (email) {
+      return organizationMatches.find(
+        (identity) => normalizeIdentityValue(identity.email) === email
+      ) || eligible.find((identity) => (
+        !normalizeIdentityValue(identity.organization)
+        && normalizeIdentityValue(identity.email) === email
+      )) || null;
     }
+    if (requireStrong) return null;
+    if (organizationMatches.length === 1) return organizationMatches[0];
+    return null;
+  }
 
-    if (providerAccountId && normalizeIdentityValue(identity.providerAccountId) === providerAccountId) {
-      return true;
-    }
+  if (email) {
+    return eligible.find((identity) => normalizeIdentityValue(identity.email) === email) || null;
+  }
 
-    return Boolean(email && normalizeIdentityValue(identity.email) === email);
-  }) || null;
+  return requireStrong ? null : null;
+}
+
+function usageBelongsToIdentity(identity, data) {
+  const expectedProviderId = normalizeIdentityValue(identity?.providerAccountId);
+  const actualProviderId = normalizeIdentityValue(data?.providerAccountId);
+  if (expectedProviderId && actualProviderId) {
+    return expectedProviderId === actualProviderId;
+  }
+
+  const expectedOrganization = normalizeIdentityValue(identity?.organization);
+  const actualOrganization = normalizeIdentityValue(data?.organization);
+  if (expectedOrganization && actualOrganization && expectedOrganization !== actualOrganization) {
+    return false;
+  }
+
+  const expectedEmail = normalizeIdentityValue(identity?.email);
+  const actualEmail = normalizeIdentityValue(data?.email);
+  return !(expectedEmail && actualEmail && expectedEmail !== actualEmail);
 }
 
 function findUnclaimedIdentity(identities, type) {
@@ -1286,7 +1416,7 @@ function findUnclaimedIdentity(identities, type) {
 function codexIdentityHome(data) {
   return path.join(
     codexIdentityRoot,
-    safeSegment(data?.email || data?.providerAccountId || "codex-account")
+    collisionSafeSegment(data?.providerAccountId || data?.email || "codex-account")
   );
 }
 
@@ -1297,8 +1427,14 @@ async function copyCodexAuth(sourceHome, targetHome) {
     return false;
   }
 
-  await fs.mkdir(targetHome, { recursive: true });
-  await fs.copyFile(sourceAuthPath, path.join(targetHome, "auth.json"));
+  await fs.mkdir(targetHome, { recursive: true, mode: 0o700 });
+  await fs.chmod(targetHome, 0o700);
+  const targetAuthPath = path.join(targetHome, "auth.json");
+  if (path.resolve(sourceAuthPath) === path.resolve(targetAuthPath)) {
+    await fs.chmod(targetAuthPath, 0o600);
+    return true;
+  }
+  await atomicWriteFile(targetAuthPath, await fs.readFile(sourceAuthPath), { mode: 0o600 });
   return true;
 }
 
@@ -1481,6 +1617,9 @@ async function refreshIdentity(config, identity, cachedResult = null) {
 
   try {
     const data = await fetchUsageForAccount(identity);
+    if (!usageBelongsToIdentity(identity, data)) {
+      throw new Error(`This login belongs to ${identityLabelFromUsage(data)}, not ${identity.label}.`);
+    }
     updateIdentityFromUsage(identity, data);
 
     if (identity.type === "codex") {
@@ -1798,7 +1937,11 @@ async function processAutoStartSnapshot(snapshot) {
     const identityKey = getUsageIdentityKey(account, result.data);
     const entry = getAutomationStateEntry(automationState, identityKey);
 
-    if (!windowId || entry.lastSuccessfulWindowId === windowId) {
+    if (
+      !windowId
+      || entry.lastSuccessfulWindowId === windowId
+      || entry.lastAttemptedWindowId === windowId
+    ) {
       continue;
     }
 
@@ -1815,10 +1958,20 @@ async function processAutoStartSnapshot(snapshot) {
       continue;
     }
 
+    automationState.accounts[identityKey] = {
+      ...entry,
+      lastAttemptedWindowId: windowId,
+      lastAttemptedAt: attemptedAt,
+      lastError: null
+    };
+    // Persist the reservation before invoking an action-capable CLI. If the app
+    // crashes after the provider accepts the request, this window is not replayed.
+    await saveAutomationState(automationState);
+
     try {
       const triggerResult = await triggerFiveHourTimerForAccount(account);
       automationState.accounts[identityKey] = {
-        ...entry,
+        ...automationState.accounts[identityKey],
         lastSuccessfulWindowId: windowId,
         lastTriggeredAt: attemptedAt,
         lastAttemptedWindowId: windowId,
@@ -1834,7 +1987,7 @@ async function processAutoStartSnapshot(snapshot) {
       });
     } catch (error) {
       automationState.accounts[identityKey] = {
-        ...entry,
+        ...automationState.accounts[identityKey],
         lastAttemptedWindowId: windowId,
         lastAttemptedAt: attemptedAt,
         lastError: error.message
@@ -1957,6 +2110,7 @@ module.exports = {
   refreshAccountById,
   refreshAllAccounts,
   saveUsageForAccount,
+  findIdentityForUsage,
   getClaudeAuthStatus,
   processAutoStartSnapshot,
   openLoginForAccountById,
@@ -1966,7 +2120,12 @@ module.exports = {
     normalizeConfig,
     normalizeScanRoots,
     serializeConfig,
+    buildIdentityId,
+    codexIdentityHome,
+    copyCodexAuth,
     mergeRefreshedConfig,
+    findIdentityForUsage,
+    usageBelongsToIdentity,
     createBrowserIndexHtml,
     loadStoredCodexIdentities,
     refreshIdentity,

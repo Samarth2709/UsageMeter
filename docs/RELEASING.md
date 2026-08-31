@@ -27,10 +27,10 @@ For a push that changes a packaged runtime path, the workflow:
 
 1. Serializes desktop releases and coalesces queued runtime pushes: a queued run exits when its source commit is already contained in the latest published release.
 2. Installs dependencies, runs `npm test`, builds the unsigned Apple Silicon shell DMG/ZIP and Core archive, signs the manifest, and verifies every asset before changing Git history.
-3. Bumps the patch version only after those checks pass, then atomically pushes the release commit and tag together.
+3. Builds and verifies the prepared patch version, then commits that version and atomically pushes the release commit and tag together only after every asset check passes.
 4. Uploads every asset to a draft release, checks the release asset list, and only then publishes it. A rerun or manual workflow dispatch rebuilds and completes a tagged draft/missing release at the same version instead of bumping again.
 
-Routine changes to `electron-main.js`, `server.js`, `usage-history/`, `public/`, or other listed runtime inputs become Core updates. A change to the fixed shell (`bootstrap.js`, `bootstrap-updater.js`, `core-updater.js`, `preload.js`, or the public key) also publishes a DMG and automatically raises `package.json`’s `usageMeter.minimumShellVersion` to that release version, so older shells open the DMG path instead of loading an incompatible Core.
+Routine changes to `electron-main.js`, `server.js`, `usage-history/`, `public/`, or other listed runtime inputs become Core updates. A change to the fixed shell or its packaging inputs (`bootstrap.js`, `bootstrap-updater.js`, `core-updater.js`, `atomic-file.js`, `preload.js`, the public key, package manifests, or the DMG build script) also publishes a DMG and automatically raises `package.json`’s `usageMeter.minimumShellVersion` to that release version, so older shells open the DMG path instead of loading an incompatible Core.
 
 ## Local packaging and verification
 
@@ -41,7 +41,7 @@ npm run dist:mac
 open dist/UsageMeter-arm64.dmg
 ```
 
-Install the resulting app in `/Applications`, then check the menu bar, `Control` + `Option` + `L`, live refresh, Usage History, and launch-at-login. The package is unsigned and not notarized: follow the website’s quarantine-clear instructions when macOS blocks it.
+Install the resulting app in `/Applications`, then check the menu bar, `Control` + `Option` + `L`, live refresh, Usage History, and launch-at-login. The current package is ad-hoc signed and not notarized, so Gatekeeper may still block a downloaded build. A fully trusted installation requires an Apple Developer ID certificate plus notarization credentials in the release environment; until those are configured, follow the website’s documented quarantine-clear instructions.
 
 To test the updater without GitHub, point the three `USAGE_METER_UPDATE_*` URLs at a local fixture release and use a generated test Ed25519 key. The test suite covers signing, exact installed-Core file checks, hash failures, archive safety, concurrent download serialization, activation, retention, rollback, renderer-health authorization, IPC labels, and a local archive update path.
 

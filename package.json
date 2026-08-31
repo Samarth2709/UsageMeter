@@ -39,6 +39,7 @@
       "bootstrap.js",
       "bootstrap-updater.js",
       "core-updater.js",
+      "atomic-file.js",
       "preload.js",
       "update-public-key.pem",
       "package.json",

@@ -3,7 +3,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("rateLimitAPI", {
   getState: () => ipcRenderer.invoke("rate-limit:get-state"),
   getSnapshot: () => ipcRenderer.invoke("rate-limit:get-snapshot"),
-  getRunways: () => ipcRenderer.invoke("rate-limit:get-runways"),
   saveConfig: (config) => ipcRenderer.invoke("rate-limit:save-config", config),
   openLogin: (accountId) => ipcRenderer.invoke("rate-limit:open-login", accountId),
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),
@@ -12,6 +11,11 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
   openHistory: () => ipcRenderer.send("usage-history:open"),
   getUsageHistory: (options) => ipcRenderer.invoke("usage-history:get", options),
   repairUsageHistory: (options) => ipcRenderer.invoke("usage-history:repair", options),
+  onUsageHistoryUpdated: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on("usage-history:updated", listener);
+    return () => ipcRenderer.removeListener("usage-history:updated", listener);
+  },
   pickFolder: () => ipcRenderer.invoke("usage-history:pick-folder"),
   setExpandedView: (expanded, rowCount, contentHeight) => ipcRenderer.send("rate-limit:set-expanded-view", expanded, rowCount, contentHeight),
   onSnapshot: (callback) => {

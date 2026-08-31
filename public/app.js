@@ -3,6 +3,7 @@ const accountTemplate = document.querySelector("#account-template");
 const limitWindowTemplate = document.querySelector("#limit-window-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
+const overallStatusText = document.querySelector("#overall-status-text");
 const nativeApi = window.rateLimitAPI || null;
 const serverToken = document.querySelector('meta[name="rate-limit-server-token"]')?.content || "";
 
@@ -15,8 +16,6 @@ let countdownTimer = null;
 let statusHeartbeat = null;
 let lastSnapshotAt = null;
 let rowsExpanded = true;
-let runwaysByService = new Map();
-let runwayRequestId = 0;
 
 // Background usage refresh runs every 60s. If no live snapshot has arrived in
 // ~2.5 cycles, the data source is effectively down — the status dot must show
@@ -241,57 +240,7 @@ function renderLimitWindows(elements, data) {
   elements.limitGrid.classList.toggle("hidden", !displayWindows.length);
 }
 
-function hideRunway(elements) {
-  elements.runway.textContent = "";
-  elements.runway.title = "";
-  elements.runway.className = "account-runway hidden";
-}
-
-function formatRunwayDuration(minutes) {
-  const totalMinutes = Math.max(0, Math.ceil(Number(minutes) || 0));
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const mins = totalMinutes % 60;
-  if (days) return `${days}d ${hours}h`;
-  if (hours) return `${hours}h ${mins}m`;
-  return `${mins}m`;
-}
-
-function formatRunwayHitTime(minutes) {
-  return new Date(Date.now() + Math.max(0, Number(minutes) || 0) * 60000).toLocaleTimeString([], {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit"
-  });
-}
-
-function renderRunway(elements, data) {
-  if (!nativeApi?.getRunways || !data?.service) {
-    hideRunway(elements);
-    return;
-  }
-
-  const runway = runwaysByService.get(data.service);
-  if (!runway || runway.status !== "ready") {
-    hideRunway(elements);
-    return;
-  }
-
-  const nextLimit = runway.windows
-    .filter((window) => !window.lastsUntilReset && Number.isFinite(Number(window.estimatedMinutes)))
-    .sort((a, b) => Number(a.estimatedMinutes) - Number(b.estimatedMinutes))[0];
-  if (!nextLimit) {
-    hideRunway(elements);
-    return;
-  }
-  const exhaustsAt = formatRunwayHitTime(nextLimit.estimatedMinutes);
-  elements.runway.textContent = `Runs out in ${formatRunwayDuration(nextLimit.estimatedMinutes)} · ${exhaustsAt}`;
-  elements.runway.title = `Based on your normal seven-day pace, this limit is predicted to be exhausted ${exhaustsAt}.`;
-  elements.runway.className = "account-runway at-risk";
-}
-
 function showStatusSummary(elements, text, className, title = "") {
-  if (elements.runway) hideRunway(elements);
   elements.limitGrid.classList.add("hidden");
   elements.summary.textContent = text;
   elements.summary.title = title;
@@ -335,6 +284,7 @@ function setOverallStatus(statusText, className) {
   overallStatus.className = `header-status ${className}`;
   overallStatus.title = statusText;
   overallStatus.setAttribute("aria-label", statusText);
+  if (overallStatusText) overallStatusText.textContent = statusText;
 }
 
 function syncOverallStatus() {
@@ -368,6 +318,9 @@ function syncOverallStatus() {
   } else if (entries.every((entry) => entry.kind === "ok")) {
     headline = "All accounts connected";
     className = "status-ok";
+  } else if (entries.some((entry) => entry.kind === "stale")) {
+    headline = "Some usage is last known";
+    className = "status-stale";
   } else if (entries.some((entry) => entry.detail === "Loading…")) {
     headline = "Refreshing usage";
   }
@@ -445,19 +398,22 @@ function renderConnected(accountId, data, metadata = {}) {
 
   const summary = buildSummary(data);
   renderLimitWindows(elements, data);
-  renderRunway(elements, data);
-  elements.summary.textContent = "";
+  elements.summary.textContent = metadata.stale
+    ? `Last known · ${metadata.error || "Live refresh unavailable"}`
+    : "";
   elements.summary.title = metadata.stale
     ? `Last known usage. Live refresh failed: ${metadata.error || "Unavailable"}`
     : buildResetTitle(data);
-  elements.summary.className = "account-summary hidden";
+  elements.summary.className = `account-summary${metadata.stale ? " stale" : " hidden"}`;
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
   updateAccountState(accountId, {
-    kind: "ok",
+    kind: metadata.stale ? "stale" : "ok",
     detail: metadata.stale ? `Last known: ${summary}` : summary,
-    data
+    data,
+    stale: Boolean(metadata.stale),
+    error: metadata.error || null
   });
 }
 
@@ -468,10 +424,10 @@ function renderDisconnected(accountId) {
   }
 
   showStatusSummary(elements, "Not connected", "error");
-  hideRunway(elements);
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Connect";
+  elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
     kind: "disconnected",
     detail: "Not connected"
@@ -485,11 +441,11 @@ function renderError(accountId, error) {
   }
 
   const detail = String(error || "Unavailable");
-  showStatusSummary(elements, "Unavailable", "error", detail);
-  hideRunway(elements);
+  showStatusSummary(elements, `Unavailable · ${detail}`, "error", detail);
   elements.row.classList.toggle("expanded", rowsExpanded);
-  elements.connectButton.classList.add("hidden");
-  elements.connectButton.textContent = "Connect";
+  elements.connectButton.classList.remove("hidden");
+  elements.connectButton.textContent = "Retry";
+  elements.connectButton.dataset.action = "retry";
   updateAccountState(accountId, {
     kind: "error",
     detail
@@ -519,7 +475,6 @@ function applySnapshot(snapshot) {
   }
 
   lastSnapshotAt = Date.now();
-  runwaysByService = new Map();
 
   if (snapshot.config?.accounts) {
     syncAccountsFromConfig(snapshot.config);
@@ -530,24 +485,6 @@ function applySnapshot(snapshot) {
   }
 
   syncViewSize();
-  refreshRunways();
-}
-
-async function refreshRunways() {
-  if (!nativeApi?.getRunways) return;
-  const requestId = ++runwayRequestId;
-  try {
-    const runways = await nativeApi.getRunways();
-    if (requestId !== runwayRequestId) return;
-    runwaysByService = new Map((runways || []).map((runway) => [runway.cli, runway]));
-    renderCurrentRows();
-    syncViewSize();
-  } catch {
-    if (requestId !== runwayRequestId) return;
-    runwaysByService = new Map();
-    renderCurrentRows();
-    syncViewSize();
-  }
 }
 
 function syncAccountsFromConfig(config) {
@@ -594,7 +531,6 @@ function createAccountRow(account) {
   const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
   const summary = node.querySelector(".account-summary");
-  const runway = node.querySelector(".account-runway");
   const connectButton = node.querySelector(".connect-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
@@ -603,21 +539,23 @@ function createAccountRow(account) {
   showStatusSummary(
     {
       limitGrid,
-      summary,
-      runway
+      summary
     },
     "Loading…",
     "pending"
   );
 
   connectButton.addEventListener("click", async () => {
+    if (connectButton.dataset.action === "retry") {
+      await refreshAll();
+      return;
+    }
     connectButton.disabled = true;
     connectButton.textContent = "Opening…";
     showStatusSummary(
       {
-      limitGrid,
-      summary,
-      runway
+        limitGrid,
+        summary
       },
       "Waiting for login…",
       "pending"
@@ -642,7 +580,6 @@ function createAccountRow(account) {
     name,
     limitGrid,
     summary,
-    runway,
     connectButton
   });
 
@@ -655,7 +592,15 @@ function renderCurrentRows() {
     elements.row.classList.toggle("expanded", rowsExpanded);
 
     if (existing?.kind === "ok" && existing.data) {
-      renderConnected(accountId, existing.data);
+      renderConnected(accountId, existing.data, {
+        stale: existing.stale,
+        error: existing.error
+      });
+    } else if (existing?.kind === "stale" && existing.data) {
+      renderConnected(accountId, existing.data, {
+        stale: true,
+        error: existing.error
+      });
     }
   }
 }

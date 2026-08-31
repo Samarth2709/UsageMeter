@@ -9,7 +9,6 @@ const {
   globalShortcut,
   ipcMain,
   nativeImage,
-  Notification,
   screen,
   dialog,
   utilityProcess
@@ -21,18 +20,13 @@ const {
   expandHome,
   refreshAllAccounts,
   saveUsageForAccount,
-  getClaudeAuthStatus,
+  findIdentityForUsage,
   processAutoStartSnapshot,
   openLoginForAccountById
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
-const { emptyAlertState, normalizeAlertState, selectRunwayAlerts, markRunwayAlertSent } = require("./usage-history/runway-alerts");
-const {
-  emptyEvaluationState,
-  normalizeEvaluationState,
-  selectRunwayEvaluationEvents
-} = require("./usage-history/runway-evaluation");
 const { runIndexWorkerProcess } = require("./usage-history/index-worker-client");
+const { atomicWriteJson, atomicWriteJsonSync } = require("./atomic-file");
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 344;
@@ -42,9 +36,6 @@ const minWindowHeight = 70;
 const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
-const runwayAlertStatePath = path.join(appDataDir, "runway-alert-state.json");
-const runwayEvaluationStatePath = path.join(appDataDir, "runway-evaluation-state.json");
-const runwayEvaluationLogPath = path.join(appDataDir, "runway-evaluations.jsonl");
 const launchAtLoginStateFile = "launch-at-login-enabled.json";
 const backgroundRefreshMs = 60000;
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
@@ -52,11 +43,13 @@ const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settin
 const claudeWebRefreshMs = 300000;
 const claudeCliUsageRefreshMs = 300000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const gotSingleInstanceLock = globalThis.__usageMeterSingleInstanceLockAcquired
+  ?? app.requestSingleInstanceLock();
 
 let tray = null;
 let popover = null;
 let historyWindow = null;
+let historyDialogOpen = false;
 let currentWindowHeight = expandedWindowHeight;
 let currentRowCount = 3;
 let popoverPosition = null;
@@ -73,21 +66,15 @@ let claudeWebRefreshPromise = null;
 let claudeCliUsageRefreshPromise = null;
 let lastClaudeWebScrapeAt = 0;
 let lastClaudeCliUsageRefreshAt = 0;
-let claudeWebOrgId = null;
+let claudeWebIdentity = null;
 // Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
 // "View usage history" window opens instantly instead of scanning transcripts on click.
 let historyCache = new Map();
-let historyRecomputeQueued = false;
+let historyRecomputePromise = null;
+let historyRecomputeAgain = false;
 let historyCacheGeneration = 0;
 let indexWorkerQueue = Promise.resolve();
 const activeIndexWorkers = new Set();
-let latestRunways = [];
-let runwayAlertState = emptyAlertState();
-let runwayAlertPromise = null;
-let runwayEvaluationState = emptyEvaluationState();
-let runwayEvaluationPromise = null;
-let runwayRefreshPromise = null;
-let pendingRunwaySnapshot = null;
 // User-configured extra transcript folders (absolute paths), mirrored from config so
 // the synchronous history path can read them without an async config load each time.
 let scanRoots = { claude: [], codex: [] };
@@ -139,8 +126,7 @@ async function enableLaunchAtLoginByDefault() {
 
   try {
     app.setLoginItemSettings({ openAtLogin: true });
-    await fs.mkdir(path.dirname(statePath), { recursive: true });
-    await fs.writeFile(statePath, JSON.stringify({ enabledAt: new Date().toISOString() }));
+    await atomicWriteJson(statePath, { enabledAt: new Date().toISOString() });
   } catch (error) {
     console.warn(`Could not enable launch at login: ${error.message}`);
   }
@@ -219,19 +205,11 @@ async function loadPopoverPosition() {
 
 async function savePopoverPosition(position) {
   try {
-    await fs.mkdir(appDataDir, { recursive: true });
-    await fs.writeFile(
-      windowStatePath,
-      JSON.stringify(
-        {
-          x: Math.round(position.x),
-          y: Math.round(position.y),
-          savedAt: new Date().toISOString()
-        },
-        null,
-        2
-      )
-    );
+    await atomicWriteJson(windowStatePath, {
+      x: Math.round(position.x),
+      y: Math.round(position.y),
+      savedAt: new Date().toISOString()
+    });
   } catch (error) {
     console.warn(`Could not save window position: ${error.message}`);
   }
@@ -388,7 +366,7 @@ function openHistoryWindow() {
       return;
     }
 
-    if (!isQuitting && !historyWindow.webContents.isDevToolsOpened()) {
+    if (!isQuitting && !historyDialogOpen && !historyWindow.webContents.isDevToolsOpened()) {
       historyWindow.destroy();
     }
   });
@@ -480,20 +458,10 @@ function cleanResetText(value) {
   return cleaned || null;
 }
 
-async function getClaudeOrgId() {
-  if (claudeWebOrgId) {
-    return claudeWebOrgId;
-  }
-
-  const authStatus = await getClaudeAuthStatus().catch(() => null);
-
-  if (authStatus?.orgId) {
-    claudeWebOrgId = authStatus.orgId;
-    return claudeWebOrgId;
-  }
-
-  claudeWebOrgId = await getClaudeOrgIdFromWebSession();
-  return claudeWebOrgId;
+async function getClaudeWebIdentity() {
+  if (claudeWebIdentity) return claudeWebIdentity;
+  claudeWebIdentity = await getClaudeIdentityFromWebSession();
+  return claudeWebIdentity;
 }
 
 function findClaudeOrgId(payload) {
@@ -524,6 +492,22 @@ function findClaudeOrgId(payload) {
   return null;
 }
 
+function findClaudeEmail(payload) {
+  const candidates = [
+    payload,
+    payload?.account,
+    payload?.user,
+    payload?.current_user,
+    payload?.currentUser,
+    payload?.profile
+  ];
+  for (const candidate of candidates) {
+    const email = candidate?.email || candidate?.email_address || candidate?.emailAddress;
+    if (typeof email === "string" && email.trim()) return email.trim();
+  }
+  return null;
+}
+
 async function ensureClaudeOrigin() {
   const window = getOrCreateClaudeUsageWindow();
 
@@ -534,7 +518,7 @@ async function ensureClaudeOrigin() {
   return window;
 }
 
-async function getClaudeOrgIdFromWebSession() {
+async function getClaudeIdentityFromWebSession() {
   const window = await ensureClaudeOrigin();
   const endpoints = [
     "https://claude.ai/api/bootstrap",
@@ -573,7 +557,7 @@ async function getClaudeOrgIdFromWebSession() {
 
     const orgId = findClaudeOrgId(payload);
     if (orgId) {
-      return orgId;
+      return { organization: orgId, email: findClaudeEmail(payload) };
     }
   }
 
@@ -610,7 +594,7 @@ function extractClaudeWebWindow(label, patterns, text) {
   return null;
 }
 
-function parseClaudeUsageApiPayload(payload) {
+function parseClaudeUsageApiPayload(payload, { organization = null, email = null } = {}) {
   const windows = [];
   const fiveHour = payload?.five_hour;
   const sevenDay = payload?.seven_day;
@@ -652,6 +636,8 @@ function parseClaudeUsageApiPayload(payload) {
     status: "ok",
     data: {
       service: "claude",
+      organization,
+      email,
       windows,
       extraUsage: payload?.extra_usage || null,
       fetchedAt: new Date().toISOString()
@@ -754,7 +740,7 @@ function getOrCreateClaudeUsageWindow() {
 }
 
 function showClaudeUsageLogin() {
-  claudeWebOrgId = null;
+  claudeWebIdentity = null;
 
   if (claudeLoginWindow && !claudeLoginWindow.isDestroyed()) {
     claudeLoginWindow.show();
@@ -777,6 +763,7 @@ function showClaudeUsageLogin() {
   claudeLoginWindow.loadURL(claudeUsageUrl);
   claudeLoginWindow.on("closed", () => {
     claudeLoginWindow = null;
+    if (isQuitting) return;
     // Just logged in — bypass the throttle to pick up fresh usage immediately.
     refreshClaudeWebUsage({ force: true }).catch(() => {});
   });
@@ -798,9 +785,9 @@ async function readClaudeUsagePage() {
 }
 
 async function readClaudeUsageApi() {
-  const orgId = await getClaudeOrgId();
+  const identity = await getClaudeWebIdentity();
   const window = await ensureClaudeOrigin();
-  const usageUrl = `https://claude.ai/api/organizations/${orgId}/usage`;
+  const usageUrl = `https://claude.ai/api/organizations/${identity.organization}/usage`;
 
   return window.webContents.executeJavaScript(
     `fetch(${JSON.stringify(usageUrl)}, {
@@ -833,10 +820,16 @@ async function refreshClaudeWebUsage({ force = false } = {}) {
 
   claudeWebRefreshPromise = (async () => {
     try {
-      const response = await readClaudeUsageApi();
+      const response = await Promise.race([
+        readClaudeUsageApi(),
+        new Promise((resolve, reject) => setTimeout(
+          () => reject(new Error("Claude web usage refresh timed out.")),
+          15_000
+        ))
+      ]);
 
       if (response.status === 401 || response.status === 403) {
-        claudeWebOrgId = null;
+        claudeWebIdentity = null;
         claudeWebUsageCache = {
           ok: false,
           status: "login_required",
@@ -860,7 +853,7 @@ async function refreshClaudeWebUsage({ force = false } = {}) {
           return claudeWebUsageCache;
         }
 
-        claudeWebUsageCache = parseClaudeUsageApiPayload(payload);
+        claudeWebUsageCache = parseClaudeUsageApiPayload(payload, claudeWebIdentity || {});
       }
     } catch (error) {
       claudeWebUsageCache = {
@@ -893,16 +886,24 @@ async function mergeClaudeWebUsage(snapshot) {
   }
 
   const state = await getState();
-  const claudeAccountIds = new Set(
-    state.config.accounts
-      .filter((account) => account.type === "claude")
-      .map((account) => account.id)
+  const claudeAccounts = state.config.accounts.filter((account) => account.type === "claude");
+  const targetAccount = findIdentityForUsage(
+    claudeAccounts,
+    "claude",
+    claudeWebUsageCache.data,
+    { requireStrong: true }
   );
+
+  // The Claude API payload does not identify the signed-in user. Never fan one
+  // browser session's limits out to multiple configured identities.
+  if (!targetAccount) {
+    return snapshot;
+  }
 
   const mergedSnapshot = {
     ...snapshot,
     results: snapshot.results.map((result) => {
-      if (!claudeAccountIds.has(result.accountId)) {
+      if (result.accountId !== targetAccount.id) {
         return result;
       }
 
@@ -926,7 +927,7 @@ async function mergeClaudeWebUsage(snapshot) {
 
   await Promise.all(
     mergedSnapshot.results
-      .filter((result) => result.ok && claudeAccountIds.has(result.accountId) && result.data)
+      .filter((result) => result.ok && result.accountId === targetAccount.id && result.data)
       .map((result) => saveUsageForAccount(result.accountId, result.data).catch(() => false))
   );
 
@@ -937,12 +938,20 @@ function hasClaudeFiveHourWindow(windows = []) {
   return windows.some((window) => /5[-\s]?hour|5h|current\s*session/i.test(window?.label || ""));
 }
 
-function shouldRefreshClaudeCliUsage(force = false) {
+async function shouldRefreshClaudeCliUsage(force = false) {
+  if (force) return true;
   if (claudeWebUsageCache.ok && hasClaudeFiveHourWindow(claudeWebUsageCache.data?.windows || [])) {
-    return false;
+    const state = await getState();
+    const target = findIdentityForUsage(
+      state.config.accounts.filter((account) => account.type === "claude"),
+      "claude",
+      claudeWebUsageCache.data,
+      { requireStrong: true }
+    );
+    if (target) return false;
   }
 
-  return force || Date.now() - lastClaudeCliUsageRefreshAt >= claudeCliUsageRefreshMs;
+  return Date.now() - lastClaudeCliUsageRefreshAt >= claudeCliUsageRefreshMs;
 }
 
 async function refreshClaudeCliUsage() {
@@ -952,8 +961,7 @@ async function refreshClaudeCliUsage() {
 
   lastClaudeCliUsageRefreshAt = Date.now();
   claudeCliUsageRefreshPromise = refreshAllAccounts({
-    onlyAccountTypes: ["claude"],
-    skipDiscoveryTypes: ["claude"]
+    onlyAccountTypes: ["claude"]
   });
 
   try {
@@ -972,10 +980,14 @@ function mergeAccountRefresh(snapshot, refreshedSnapshot) {
     refreshedSnapshot.results.map((result) => [result.accountId, result])
   );
 
+  const seen = new Set(snapshot.results.map((result) => result.accountId));
   return {
     ...snapshot,
     config: refreshedSnapshot.config || snapshot.config,
-    results: snapshot.results.map((result) => refreshedByAccountId.get(result.accountId) || result)
+    results: [
+      ...snapshot.results.map((result) => refreshedByAccountId.get(result.accountId) || result),
+      ...refreshedSnapshot.results.filter((result) => !seen.has(result.accountId))
+    ]
   };
 }
 
@@ -983,15 +995,24 @@ function mergeAccountRefresh(snapshot, refreshedSnapshot) {
 // computeWindowValues wants. One account per
 // service is the norm; take the first OK result per service to avoid double rows.
 function liveLimitWindows() {
-  const results = latestSnapshot?.results || [];
-  const seenServices = new Set();
-  const limits = [];
+  const configuredCounts = new Map();
+  for (const account of latestSnapshot?.config?.accounts || []) {
+    configuredCounts.set(account.type, (configuredCounts.get(account.type) || 0) + 1);
+  }
+  const results = (latestSnapshot?.results || []).filter((result) => result.ok && result.stale !== true);
+  const byService = new Map();
   for (const result of results) {
     const service = result?.data?.service;
-    if (!result.ok || !service || seenServices.has(service)) continue;
+    if (!service || !(result.data.windows || []).length) continue;
+    const accounts = byService.get(service) || [];
+    accounts.push(result);
+    byService.set(service, accounts);
+  }
+  const limits = [];
+  for (const [service, accounts] of byService) {
+    if (accounts.length !== 1 || configuredCounts.get(service) !== 1) continue;
+    const result = accounts[0];
     const windows = result.data.windows || [];
-    if (!windows.length) continue;
-    seenServices.add(service);
     for (const w of windows) {
       limits.push({
         cli: service,
@@ -1005,178 +1026,6 @@ function liveLimitWindows() {
     }
   }
   return limits;
-}
-
-function liveRunwayInput(snapshot = latestSnapshot) {
-  const results = snapshot?.results || [];
-  const byService = new Map();
-
-  for (const result of results) {
-    const service = result?.data?.service;
-    const windows = result?.data?.windows || [];
-    if (!result.ok || !service || !windows.length) continue;
-    const entry = byService.get(service) || [];
-    entry.push({
-      accountId: result.accountId,
-      windows,
-      fresh: result.stale !== true,
-      observedAt: result.data.fetchedAt || snapshot?.refreshedAt || null,
-      providerLimitReached: result.data.limitReached === true,
-      rateLimitReachedType: result.data.rateLimitReachedType || null
-    });
-    byService.set(service, entry);
-  }
-
-  const limits = [];
-  const ambiguousServices = [];
-  for (const [service, accounts] of byService) {
-    const eligible = accounts.filter((account) => account.windows.some((window) =>
-      Number(window.durationSeconds) > 0 || /5-hour|5h|session|week|7-day|7d/i.test(window.label || "")
-    ));
-    if (eligible.length > 1) {
-      ambiguousServices.push(service);
-      continue;
-    }
-    const account = eligible[0] || accounts[0];
-    for (const window of account.windows) {
-      limits.push({
-        cli: service,
-        id: window.id,
-        source: window.source,
-        label: window.label,
-        durationSeconds: window.durationSeconds,
-        usedPercent: window.usedPercent,
-        resetAt: window.resetAt,
-        accountId: account.accountId,
-        fresh: account.fresh,
-        observedAt: account.observedAt,
-        providerLimitReached: account.providerLimitReached,
-        rateLimitReachedType: account.rateLimitReachedType
-      });
-    }
-  }
-  return { limits, ambiguousServices };
-}
-
-function getRunways(snapshot = latestSnapshot) {
-  return snapshot?.results?.length ? latestRunways : [];
-}
-
-async function loadRunwayAlertState() {
-  try {
-    runwayAlertState = normalizeAlertState(JSON.parse(await fs.readFile(runwayAlertStatePath, "utf8")));
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      console.warn(`Could not load runway alert state: ${error.message}`);
-    }
-    runwayAlertState = emptyAlertState();
-  }
-}
-
-async function saveRunwayAlertState() {
-  await fs.mkdir(appDataDir, { recursive: true });
-  const temporaryPath = `${runwayAlertStatePath}.${process.pid}.tmp`;
-  await fs.writeFile(temporaryPath, `${JSON.stringify(runwayAlertState, null, 2)}\n`);
-  await fs.rename(temporaryPath, runwayAlertStatePath);
-}
-
-async function loadRunwayEvaluationState() {
-  try {
-    runwayEvaluationState = normalizeEvaluationState(JSON.parse(await fs.readFile(runwayEvaluationStatePath, "utf8")));
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      console.warn(`Could not load runway evaluation state: ${error.message}`);
-    }
-    runwayEvaluationState = emptyEvaluationState();
-  }
-}
-
-async function saveRunwayEvaluationState() {
-  await fs.mkdir(appDataDir, { recursive: true });
-  const temporaryPath = `${runwayEvaluationStatePath}.${process.pid}.tmp`;
-  await fs.writeFile(temporaryPath, `${JSON.stringify(runwayEvaluationState, null, 2)}\n`);
-  await fs.rename(temporaryPath, runwayEvaluationStatePath);
-}
-
-async function appendRunwayEvaluationEvents(events) {
-  if (!events.length) return;
-  await fs.mkdir(appDataDir, { recursive: true });
-  const lines = events.map((event) => JSON.stringify(event)).join("\n");
-  await fs.appendFile(runwayEvaluationLogPath, `${lines}\n`);
-}
-
-function formatAlertDailyRate(tokensPerDay) {
-  if (tokensPerDay >= 1000000) return `${(tokensPerDay / 1000000).toFixed(1)}M tokens/day`;
-  if (tokensPerDay >= 1000) return `${Math.round(tokensPerDay / 1000)}k tokens/day`;
-  return `${Math.round(tokensPerDay).toLocaleString()} tokens/day`;
-}
-
-function formatAlertTime(value) {
-  return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-async function processRunwayAlerts(runways = getRunways()) {
-  if (!Notification.isSupported()) return;
-
-  const selection = selectRunwayAlerts(runways, { state: runwayAlertState });
-  runwayAlertState = selection.state;
-  let changed = selection.pruned;
-
-  for (const alert of selection.alerts) {
-    try {
-      new Notification({
-        title: `${String(alert.cli || "Usage").replace(/^./, (letter) => letter.toUpperCase())} limit forecast`,
-        body: `At your normal 7-day pace of ${formatAlertDailyRate(alert.tokensPerDay)}, ${alert.label} will be exhausted around ${formatAlertTime(alert.exhaustsAt)}.`
-      }).show();
-      runwayAlertState = markRunwayAlertSent(runwayAlertState, alert);
-      changed = true;
-    } catch (error) {
-      console.warn(`Could not show runway alert: ${error.message}`);
-    }
-  }
-
-  if (changed) {
-    try {
-      await saveRunwayAlertState();
-    } catch (error) {
-      console.warn(`Could not save runway alert state: ${error.message}`);
-    }
-  }
-}
-
-function queueRunwayAlerts(runways) {
-  if (runwayAlertPromise) return runwayAlertPromise;
-  runwayAlertPromise = processRunwayAlerts(runways).finally(() => {
-    runwayAlertPromise = null;
-  });
-  return runwayAlertPromise;
-}
-
-async function processRunwayEvaluations(snapshot, runways = getRunways(snapshot)) {
-  const refreshedAt = Date.parse(snapshot?.refreshedAt);
-  const nowMs = Number.isFinite(refreshedAt) ? refreshedAt : Date.now();
-  const { limits } = liveRunwayInput(snapshot);
-  const selection = selectRunwayEvaluationEvents(
-    { runways, limits },
-    { nowMs, state: runwayEvaluationState }
-  );
-
-  await appendRunwayEvaluationEvents(selection.events);
-  runwayEvaluationState = selection.state;
-  if (selection.changed) await saveRunwayEvaluationState();
-}
-
-function queueRunwayEvaluations(snapshot, runways) {
-  const previous = runwayEvaluationPromise || Promise.resolve();
-  const queued = previous
-    .catch(() => {})
-    .then(() => processRunwayEvaluations(snapshot, runways));
-  runwayEvaluationPromise = queued;
-  queued.then(
-    () => { if (runwayEvaluationPromise === queued) runwayEvaluationPromise = null; },
-    () => { if (runwayEvaluationPromise === queued) runwayEvaluationPromise = null; }
-  );
-  return queued;
 }
 
 function startUpdateChecks() {
@@ -1228,64 +1077,6 @@ function baseIndexRequest(nowMs) {
   };
 }
 
-async function refreshRunways(snapshot = latestSnapshot) {
-  if (!snapshot?.results?.length) {
-    return [];
-  }
-  const { limits, ambiguousServices } = liveRunwayInput(snapshot);
-  const refreshedAt = Date.parse(snapshot.refreshedAt);
-  const startedAt = nowMs();
-  const result = await queueIndexWorker({
-    ...baseIndexRequest(
-      Number.isFinite(refreshedAt) ? refreshedAt : Date.now()
-    ),
-    operation: "runways",
-    limits,
-    ambiguousServices
-  });
-  logRefreshMetric({
-    event: "usage_index",
-    durationMs: nowMs() - startedAt,
-    ...result.stats
-  });
-  return result.runways || [];
-}
-
-// Provider limits must remain responsive even if the disposable index worker is
-// doing a first migration or rebuild. Coalesce refreshes to the newest snapshot,
-// then publish the corresponding runway state in a second renderer update.
-function scheduleRunwayRefresh(snapshot) {
-  pendingRunwaySnapshot = snapshot;
-  if (runwayRefreshPromise) return runwayRefreshPromise;
-
-  runwayRefreshPromise = (async () => {
-    while (pendingRunwaySnapshot) {
-      const currentSnapshot = pendingRunwaySnapshot;
-      pendingRunwaySnapshot = null;
-      let runways = null;
-      try {
-        runways = await refreshRunways(currentSnapshot);
-      } catch (error) {
-        console.warn(`Could not compute runway forecast: ${error.message}`);
-      }
-
-      if (currentSnapshot !== latestSnapshot) continue;
-      latestRunways = runways || [];
-      broadcastSnapshot(currentSnapshot);
-      if (runways) {
-        queueRunwayEvaluations(currentSnapshot, runways)
-          .catch((error) => console.warn(`Could not record runway evaluation: ${error.message}`));
-        queueRunwayAlerts(runways)
-          .catch((error) => console.warn(`Could not process runway alerts: ${error.message}`));
-      }
-    }
-  })().finally(() => {
-    runwayRefreshPromise = null;
-    if (pendingRunwaySnapshot) scheduleRunwayRefresh(pendingRunwaySnapshot);
-  });
-  return runwayRefreshPromise;
-}
-
 async function computeHistoryPayload(rangeDays, { forceRebuild = false } = {}) {
   const result = await queueIndexWorker({
     ...baseIndexRequest(Date.now()),
@@ -1326,6 +1117,7 @@ async function recomputeHistoryCache() {
     const payloads = await computeHistoryPayloads(rangeDays);
     if (!historyWindowOpen() || generation !== historyCacheGeneration) return;
     for (const days of rangeDays) historyCache.set(days, payloads[days]);
+    historyWindow.webContents.send("usage-history:updated", payloads);
   } catch (error) {
     logRefreshMetric({ event: "history_cache_error", error: error.message });
   }
@@ -1334,21 +1126,33 @@ async function recomputeHistoryCache() {
 // Drop renderer payloads when the History window closes.
 function releaseHistoryMemory() {
   historyCacheGeneration += 1;
+  historyRecomputeAgain = false;
   historyCache.clear();
 }
 
 // Debounce: a single refresh cycle can broadcast more than once (web + background).
 // Defer to the next tick so the recompute never blocks the broadcast itself.
 function scheduleHistoryRecompute() {
-  if (historyRecomputeQueued) {
+  if (!historyWindowOpen()) {
     return;
   }
-  historyRecomputeQueued = true;
+  if (historyRecomputePromise) {
+    historyRecomputeAgain = true;
+    return;
+  }
   setImmediate(() => {
-    historyRecomputeQueued = false;
-    recomputeHistoryCache().catch((error) => {
-      logRefreshMetric({ event: "history_cache_error", error: error.message });
-    });
+    if (!historyWindowOpen() || historyRecomputePromise) return;
+    historyRecomputePromise = recomputeHistoryCache()
+      .catch((error) => {
+        logRefreshMetric({ event: "history_cache_error", error: error.message });
+      })
+      .finally(() => {
+        historyRecomputePromise = null;
+        if (historyRecomputeAgain && historyWindowOpen()) {
+          historyRecomputeAgain = false;
+          scheduleHistoryRecompute();
+        }
+      });
   });
 }
 
@@ -1513,7 +1317,8 @@ function logRefreshMetric(fields) {
 
 async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
   if (refreshPromise) {
-    return refreshPromise;
+    if (!forceClaudeCliUsage) return refreshPromise;
+    return refreshPromise.then(() => refreshSnapshot({ forceClaudeCliUsage: true }));
   }
 
   refreshPromise = (async () => {
@@ -1534,7 +1339,7 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
 
     await claudeRefresh;
     const claudeFetchMs = nowMs() - claudeStartedAt;
-    const claudeCliSnapshot = shouldRefreshClaudeCliUsage(forceClaudeCliUsage)
+    const claudeCliSnapshot = await shouldRefreshClaudeCliUsage(forceClaudeCliUsage)
       ? await refreshClaudeCliUsage()
       : null;
 
@@ -1545,9 +1350,7 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     latestSnapshot = await mergeClaudeWebUsage(snapshot);
     const mergeMs = nowMs() - mergeStartedAt;
 
-    latestRunways = [];
     broadcastSnapshot(latestSnapshot, { refreshHistory: false });
-    scheduleRunwayRefresh(latestSnapshot);
     queueAutoStart(latestSnapshot);
     logRefreshMetric({
       event: "manual_refresh",
@@ -1584,13 +1387,11 @@ function startBackgroundRefresh() {
 function registerIpcHandlers() {
   ipcMain.handle("rate-limit:get-state", () => getState());
   ipcMain.handle("rate-limit:get-snapshot", async () => latestSnapshot);
-  ipcMain.handle("rate-limit:get-runways", () => getRunways());
   ipcMain.handle("rate-limit:save-config", async (event, config) => {
     await saveConfig(config);
     await refreshScanRoots();
     // Configured folders changed — drop the cached history so it rescans next fetch.
     releaseHistoryMemory();
-    latestRunways = [];
     return getState();
   });
   ipcMain.handle("rate-limit:open-login", async (event, accountId) => {
@@ -1622,17 +1423,20 @@ function registerIpcHandlers() {
     if (historyWindowOpen() && generation === historyCacheGeneration) {
       historyCache.set(rangeDays, payload);
     }
-    latestRunways = [];
-    scheduleRunwayRefresh(latestSnapshot);
     return payload;
   });
   ipcMain.on("usage-history:open", openHistoryWindow);
   ipcMain.handle("usage-history:pick-folder", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "Choose a session folder to scan",
-      properties: ["openDirectory"]
-    });
-    return result.canceled ? null : result.filePaths[0] || null;
+    historyDialogOpen = true;
+    try {
+      const result = await dialog.showOpenDialog(historyWindow || undefined, {
+        title: "Choose a session folder to scan",
+        properties: ["openDirectory"]
+      });
+      return result.canceled ? null : result.filePaths[0] || null;
+    } finally {
+      historyDialogOpen = false;
+    }
   });
 }
 
@@ -1654,8 +1458,6 @@ if (!gotSingleInstanceLock) {
 
     await loadPopoverPosition();
     await refreshScanRoots();
-    await loadRunwayAlertState();
-    await loadRunwayEvaluationState();
     registerIpcHandlers();
     createPopover();
     createTray();
@@ -1682,6 +1484,22 @@ if (!gotSingleInstanceLock) {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  clearTimeout(popoverPositionSaveTimer);
+  if (popoverPosition) {
+    try {
+      atomicWriteJsonSync(windowStatePath, {
+        x: Math.round(popoverPosition.x),
+        y: Math.round(popoverPosition.y),
+        savedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.warn(`Could not save final window position: ${error.message}`);
+    }
+  }
+});
+
+app.on("window-all-closed", (event) => {
+  if (!isQuitting) event.preventDefault();
 });
 
 app.on("will-quit", () => {

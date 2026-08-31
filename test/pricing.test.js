@@ -6,8 +6,8 @@ test("maps Claude/Codex model ids to rate keys", () => {
   assert.equal(rateKeyForModel("claude", "claude-fable-5"), "claude-fable");
   assert.equal(rateKeyForModel("claude", "claude-opus-4-8"), "claude-opus");
   assert.equal(rateKeyForModel("claude", "claude-sonnet-4-6"), "claude-sonnet");
-  assert.equal(rateKeyForModel("claude", "claude-sonnet-5", "2026-07-25"), "claude-sonnet-5-intro");
-  assert.equal(rateKeyForModel("claude", "claude-sonnet-5", "2026-09-01"), "claude-sonnet");
+  assert.equal(rateKeyForModel("claude", "claude-sonnet-5", "2026-07-25"), "claude-sonnet-5");
+  assert.equal(rateKeyForModel("claude", "claude-sonnet-5", "2026-09-01"), "claude-sonnet-5");
   assert.equal(rateKeyForModel("claude", "claude-haiku-4-5"), "claude-haiku");
   assert.equal(rateKeyForModel("codex", "gpt-5.5-codex"), "gpt-5.5");
   assert.equal(rateKeyForModel("codex", "gpt-5.4"), "gpt-5.4");
@@ -39,9 +39,9 @@ test("prices GPT-5.6 Sol, Terra, and Luna at their distinct API-equivalent rates
     cacheWriteTokens: 1_000_000, outputTokens: 1_000_000
   };
   const cases = [
-    ["gpt-5.6", "gpt-5.6-sol", 41.75],
-    ["gpt-5.6-terra", "gpt-5.6-terra", 20.875],
-    ["gpt-5.6-luna", "gpt-5.6-luna", 8.35]
+    ["gpt-5.6", "gpt-5.6-sol", 29.4],
+    ["gpt-5.6-terra", "gpt-5.6-terra", 16.7],
+    ["gpt-5.6-luna", "gpt-5.6-luna", 1.67]
   ];
 
   for (const [model, rateKey, dollars] of cases) {
@@ -61,17 +61,40 @@ test("prices GPT-5.4 mini separately from the full model", () => {
   assert.ok(Math.abs(r.dollars - 5.325) < 1e-9);
 });
 
-test("uses Claude Sonnet 5 introductory pricing through August 2026", () => {
+test("uses Claude Sonnet 5 permanent launch pricing", () => {
   const buckets = {
     inputTokens: 1_000_000, cachedReadTokens: 1_000_000,
     cacheWriteTokens: 1_000_000, outputTokens: 1_000_000
   };
   const intro = priceRecord("claude", "claude-sonnet-5", buckets, "2026-07-25");
   const standard = priceRecord("claude", "claude-sonnet-5", buckets, "2026-09-01");
-  assert.equal(intro.rateKey, "claude-sonnet-5-intro");
+  assert.equal(intro.rateKey, "claude-sonnet-5");
   assert.ok(Math.abs(intro.dollars - 14.7) < 1e-9);
-  assert.equal(standard.rateKey, "claude-sonnet");
-  assert.ok(Math.abs(standard.dollars - 22.05) < 1e-9);
+  assert.equal(standard.rateKey, "claude-sonnet-5");
+  assert.ok(Math.abs(standard.dollars - 14.7) < 1e-9);
+});
+
+test("prices one-hour Claude cache writes at twice the input rate", () => {
+  const result = priceRecord("claude", "claude-sonnet-5", {
+    inputTokens: 0,
+    cachedReadTokens: 0,
+    cacheWriteTokens: 1_000_000,
+    cacheWrite1hTokens: 1_000_000,
+    outputTokens: 0
+  });
+  assert.ok(Math.abs(result.dollars - 4) < 1e-9);
+});
+
+test("applies GPT-5.6 long-context multipliers to the full request", () => {
+  const result = priceRecord("codex", "gpt-5.6-terra", {
+    inputTokens: 300_000,
+    cachedReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 10_000,
+    longContextInputTokens: 300_000,
+    longContextOutputTokens: 10_000
+  }, "2026-08-30");
+  assert.ok(Math.abs(result.dollars - 1.38) < 1e-9);
 });
 
 test("unknown model remains unpriced instead of receiving a fallback", () => {

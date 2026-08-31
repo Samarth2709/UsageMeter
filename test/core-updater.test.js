@@ -486,3 +486,74 @@ test("version comparison accepts release-style values", () => {
   assert.equal(compareVersions("v0.2.7", "0.2.6"), 1);
   assert.equal(compareVersions("0.2.7", "0.2.7"), 0);
 });
+
+test("malformed install state cannot suppress pending rollback", async () => {
+  const root = await fixtureRoot();
+  try {
+    const updater = await updaterFixture(root);
+    await fs.mkdir(updater.coresDir, { recursive: true });
+    await fs.writeFile(updater.statePath, JSON.stringify({
+      activeVersion: "invalid",
+      previousVersion: {},
+      pendingVersion: "invalid",
+      pendingLaunches: "invalid",
+      healthyVersion: []
+    }));
+    assert.match(await updater.selectCore(), /fallback[\\/]core$/);
+    assert.deepEqual(updater.installState, {
+      activeVersion: null,
+      previousVersion: null,
+      pendingVersion: null,
+      pendingLaunches: 0,
+      healthyVersion: null
+    });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the bundled Core is a floor over an older downloaded Core", async () => {
+  const root = await fixtureRoot();
+  try {
+    const updater = await updaterFixture(root, { fallbackVersion: "0.2.8", shellVersion: "0.2.8" });
+    const source = await writeCore(path.join(root, "source"), "0.2.7");
+    await installSignedCore(updater, root, source, "0.2.7");
+    updater.installState = {
+      activeVersion: "0.2.7",
+      previousVersion: null,
+      pendingVersion: null,
+      pendingLaunches: 0,
+      healthyVersion: "0.2.7"
+    };
+    await updater.saveInstallState();
+    assert.match(await updater.selectCore(), /fallback[\\/]core$/);
+    assert.equal(updater.runningVersion, "0.2.8");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pending rollback cannot select a Core older than the bundled Core", async () => {
+  const root = await fixtureRoot();
+  try {
+    const updater = await updaterFixture(root, { fallbackVersion: "0.2.9", shellVersion: "0.2.9" });
+    const activeSource = await writeCore(path.join(root, "active-source"), "0.2.10");
+    const previousSource = await writeCore(path.join(root, "previous-source"), "0.2.7");
+    await installSignedCore(updater, root, activeSource, "0.2.10");
+    await installSignedCore(updater, root, previousSource, "0.2.7");
+    updater.installState = {
+      activeVersion: "0.2.10",
+      previousVersion: "0.2.7",
+      pendingVersion: "0.2.10",
+      pendingLaunches: 1,
+      healthyVersion: "0.2.7"
+    };
+    await updater.saveInstallState();
+
+    assert.match(await updater.selectCore(), /fallback[\\/]core$/);
+    assert.equal(updater.runningVersion, "0.2.9");
+    assert.equal(updater.installState.activeVersion, null);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

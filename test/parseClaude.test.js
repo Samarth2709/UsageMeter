@@ -15,8 +15,25 @@ test("extracts normalized token buckets from assistant usage", () => {
   assert.deepEqual(
     { ...recs[0], timestampMs: 0, day: recs[0].day },
     { timestampMs: 0, day: recs[0].day, cli: "claude", model: "claude-opus-4-8",
-      inputTokens: 100, cachedReadTokens: 50, cacheWriteTokens: 20, outputTokens: 10, isSidechain: false }
+      inputTokens: 100, cachedReadTokens: 50, cacheWriteTokens: 20, cacheWrite1hTokens: 0,
+      outputTokens: 10, eventId: "msg_a", isSidechain: false }
   );
+});
+
+test("preserves Claude one-hour cache writes for correct pricing", () => {
+  const [record] = parseClaudeTranscript(assistant("cache", {
+    input_tokens: 1,
+    cache_read_input_tokens: 2,
+    cache_creation_input_tokens: 30,
+    cache_creation: {
+      ephemeral_5m_input_tokens: 10,
+      ephemeral_1h_input_tokens: 20
+    },
+    output_tokens: 3
+  }));
+
+  assert.equal(record.cacheWriteTokens, 30);
+  assert.equal(record.cacheWrite1hTokens, 20);
 });
 
 test("dedups repeated lines sharing message.id", () => {

@@ -209,6 +209,134 @@ test("refresh config merges identity updates without reverting scan roots", () =
   assert.equal(merged.identities[0].lastUsage.windows[0].remainingPercent, 55);
 });
 
+test("identity refresh metadata merges by stable id before changed email", () => {
+  const merged = _test.mergeRefreshedConfig(
+    _test.normalizeConfig({
+      identities: [{
+        id: "codex-stable",
+        type: "codex",
+        label: "Work",
+        codeHome: "/tmp/codex-work",
+        email: "old@example.com"
+      }]
+    }),
+    _test.normalizeConfig({
+      identities: [{
+        id: "codex-stable",
+        type: "codex",
+        label: "Work",
+        codeHome: "/tmp/codex-work",
+        email: "new@example.com",
+        providerAccountId: "acct-stable"
+      }]
+    })
+  );
+  const identities = merged.identities.filter((identity) => identity.type === "codex");
+  assert.equal(identities.length, 1);
+  assert.equal(identities[0].id, "codex-stable");
+  assert.equal(identities[0].email, "new@example.com");
+  assert.equal(identities[0].providerAccountId, "acct-stable");
+});
+
+test("same email cannot merge identities with conflicting provider ids", () => {
+  const normalized = _test.normalizeConfig({
+    identities: [
+      {
+        id: "codex-one",
+        type: "codex",
+        label: "One",
+        codeHome: "/tmp/codex-one",
+        email: "shared@example.com",
+        providerAccountId: "acct-one"
+      },
+      {
+        id: "codex-two",
+        type: "codex",
+        label: "Two",
+        codeHome: "/tmp/codex-two",
+        email: "shared@example.com",
+        providerAccountId: "acct-two"
+      }
+    ]
+  });
+
+  assert.deepEqual(
+    normalized.identities.filter((identity) => identity.type === "codex").map((identity) => identity.providerAccountId),
+    ["acct-one", "acct-two"]
+  );
+});
+
+test("provider ids that sanitize alike still get distinct local ids and auth homes", () => {
+  const first = { providerAccountId: "acct/a" };
+  const second = { providerAccountId: "acct-a" };
+
+  assert.notEqual(_test.buildIdentityId("codex", first), _test.buildIdentityId("codex", second));
+  assert.notEqual(_test.codexIdentityHome(first), _test.codexIdentityHome(second));
+});
+
+test("stable Codex auth replacement is atomic and private", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-auth-copy-"));
+  const source = path.join(root, "source");
+  const target = path.join(root, "target");
+  try {
+    await fs.mkdir(source);
+    await fs.writeFile(path.join(source, "auth.json"), '{"token":"one"}\n');
+    assert.equal(await _test.copyCodexAuth(source, target), true);
+    assert.equal(await fs.readFile(path.join(target, "auth.json"), "utf8"), '{"token":"one"}\n');
+    assert.equal((await fs.stat(path.join(target, "auth.json"))).mode & 0o777, 0o600);
+
+    await fs.writeFile(path.join(source, "auth.json"), '{"token":"two"}\n');
+    assert.equal(await _test.copyCodexAuth(source, target), true);
+    assert.equal(await fs.readFile(path.join(target, "auth.json"), "utf8"), '{"token":"two"}\n');
+    assert.deepEqual((await fs.readdir(target)).filter((name) => name.endsWith(".tmp")), []);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("provider id is authoritative over changed or shared email metadata", () => {
+  assert.equal(_test.usageBelongsToIdentity(
+    { providerAccountId: "acct-one", email: "old@example.com" },
+    { providerAccountId: "acct-one", email: "new@example.com" }
+  ), true);
+  assert.equal(_test.usageBelongsToIdentity(
+    { providerAccountId: "acct-one", email: "shared@example.com" },
+    { providerAccountId: "acct-two", email: "shared@example.com" }
+  ), false);
+});
+
+test("provider usage cannot claim a same-email identity with a conflicting provider id", () => {
+  const identities = [
+    { type: "codex", providerAccountId: "acct-one", email: "shared@example.com" },
+    { type: "codex", providerAccountId: "acct-two", email: "shared@example.com" }
+  ];
+
+  assert.equal(_test.findIdentityForUsage(identities, "codex", {
+    providerAccountId: "acct-three",
+    email: "shared@example.com"
+  }), null);
+});
+
+test("Claude web usage requires an exact stored organization or email", () => {
+  const identities = [{
+    id: "claude-one",
+    type: "claude",
+    email: "one@example.com",
+    organization: "org-one"
+  }];
+
+  assert.equal(_test.findIdentityForUsage(identities, "claude", {}, { requireStrong: true }), null);
+  assert.equal(_test.findIdentityForUsage(identities, "claude", { organization: "org-two" }, { requireStrong: true }), null);
+  assert.equal(_test.findIdentityForUsage(identities, "claude", { organization: "org-one" }, { requireStrong: true }), null);
+  assert.equal(
+    _test.findIdentityForUsage(identities, "claude", {
+      organization: "org-one",
+      email: "one@example.com"
+    }, { requireStrong: true }),
+    identities[0]
+  );
+});
+
 test("refresh falls back to last successful usage when live auth is unavailable", async () => {
   const config = { identities: [] };
   const identity = _test.normalizeConfig({
@@ -532,7 +660,9 @@ test("Electron refresh uses the throttled Claude CLI usage supplement", async ()
   assert.equal(electronSource.includes("refreshClaudeFallbackUsage"), false);
   assert.equal(electronSource.includes("shouldRefreshClaudeFallback"), false);
   assert.ok(electronSource.includes("claudeCliUsageRefreshMs"));
-  assert.ok(electronSource.includes('skipDiscoveryTypes: ["claude"]'));
+  assert.equal(electronSource.includes('skipDiscoveryTypes: ["claude"]'), false);
+  assert.ok(electronSource.includes('onlyAccountTypes: ["claude"]'));
+  assert.ok(electronSource.includes("Never fan one"));
 });
 
 test("Claude CLI capture opens the usage screen, not status", async () => {
@@ -583,11 +713,28 @@ test("parseClaudeUsageScreen recovers the 5-hour reset from a partial trailing r
     "█████████ 73% used"
   ].join("\n");
 
-  const now = new Date(2026, 5, 24, 0, 0, 0, 0);
+  const now = new Date("2026-06-24T05:00:00.000Z");
   const { windows } = _test.parseClaudeUsageScreen(screen, now);
   const session = windows.find((w) => w.label === "5-hour");
   assert.ok(session, "5-hour window should be parsed");
   assert.equal(session.usedPercent, 73);
   assert.ok(session.resetText, "5-hour reset text should be recovered");
   assert.ok(session.resetAt, "5-hour resetAt should be recovered");
+  assert.equal(session.resetAt, "2026-06-24T05:50:00.000Z");
+});
+
+test("Claude reset time honors an explicit IANA timezone", () => {
+  const now = new Date("2026-07-27T20:00:00.000Z");
+  assert.equal(
+    _test.parseClaudeResetAt("5:20pm (America/New_York)", now),
+    "2026-07-27T21:20:00.000Z"
+  );
+});
+
+test("Claude reset time accepts single-component UTC timezone", () => {
+  const now = new Date("2026-07-27T17:00:00.000Z");
+  assert.equal(
+    _test.parseClaudeResetAt("6:00pm (UTC)", now),
+    "2026-07-27T18:00:00.000Z"
+  );
 });

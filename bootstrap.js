@@ -29,7 +29,12 @@ global.__usageMeterRegisterCoreWebContents = (webContents) => updater.registerCo
 global.__usageMeterUnregisterCoreWebContents = (webContents) => updater.unregisterCoreWebContents(webContents);
 updater.registerIpc();
 
-(async () => {
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+global.__usageMeterSingleInstanceLockAcquired = gotSingleInstanceLock;
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else (async () => {
   try {
     const corePath = await updater.selectCore();
     if (app.isPackaged) {

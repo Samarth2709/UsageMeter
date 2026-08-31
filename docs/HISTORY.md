@@ -2,6 +2,10 @@
 
 This is a concise record of shipped milestones. It is not a substitute for Git history; use `git log` for the exact code-level change record.
 
+## 0.2.6 — 2026-08-30
+
+- Removed limit-exhaustion runway predictions, forecast notifications, and local prediction evaluation logging from the runtime and popover.
+
 ## 0.2.5 — 2026-08-27
 
 - Added a fixed Electron bootstrap shell and signed, versioned Core updates with a safe staging path, atomic activation, rollback, and user-controlled restart.
