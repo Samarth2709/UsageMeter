@@ -11,8 +11,10 @@ const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 test("Claude sign-in launches directly with Google Chrome as its browser", async () => {
   const child = new EventEmitter();
   let unrefCalled = false;
+  let stdinUnrefCalled = false;
   let invocation;
   child.unref = () => { unrefCalled = true; };
+  child.stdin = { unref: () => { stdinUnrefCalled = true; } };
 
   const started = _test.startClaudeLoginInChrome((command, args, options) => {
     invocation = { command, args, options };
@@ -22,14 +24,35 @@ test("Claude sign-in launches directly with Google Chrome as its browser", async
 
   await started;
 
-  assert.match(invocation.command, /script$/);
-  assert.match(invocation.args[2], /claude$/);
-  assert.deepEqual(invocation.args.slice(0, 2), ["-q", "/dev/null"]);
-  assert.deepEqual(invocation.args.slice(3), ["auth", "login"]);
+  assert.match(invocation.command, /claude$/);
+  assert.deepEqual(invocation.args, ["auth", "login"]);
   assert.equal(invocation.options.env.BROWSER, chromePath);
   assert.equal(invocation.options.detached, true);
-  assert.equal(invocation.options.stdio, "ignore");
+  assert.deepEqual(invocation.options.stdio, ["pipe", "ignore", "ignore"]);
+  assert.equal(stdinUnrefCalled, true);
   assert.equal(unrefCalled, true);
+  assert.equal(_test.getActiveClaudeLoginProcess(), child);
+  child.emit("exit", 0, null);
+  assert.equal(_test.getActiveClaudeLoginProcess(), null);
+});
+
+test("concurrent Claude sign-in requests reuse the active OAuth process", async () => {
+  const child = new EventEmitter();
+  child.stdin = { unref: () => {} };
+  child.unref = () => {};
+  let spawnCount = 0;
+  const spawnCommand = () => {
+    spawnCount += 1;
+    process.nextTick(() => child.emit("spawn"));
+    return child;
+  };
+
+  const first = _test.startClaudeLoginInChrome(spawnCommand, 0);
+  const second = _test.startClaudeLoginInChrome(spawnCommand, 0);
+  await Promise.all([first, second]);
+
+  assert.equal(spawnCount, 1);
+  child.emit("exit", 0, null);
 });
 
 test("Claude sign-in reports an inner CLI that exits during startup", async () => {

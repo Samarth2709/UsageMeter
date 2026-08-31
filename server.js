@@ -24,6 +24,7 @@ const browserServerHost = "127.0.0.1";
 const browserServerToken = crypto.randomBytes(32).toString("base64url");
 let configWriteQueue = Promise.resolve();
 const removedIdentities = new Map();
+let activeClaudeLogin = null;
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -2100,33 +2101,49 @@ function codexLoginCommandForAccount(account) {
 }
 
 async function startClaudeLoginInChrome(spawnCommand = spawn, startupGraceMs = 1500) {
-  await new Promise((resolve, reject) => {
-    const child = spawnCommand(scriptBin, ["-q", "/dev/null", claudeBin, "auth", "login"], {
-      cwd: defaultWorkspace,
-      detached: true,
-      env: { ...process.env, BROWSER: googleChromeBin },
-      stdio: "ignore"
-    });
+  if (activeClaudeLogin) {
+    return activeClaudeLogin.startup;
+  }
+
+  const child = spawnCommand(claudeBin, ["auth", "login"], {
+    cwd: defaultWorkspace,
+    detached: true,
+    env: { ...process.env, BROWSER: googleChromeBin },
+    stdio: ["pipe", "ignore", "ignore"]
+  });
+
+  const startup = new Promise((resolve, reject) => {
     let startupTimer = null;
+    let startupComplete = false;
+    const clearActiveLogin = () => {
+      if (activeClaudeLogin?.child === child) activeClaudeLogin = null;
+    };
 
     child.once("error", (error) => {
+      clearActiveLogin();
       clearTimeout(startupTimer);
-      reject(error);
+      if (!startupComplete) reject(error);
     });
     const onEarlyExit = (code, signal) => {
+      clearActiveLogin();
       clearTimeout(startupTimer);
+      if (startupComplete) return;
       const detail = signal ? ` (signal ${signal})` : ` (exit ${code})`;
       reject(new Error(`Claude sign-in exited before opening Google Chrome${detail}.`));
     };
     child.once("exit", onEarlyExit);
     child.once("spawn", () => {
       startupTimer = setTimeout(() => {
-        child.off("exit", onEarlyExit);
+        startupComplete = true;
+        child.stdin?.unref?.();
         child.unref();
         resolve();
       }, startupGraceMs);
     });
   });
+
+  activeClaudeLogin = { child, startup };
+  return startup;
 }
 
 async function openLoginForAccount(account) {
@@ -2304,6 +2321,7 @@ module.exports = {
     createBrowserIndexHtml,
     codexLoginCommandForAccount,
     startClaudeLoginInChrome,
+    getActiveClaudeLoginProcess: () => activeClaudeLogin?.child || null,
     loadStoredCodexIdentities,
     removeManagedCodexIdentityHomes,
     hydrateConfigFromStoredIdentities,
