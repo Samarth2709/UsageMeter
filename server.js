@@ -340,11 +340,7 @@ function deletedIdentityMarker(raw) {
 }
 
 function identityMatchesDeleted(marker, identity) {
-  if (identitiesMatch(marker, identity)) return true;
-  return marker.type === "claude" && identity.type === "claude" && Boolean(
-    normalizeIdentityValue(marker.organization) &&
-    normalizeIdentityValue(marker.organization) === normalizeIdentityValue(identity.organization)
-  );
+  return identitiesMatch(marker, identity);
 }
 
 function mergeDeletedIdentities(identities) {
@@ -2359,13 +2355,7 @@ function loggedOutIdentity(account, removeLogin) {
     return loggedOut;
   }
 
-  return {
-    ...loggedOut,
-    label: account.type === "claude" ? "Claude" : "Codex",
-    email: null,
-    providerAccountId: null,
-    organization: null
-  };
+  return loggedOut;
 }
 
 async function runLogoutForAccount(
@@ -2377,7 +2367,12 @@ async function runLogoutForAccount(
   if (account.type === "claude") {
     const status = await getClaudeAuthStatus(account.workspace || defaultWorkspace, runCommand);
     if (!status.loggedIn) return;
-    if (account.email && status.email && normalizeIdentityValue(account.email) !== normalizeIdentityValue(status.email)) {
+    const expectedEmail = normalizeIdentityValue(account.email);
+    const activeEmail = normalizeIdentityValue(status.email);
+    if (!expectedEmail || !activeEmail) {
+      throw new Error(`Could not verify the active Claude account for ${account.label}.`);
+    }
+    if (expectedEmail !== activeEmail) {
       throw new Error(`Claude is currently logged in as ${status.email}, not ${account.label}.`);
     }
     if (

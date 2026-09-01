@@ -71,7 +71,7 @@ test("logged-out identity state survives normalization and blocks stale refresh 
   assert.equal(merged.identities[0].lastUsage, null);
 });
 
-test("logging out keeps the row while removing cached usage, and login removal forgets identity metadata", () => {
+test("logging out keeps the row while login removal preserves non-secret identity metadata", () => {
   const account = _test.normalizeConfig({
     identities: [{
       id: "codex-saved",
@@ -92,9 +92,9 @@ test("logging out keeps the row while removing cached usage, and login removal f
 
   const forgotten = _test.loggedOutIdentity(account, true);
   assert.equal(forgotten.id, account.id);
-  assert.equal(forgotten.label, "Codex");
-  assert.equal(forgotten.email, null);
-  assert.equal(forgotten.providerAccountId, null);
+  assert.equal(forgotten.label, "saved@example.com");
+  assert.equal(forgotten.email, "saved@example.com");
+  assert.equal(forgotten.providerAccountId, "acct_saved");
   assert.equal(forgotten.lastUsage, null);
 });
 
@@ -147,6 +147,28 @@ test("Claude logout refuses to sign out a different active account", async () =>
       workspace: "/tmp/claude-saved"
     }, false, runCommand),
     /currently logged in as other@example\.com/
+  );
+  assert.deepEqual(calls, [["auth", "status", "--json"]]);
+});
+
+test("Claude logout refuses to act when the selected row has no verifiable identity", async () => {
+  const calls = [];
+  const runCommand = async (command, args) => {
+    calls.push(args);
+    return {
+      stdout: JSON.stringify({ loggedIn: true, email: "active@example.com" }),
+      stderr: ""
+    };
+  };
+
+  await assert.rejects(
+    _test.runLogoutForAccount({
+      id: "claude-unknown",
+      type: "claude",
+      label: "Claude",
+      workspace: "/tmp/claude-unknown"
+    }, false, runCommand),
+    /Could not verify the active Claude account/
   );
   assert.deepEqual(calls, [["auth", "status", "--json"]]);
 });
@@ -651,6 +673,55 @@ test("deleted rows stay deleted across config reload while the provider login re
     deletedIdentities: serialized.deletedIdentities
   });
   assert.equal(unrelated.identities.length, 1);
+});
+
+test("a row stays deleted after its saved login has been removed", () => {
+  const account = {
+    id: "claude-saved",
+    type: "claude",
+    label: "saved@example.com",
+    workspace: "/managed/claude-saved",
+    email: "saved@example.com",
+    organization: "org-shared"
+  };
+  const loggedOut = _test.loggedOutIdentity(account, true);
+  const normalized = _test.normalizeConfig({ identities: [loggedOut] });
+  const removal = _test.removeIdentityFromConfig(normalized, loggedOut.id);
+  const serialized = _test.serializeConfig(removal.config);
+
+  const rediscovered = _test.normalizeConfig({
+    identities: [{
+      ...account,
+      id: "claude-rediscovered"
+    }],
+    deletedIdentities: serialized.deletedIdentities
+  });
+
+  assert.equal(rediscovered.identities.length, 0);
+});
+
+test("a Claude deletion tombstone does not suppress another user in the same organization", () => {
+  const deleted = {
+    id: "claude-deleted",
+    type: "claude",
+    label: "deleted@example.com",
+    workspace: "/managed/claude-deleted",
+    email: "deleted@example.com",
+    organization: "org-shared"
+  };
+  const other = {
+    ...deleted,
+    id: "claude-other",
+    label: "other@example.com",
+    email: "other@example.com"
+  };
+
+  const normalized = _test.normalizeConfig({
+    identities: [other],
+    deletedIdentities: [deleted]
+  });
+
+  assert.deepEqual(normalized.identities.map((identity) => identity.email), ["other@example.com"]);
 });
 
 test("persistent deletion suppresses matching managed Codex credential hydration", async () => {

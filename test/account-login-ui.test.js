@@ -485,9 +485,10 @@ test("right-click account menu routes logout, login removal, and row deletion", 
 });
 
 test("Electron exposes the native three-action account context menu", async () => {
-  const [main, preload] = await Promise.all([
+  const [main, preload, styles] = await Promise.all([
     fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8"),
-    fs.readFile(path.join(__dirname, "..", "preload.js"), "utf8")
+    fs.readFile(path.join(__dirname, "..", "preload.js"), "utf8"),
+    fs.readFile(path.join(__dirname, "..", "public", "styles.css"), "utf8")
   ]);
 
   assert.match(main, /label: "Log Out"/);
@@ -497,4 +498,5 @@ test("Electron exposes the native three-action account context menu", async () =
   assert.match(main, /ipcMain\.handle\("rate-limit:logout-account"/);
   assert.match(preload, /showAccountMenu:.*rate-limit:show-account-menu/);
   assert.match(preload, /logoutAccount:.*rate-limit:logout-account/);
+  assert.match(styles, /\.account-row\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
 });
