@@ -3,6 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const vm = require("node:vm");
 
 const { getClaudeAuthStatus, _test } = require("../server");
 const packageJson = require("../package.json");
@@ -39,6 +40,169 @@ test("an explicit empty identity list stays empty while a missing list gets the 
 
   assert.equal(serialized.accounts.length, 0);
   assert.deepEqual(defaults.identities.map((identity) => identity.id), ["claude-1"]);
+});
+
+test("logged-out identity state survives normalization and blocks stale refresh data", () => {
+  const latest = _test.normalizeConfig({
+    identities: [{
+      id: "claude-saved",
+      type: "claude",
+      label: "saved@example.com",
+      workspace: process.cwd(),
+      email: "saved@example.com",
+      loggedOut: true
+    }]
+  });
+  const staleRefresh = _test.normalizeConfig({
+    identities: [{
+      ...latest.identities[0],
+      loggedOut: false,
+      lastUsage: {
+        service: "claude",
+        windows: [{ label: "5-hour", remainingPercent: 87 }]
+      }
+    }]
+  });
+
+  const merged = _test.mergeRefreshedConfig(latest, staleRefresh);
+
+  assert.equal(_test.serializeConfig(latest).accounts[0].loggedOut, true);
+  assert.equal(merged.identities[0].loggedOut, true);
+  assert.equal(merged.identities[0].lastUsage, null);
+});
+
+test("logging out keeps the row while removing cached usage, and login removal forgets identity metadata", () => {
+  const account = _test.normalizeConfig({
+    identities: [{
+      id: "codex-saved",
+      type: "codex",
+      label: "saved@example.com",
+      codeHome: "/tmp/codex-saved",
+      email: "saved@example.com",
+      providerAccountId: "acct_saved",
+      lastUsage: { service: "codex", windows: [] }
+    }]
+  }).identities[0];
+
+  const loggedOut = _test.loggedOutIdentity(account, false);
+  assert.equal(loggedOut.id, account.id);
+  assert.equal(loggedOut.loggedOut, true);
+  assert.equal(loggedOut.email, "saved@example.com");
+  assert.equal(loggedOut.lastUsage, null);
+
+  const forgotten = _test.loggedOutIdentity(account, true);
+  assert.equal(forgotten.id, account.id);
+  assert.equal(forgotten.label, "Codex");
+  assert.equal(forgotten.email, null);
+  assert.equal(forgotten.providerAccountId, null);
+  assert.equal(forgotten.lastUsage, null);
+});
+
+test("provider logout commands are scoped to the selected row", async () => {
+  const calls = [];
+  const runCommand = async (command, args, options) => {
+    calls.push({ command, args, options });
+    if (args.join(" ") === "auth status --json") {
+      return { stdout: JSON.stringify({ loggedIn: true, email: "saved@example.com" }), stderr: "" };
+    }
+    return { stdout: "", stderr: "" };
+  };
+
+  await _test.runLogoutForAccount({
+    id: "codex-saved",
+    type: "codex",
+    codeHome: "/tmp/codex-saved"
+  }, false, runCommand);
+  await _test.runLogoutForAccount({
+    id: "claude-saved",
+    type: "claude",
+    label: "saved@example.com",
+    email: "saved@example.com",
+    workspace: "/tmp/claude-saved"
+  }, false, runCommand);
+
+  assert.deepEqual(calls[0].args, ["logout"]);
+  assert.equal(calls[0].options.env.CODEX_HOME, "/tmp/codex-saved");
+  assert.deepEqual(calls[1].args, ["auth", "status", "--json"]);
+  assert.deepEqual(calls[2].args, ["auth", "logout"]);
+  assert.equal(calls[2].options.cwd, "/tmp/claude-saved");
+});
+
+test("Claude logout refuses to sign out a different active account", async () => {
+  const calls = [];
+  const runCommand = async (command, args) => {
+    calls.push(args);
+    return {
+      stdout: JSON.stringify({ loggedIn: true, email: "other@example.com" }),
+      stderr: ""
+    };
+  };
+
+  await assert.rejects(
+    _test.runLogoutForAccount({
+      id: "claude-saved",
+      type: "claude",
+      label: "saved@example.com",
+      email: "saved@example.com",
+      workspace: "/tmp/claude-saved"
+    }, false, runCommand),
+    /currently logged in as other@example\.com/
+  );
+  assert.deepEqual(calls, [["auth", "status", "--json"]]);
+});
+
+test("login removal logs out every matching Codex credential home and leaves unrelated homes alone", async () => {
+  const homes = [];
+  const account = {
+    id: "codex-saved",
+    type: "codex",
+    label: "saved@example.com",
+    codeHome: "/managed/selected",
+    email: "saved@example.com",
+    providerAccountId: "acct_saved"
+  };
+  const storedIdentities = [
+    { ...account, codeHome: "/managed/copy" },
+    {
+      id: "codex-other",
+      type: "codex",
+      label: "other@example.com",
+      codeHome: "/managed/other",
+      email: "other@example.com",
+      providerAccountId: "acct_other"
+    }
+  ];
+
+  await _test.runLogoutForAccount(account, true, async (command, args, options) => {
+    homes.push(options.env.CODEX_HOME);
+    return { stdout: "", stderr: "" };
+  }, {
+    storedIdentities,
+    defaultCodexHome: "/default/codex",
+    defaultAuth: {
+      email: "saved@example.com",
+      tokens: { account_id: "acct_saved" }
+    }
+  });
+
+  assert.deepEqual(homes, ["/managed/selected", "/managed/copy", "/default/codex"]);
+});
+
+test("logged-out rows do not attempt a usage refresh", async () => {
+  const identity = _test.normalizeConfig({
+    identities: [{
+      id: "codex-saved",
+      type: "codex",
+      label: "Saved",
+      codeHome: "/path/that/does/not/exist",
+      loggedOut: true
+    }]
+  }).identities[0];
+
+  const result = await _test.refreshIdentity({ identities: [identity] }, identity);
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /logged out/i);
 });
 
 test("Codex usage windows use reported durations and do not invent a missing 5-hour limit", () => {
@@ -450,6 +614,72 @@ test("conflicting provider accounts receive unique local ids and delete independ
     removal.config.identities.map((identity) => identity.providerAccountId),
     ["acct-two"]
   );
+});
+
+test("deleted rows stay deleted across config reload while the provider login remains external", () => {
+  const account = {
+    id: "codex-saved",
+    type: "codex",
+    label: "saved@example.com",
+    codeHome: "/managed/codex-saved",
+    email: "saved@example.com",
+    providerAccountId: "acct_saved",
+    lastUsage: { service: "codex", windows: [] }
+  };
+  const normalized = _test.normalizeConfig({ identities: [account] });
+  const removal = _test.removeIdentityFromConfig(normalized, account.id);
+  const serialized = _test.serializeConfig(removal.config);
+
+  assert.equal(removal.config.identities.length, 0);
+  assert.equal(serialized.deletedIdentities.length, 1);
+  assert.equal("codeHome" in serialized.deletedIdentities[0], false);
+  assert.equal("lastUsage" in serialized.deletedIdentities[0], false);
+
+  const reloaded = _test.normalizeConfig({
+    identities: [account],
+    deletedIdentities: serialized.deletedIdentities
+  });
+  assert.equal(reloaded.identities.length, 0);
+
+  const unrelated = _test.normalizeConfig({
+    identities: [{
+      ...account,
+      id: "codex-other",
+      email: "other@example.com",
+      providerAccountId: "acct_other"
+    }],
+    deletedIdentities: serialized.deletedIdentities
+  });
+  assert.equal(unrelated.identities.length, 1);
+});
+
+test("persistent deletion suppresses matching managed Codex credential hydration", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "usage-meter-deleted-hydration-"));
+  const account = {
+    id: "codex-saved",
+    type: "codex",
+    label: "saved@example.com",
+    email: "saved@example.com",
+    providerAccountId: "acct_saved"
+  };
+
+  try {
+    const storedHome = path.join(root, "saved");
+    await fs.mkdir(storedHome);
+    await fs.writeFile(path.join(storedHome, "auth.json"), JSON.stringify({
+      email: account.email,
+      tokens: { account_id: account.providerAccountId }
+    }));
+    const config = _test.normalizeConfig({
+      identities: [],
+      deletedIdentities: [account]
+    });
+
+    const hydrated = await _test.hydrateConfigFromStoredIdentities(config, root);
+    assert.equal(hydrated.identities.length, 0);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("provider ids that sanitize alike still get distinct local ids and auth homes", () => {
@@ -923,6 +1153,34 @@ test("Electron account deletion invalidates and reconciles in-flight refresh sna
   assert.ok(electronSource.includes("accountMutationGeneration += 1"));
   assert.ok(electronSource.includes("refreshAccountGeneration !== accountMutationGeneration"));
   assert.ok(electronSource.includes("reconcileSnapshotWithConfig(nextSnapshot, currentState.config)"));
+});
+
+test("Electron reconciliation cannot repaint a logged-out row from a stale refresh", async () => {
+  const electronSource = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const start = electronSource.indexOf("function reconcileSnapshotWithConfig(");
+  const end = electronSource.indexOf("function markAccountLoggedOut(", start);
+  const context = {};
+
+  vm.runInNewContext(
+    `${electronSource.slice(start, end)}\nthis.reconcileSnapshotWithConfig = reconcileSnapshotWithConfig;`,
+    context
+  );
+
+  const reconciled = context.reconcileSnapshotWithConfig({
+    results: [
+      { accountId: "claude-1", ok: true, data: { windows: [] } },
+      { accountId: "codex-1", ok: true, data: { windows: [] } }
+    ]
+  }, {
+    accounts: [
+      { id: "claude-1", loggedOut: true },
+      { id: "codex-1" }
+    ]
+  });
+
+  assert.equal(reconciled.results[0].ok, false);
+  assert.match(reconciled.results[0].error, /logged out/i);
+  assert.equal(reconciled.results[1].ok, true);
 });
 
 test("Claude CLI capture opens the usage screen, not status", async () => {

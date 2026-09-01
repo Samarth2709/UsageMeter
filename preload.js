@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
   getSnapshot: () => ipcRenderer.invoke("rate-limit:get-snapshot"),
   saveConfig: (config) => ipcRenderer.invoke("rate-limit:save-config", config),
   openLogin: (accountId) => ipcRenderer.invoke("rate-limit:open-login", accountId),
+  showAccountMenu: (accountId) => ipcRenderer.invoke("rate-limit:show-account-menu", accountId),
+  logoutAccount: (accountId, removeLogin = false) => ipcRenderer.invoke("rate-limit:logout-account", accountId, removeLogin),
   removeAccount: (accountId) => ipcRenderer.invoke("rate-limit:remove-account", accountId),
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),
   toggle: () => ipcRenderer.invoke("rate-limit:toggle"),

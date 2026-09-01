@@ -17,6 +17,53 @@ function classList() {
   };
 }
 
+test("healthy accounts hide the redundant overall status message", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("function setOverallStatus(");
+  const end = source.indexOf("function updateAccountState(");
+  const statusAnchor = { classList: classList() };
+  const statusText = { textContent: "Waiting" };
+  const statusDot = {
+    className: "",
+    title: "",
+    setAttribute() {}
+  };
+  const accountStates = new Map([
+    ["claude-1", { kind: "ok" }],
+    ["codex-1", { kind: "ok" }]
+  ]);
+  const context = {
+    overallStatus: statusDot,
+    overallStatusText: statusText,
+    overallStatusAnchor: statusAnchor,
+    state: {
+      config: {
+        accounts: [
+          { id: "claude-1" },
+          { id: "codex-1" }
+        ]
+      }
+    },
+    accountStates,
+    buildAccountName: () => "Account",
+    lastSnapshotAt: 0
+  };
+
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nthis.syncOverallStatus = syncOverallStatus;`,
+    context
+  );
+
+  context.syncOverallStatus();
+  assert.equal(statusAnchor.classList.values.has("hidden"), true);
+  assert.equal(statusText.textContent, "");
+
+  accountStates.set("claude-1", { kind: "disconnected" });
+  context.syncOverallStatus();
+  assert.equal(statusAnchor.classList.values.has("hidden"), false);
+  assert.equal(statusText.textContent, "Some accounts need attention");
+});
+
 test("stale usage is hidden behind a minimal sign-in or retry action", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const start = source.indexOf("function renderConnected(");
@@ -334,4 +381,120 @@ test("account delete confirms, removes the account, and syncs the returned confi
 
   assert.equal(removedAccountId, "claude-1");
   assert.equal(syncedConfig, nextConfig);
+});
+
+test("right-click account menu routes logout, login removal, and row deletion", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("function createAccountRow(");
+  const end = source.indexOf("function renderCurrentRows(");
+
+  async function runAction(action) {
+    let contextMenuHandler = null;
+    let deleteClicks = 0;
+    const logoutCalls = [];
+    let syncedConfig = null;
+    let disconnectedId = null;
+    const connectButton = {
+      classList: classList(),
+      dataset: { action: "login" },
+      disabled: false,
+      textContent: "Sign in",
+      addEventListener() {}
+    };
+    const deleteButton = {
+      classList: classList(),
+      disabled: false,
+      textContent: "Delete",
+      addEventListener() {},
+      click() { deleteClicks += 1; }
+    };
+    const elements = {
+      name: { textContent: "" },
+      typeTag: { textContent: "" },
+      limitGrid: { classList: classList() },
+      summary: { textContent: "", className: "", title: "" },
+      actions: { classList: classList() },
+      connectButton,
+      deleteButton
+    };
+    const node = {
+      classList: classList(),
+      querySelector(selector) {
+        return {
+          ".account-name": elements.name,
+          ".account-type": elements.typeTag,
+          ".limit-grid": elements.limitGrid,
+          ".account-summary": elements.summary,
+          ".account-actions": elements.actions,
+          ".connect-button": elements.connectButton,
+          ".delete-button": elements.deleteButton
+        }[selector];
+      },
+      addEventListener(event, handler) {
+        if (event === "contextmenu") contextMenuHandler = handler;
+      }
+    };
+    const nextConfig = { accounts: [{ id: "claude-1", type: "claude" }] };
+    const context = {
+      accountTemplate: { content: { firstElementChild: { cloneNode: () => node } } },
+      accountElements: new Map(),
+      accountStates: new Map(),
+      nativeApi: { showAccountMenu: async () => action },
+      buildAccountName: () => "samarth@example.com",
+      showStatusSummary: () => {},
+      refreshAll: async () => {},
+      openAccountLogin: async () => {},
+      logoutAccount: async (accountId, removeLogin) => {
+        logoutCalls.push({ accountId, removeLogin });
+        return { config: nextConfig };
+      },
+      updateAccountState: () => {},
+      renderDisconnected: (accountId) => { disconnectedId = accountId; },
+      renderError: () => {},
+      confirmLoginRemoval: () => true,
+      confirmAccountRemoval: () => true,
+      removeAccount: async () => ({ config: { accounts: [] } }),
+      syncAccountsFromConfig: (config) => { syncedConfig = config; }
+    };
+
+    vm.runInNewContext(
+      `${source.slice(start, end)}\nthis.createAccountRow = createAccountRow;`,
+      context
+    );
+    context.createAccountRow({ id: "claude-1", type: "claude", label: "Account" });
+    assert.equal(typeof contextMenuHandler, "function");
+    let prevented = false;
+    await contextMenuHandler({ preventDefault: () => { prevented = true; } });
+
+    return { prevented, deleteClicks, logoutCalls, syncedConfig, disconnectedId };
+  }
+
+  const logout = await runAction("logout");
+  assert.equal(logout.prevented, true);
+  assert.deepEqual(logout.logoutCalls, [{ accountId: "claude-1", removeLogin: false }]);
+  assert.equal(logout.syncedConfig.accounts.length, 1);
+  assert.equal(logout.disconnectedId, "claude-1");
+
+  const removeLogin = await runAction("remove-login");
+  assert.deepEqual(removeLogin.logoutCalls, [{ accountId: "claude-1", removeLogin: true }]);
+  assert.equal(removeLogin.disconnectedId, "claude-1");
+
+  const deleteRow = await runAction("delete-row");
+  assert.equal(deleteRow.deleteClicks, 1);
+  assert.deepEqual(deleteRow.logoutCalls, []);
+});
+
+test("Electron exposes the native three-action account context menu", async () => {
+  const [main, preload] = await Promise.all([
+    fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8"),
+    fs.readFile(path.join(__dirname, "..", "preload.js"), "utf8")
+  ]);
+
+  assert.match(main, /label: "Log Out"/);
+  assert.match(main, /label: "Log Out & Remove Login"/);
+  assert.match(main, /label: "Delete Row"/);
+  assert.match(main, /ipcMain\.handle\("rate-limit:show-account-menu"/);
+  assert.match(main, /ipcMain\.handle\("rate-limit:logout-account"/);
+  assert.match(preload, /showAccountMenu:.*rate-limit:show-account-menu/);
+  assert.match(preload, /logoutAccount:.*rate-limit:logout-account/);
 });

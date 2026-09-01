@@ -22,7 +22,9 @@ const {
   saveUsageForAccount,
   findIdentityForUsage,
   processAutoStartSnapshot,
+  onClaudeLoginCompleted,
   openLoginForAccountById,
+  logoutAccountById,
   removeAccountById
 } = require("./server");
 const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
@@ -68,6 +70,7 @@ let claudeCliUsageRefreshPromise = null;
 let lastClaudeWebScrapeAt = 0;
 let lastClaudeCliUsageRefreshAt = 0;
 let claudeWebIdentity = null;
+let stopClaudeLoginCompletionRefresh = null;
 // Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
 // "View usage history" window opens instantly instead of scanning transcripts on click.
 let historyCache = new Map();
@@ -1243,12 +1246,43 @@ function broadcastSnapshot(snapshot, { refreshHistory = true } = {}) {
 }
 
 function reconcileSnapshotWithConfig(snapshot, config) {
-  const accountIds = new Set((config?.accounts || []).map((account) => account.id));
+  const accounts = config?.accounts || [];
+  const accountIds = new Set(accounts.map((account) => account.id));
+  const loggedOutIds = new Set(
+    accounts.filter((account) => account.loggedOut).map((account) => account.id)
+  );
   return {
     ...snapshot,
     config,
-    results: (snapshot?.results || []).filter((result) => accountIds.has(result.accountId))
+    results: (snapshot?.results || [])
+      .filter((result) => accountIds.has(result.accountId))
+      .map((result) => loggedOutIds.has(result.accountId) ? {
+        accountId: result.accountId,
+        ok: false,
+        error: "Account is logged out. Run login first."
+      } : result)
   };
+}
+
+function markAccountLoggedOut(snapshot, accountId, config) {
+  const reconciled = reconcileSnapshotWithConfig(
+    snapshot || { refreshedAt: new Date().toISOString(), results: [] },
+    config
+  );
+  const result = {
+    accountId,
+    ok: false,
+    error: "Account is logged out. Run login first."
+  };
+  const existingIndex = reconciled.results.findIndex((entry) => entry.accountId === accountId);
+
+  if (existingIndex < 0) {
+    reconciled.results.push(result);
+  } else {
+    reconciled.results[existingIndex] = result;
+  }
+
+  return reconciled;
 }
 
 function queueAutoStart(snapshot) {
@@ -1388,6 +1422,37 @@ function startBackgroundRefresh() {
   }, backgroundRefreshMs);
 }
 
+function startClaudeLoginCompletionRefresh() {
+  if (stopClaudeLoginCompletionRefresh) return;
+  stopClaudeLoginCompletionRefresh = onClaudeLoginCompleted(() => {
+    refreshSnapshot({ forceClaudeCliUsage: true }).catch((error) => {
+      console.warn(`Could not refresh after Claude sign-in: ${error.message}`);
+    });
+  });
+}
+
+function showAccountContextMenu() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (action = null) => {
+      if (settled) return;
+      settled = true;
+      resolve(action);
+    };
+    const menu = Menu.buildFromTemplate([
+      { label: "Log Out", click: () => finish("logout") },
+      { label: "Log Out & Remove Login", click: () => finish("remove-login") },
+      { type: "separator" },
+      { label: "Delete Row", click: () => finish("delete-row") }
+    ]);
+
+    menu.popup({
+      window: popover && !popover.isDestroyed() ? popover : undefined,
+      callback: () => finish()
+    });
+  });
+}
+
 function registerIpcHandlers() {
   ipcMain.handle("rate-limit:get-state", () => getState());
   ipcMain.handle("rate-limit:get-snapshot", async () => latestSnapshot);
@@ -1400,6 +1465,20 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("rate-limit:open-login", async (event, accountId) => {
     return openLoginForAccountById(accountId);
+  });
+  ipcMain.handle("rate-limit:show-account-menu", async (event, accountId) => {
+    const currentState = await getState();
+    if (!currentState.config.accounts.some((account) => account.id === accountId)) {
+      throw new Error("Account not found.");
+    }
+    return showAccountContextMenu();
+  });
+  ipcMain.handle("rate-limit:logout-account", async (event, accountId, removeLogin = false) => {
+    const loggedOut = await logoutAccountById(accountId, { removeLogin: Boolean(removeLogin) });
+    accountMutationGeneration += 1;
+    latestSnapshot = markAccountLoggedOut(latestSnapshot, accountId, loggedOut.config);
+    broadcastSnapshot(latestSnapshot, { refreshHistory: false });
+    return loggedOut;
   });
   ipcMain.handle("rate-limit:remove-account", async (event, accountId) => {
     const removed = await removeAccountById(accountId);
@@ -1464,6 +1543,7 @@ if (!gotSingleInstanceLock) {
 
     await loadPopoverPosition();
     await refreshScanRoots();
+    startClaudeLoginCompletionRefresh();
     registerIpcHandlers();
     createPopover();
     createTray();
@@ -1490,6 +1570,8 @@ if (!gotSingleInstanceLock) {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  stopClaudeLoginCompletionRefresh?.();
+  stopClaudeLoginCompletionRefresh = null;
   clearTimeout(popoverPositionSaveTimer);
   if (popoverPosition) {
     try {

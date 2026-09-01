@@ -4,6 +4,7 @@ const limitWindowTemplate = document.querySelector("#limit-window-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
 const overallStatusText = document.querySelector("#overall-status-text");
+const overallStatusAnchor = document.querySelector(".status-anchor");
 const nativeApi = window.rateLimitAPI || null;
 const serverToken = document.querySelector('meta[name="rate-limit-server-token"]')?.content || "";
 
@@ -50,6 +51,17 @@ function openAccountLogin(accountId) {
 
   return requestJson(`/api/accounts/${accountId}/login`, {
     method: "POST"
+  });
+}
+
+function logoutAccount(accountId, removeLogin = false) {
+  if (nativeApi) {
+    return nativeApi.logoutAccount(accountId, removeLogin);
+  }
+
+  return requestJson(`/api/accounts/${accountId}/logout`, {
+    method: "POST",
+    body: JSON.stringify({ removeLogin })
   });
 }
 
@@ -300,7 +312,17 @@ function confirmAccountRemoval(account) {
   );
 }
 
+function confirmLoginRemoval(account) {
+  const name = buildAccountName(account);
+  return window.confirm(
+    `Log out and remove the saved login for ${name}?\n\n` +
+    "This removes matching credentials from this computer and cannot be undone. " +
+    "The row will stay in Usage Meter so you can sign in again."
+  );
+}
+
 function setOverallStatus(statusText, className) {
+  overallStatusAnchor?.classList.toggle("hidden", !statusText);
   overallStatus.className = `header-status ${className}`;
   overallStatus.title = statusText;
   overallStatus.setAttribute("aria-label", statusText);
@@ -336,7 +358,7 @@ function syncOverallStatus() {
     headline = "Some accounts need attention";
     className = "status-error";
   } else if (entries.every((entry) => entry.kind === "ok")) {
-    headline = "All accounts connected";
+    headline = "";
     className = "status-ok";
   } else if (entries.some((entry) => entry.detail === "Loading…")) {
     headline = "Refreshing usage";
@@ -619,6 +641,41 @@ function createAccountRow(account) {
       renderDisconnected(account.id, error);
     } finally {
       connectButton.disabled = false;
+    }
+  });
+
+  node.addEventListener?.("contextmenu", async (event) => {
+    if (!nativeApi?.showAccountMenu) return;
+    event.preventDefault();
+
+    const action = await nativeApi.showAccountMenu(account.id);
+    if (!action) return;
+
+    if (action === "delete-row") {
+      deleteButton.click();
+      return;
+    }
+
+    const removeLogin = action === "remove-login";
+    if (removeLogin && !confirmLoginRemoval(account)) return;
+
+    connectButton.disabled = true;
+    deleteButton.disabled = true;
+    showStatusSummary(
+      { limitGrid, summary },
+      removeLogin ? "Removing login…" : "Logging out…",
+      "pending"
+    );
+
+    try {
+      const loggedOut = await logoutAccount(account.id, removeLogin);
+      syncAccountsFromConfig(loggedOut.config);
+      renderDisconnected(account.id);
+    } catch (error) {
+      renderError(account.id, error?.message || "Couldn’t log out.");
+    } finally {
+      connectButton.disabled = false;
+      deleteButton.disabled = false;
     }
   });
 

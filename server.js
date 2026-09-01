@@ -26,6 +26,7 @@ let configWriteQueue = Promise.resolve();
 const removedIdentities = new Map();
 let activeClaudeLogin = null;
 let activeClaudeLoginRestart = null;
+const claudeLoginCompletionListeners = new Set();
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -123,6 +124,7 @@ function defaultConfig() {
         workspace: defaultWorkspace
       }
     ],
+    deletedIdentities: [],
     scanRoots: { claude: [], codex: [] }
   };
 }
@@ -264,6 +266,7 @@ function normalizeIdentity(raw) {
       type,
       label: label || email || "Codex",
       codeHome,
+      ...(base.loggedOut ? { loggedOut: true } : {}),
       email,
       providerAccountId,
       firstSeenAt: timestampOrNull(base.firstSeenAt) || now,
@@ -279,6 +282,7 @@ function normalizeIdentity(raw) {
     type,
     label: label || email || "Claude",
     workspace: workspace || defaultWorkspace,
+    ...(base.loggedOut ? { loggedOut: true } : {}),
     email,
     providerAccountId,
     organization: typeof base.organization === "string" && base.organization.trim()
@@ -324,12 +328,45 @@ function identitiesMatch(left, right) {
   return same("id") || same("email");
 }
 
+function deletedIdentityMarker(raw) {
+  const type = identityType(raw);
+  return {
+    id: String(raw?.id || buildIdentityId(type, raw)).trim(),
+    type,
+    email: firstString(raw?.email),
+    providerAccountId: firstString(raw?.providerAccountId),
+    organization: type === "claude" ? firstString(raw?.organization) : null
+  };
+}
+
+function identityMatchesDeleted(marker, identity) {
+  if (identitiesMatch(marker, identity)) return true;
+  return marker.type === "claude" && identity.type === "claude" && Boolean(
+    normalizeIdentityValue(marker.organization) &&
+    normalizeIdentityValue(marker.organization) === normalizeIdentityValue(identity.organization)
+  );
+}
+
+function mergeDeletedIdentities(identities) {
+  const merged = [];
+  for (const identity of (identities || []).map(deletedIdentityMarker)) {
+    if (!merged.some((candidate) => identityMatchesDeleted(candidate, identity))) {
+      merged.push(identity);
+    }
+  }
+  return merged;
+}
+
+function identityWasDeleted(config, identity) {
+  return (config.deletedIdentities || []).some((marker) => identityMatchesDeleted(marker, identity));
+}
+
 function identityWasRemoved(identity) {
   return [...removedIdentities.values()].some((removed) => identitiesMatch(removed, identity));
 }
 
 function mergeIdentity(existing, incoming) {
-  return {
+  const merged = {
     ...existing,
     ...Object.fromEntries(
       Object.entries(incoming).filter(([, value]) => value !== null && value !== undefined && value !== "")
@@ -341,6 +378,15 @@ function mergeIdentity(existing, incoming) {
     workspace: existing.type === "claude" ? existing.workspace || incoming.workspace : undefined,
     firstSeenAt: existing.firstSeenAt || incoming.firstSeenAt
   };
+
+  if (existing.loggedOut && !incoming.loggedOut) {
+    merged.loggedOut = true;
+    merged.lastSeenAt = existing.lastSeenAt;
+    merged.lastSuccessfulRefreshAt = existing.lastSuccessfulRefreshAt;
+    merged.lastUsage = existing.lastUsage;
+  }
+
+  return merged;
 }
 
 function isLegacyDefaultCodexPlaceholder(identity) {
@@ -397,12 +443,17 @@ function normalizeConfig(raw) {
     : Array.isArray(raw?.accounts)
       ? raw.accounts.map(legacyAccountToIdentity)
       : base.identities;
+  const deletedIdentities = mergeDeletedIdentities(raw?.deletedIdentities || base.deletedIdentities);
   const normalized = (hasIdentityList ? incomingIdentities : base.identities)
     .map(normalizeIdentity)
-    .filter((identity) => !isLegacyDefaultCodexPlaceholder(identity));
+    .filter((identity) => (
+      !isLegacyDefaultCodexPlaceholder(identity) &&
+      !identityWasDeleted({ deletedIdentities }, identity)
+    ));
 
   return {
     identities: makeIdentityIdsUnique(mergeIdentities(normalized)),
+    deletedIdentities,
     scanRoots: normalizeScanRoots(raw?.scanRoots)
   };
 }
@@ -420,6 +471,7 @@ function serializeConfig(config) {
     }
 
     for (const key of [
+      "loggedOut",
       "email",
       "providerAccountId",
       "organization",
@@ -439,6 +491,9 @@ function serializeConfig(config) {
   return {
     identities,
     accounts: identities,
+    deletedIdentities: (config.deletedIdentities || []).map((identity) =>
+      Object.fromEntries(Object.entries(identity).filter(([, value]) => value))
+    ),
     scanRoots: {
       claude: (scanRoots.claude || []).map(compactHome),
       codex: (scanRoots.codex || []).map(compactHome)
@@ -517,7 +572,7 @@ async function loadStoredCodexIdentities(root = codexIdentityRoot) {
   return identities;
 }
 
-async function removeManagedCodexIdentityHomes(account, root = codexIdentityRoot) {
+async function findManagedCodexIdentityHomes(account, root = codexIdentityRoot) {
   if (account?.type !== "codex") {
     return [];
   }
@@ -529,6 +584,11 @@ async function removeManagedCodexIdentityHomes(account, root = codexIdentityRoot
       .map((identity) => identity.codeHome)
   )];
 
+  return homes;
+}
+
+async function removeManagedCodexIdentityHomes(account, root = codexIdentityRoot) {
+  const homes = await findManagedCodexIdentityHomes(account, root);
   await Promise.all(homes.map((home) => fs.rm(home, { recursive: true, force: true })));
   return homes;
 }
@@ -541,7 +601,10 @@ async function hydrateConfigFromStoredIdentities(config, root = codexIdentityRoo
     identities: makeIdentityIdsUnique(
       mergeIdentities([
         ...config.identities.filter((identity) => !identityWasRemoved(identity)),
-        ...storedCodexIdentities.filter((identity) => !identityWasRemoved(identity))
+        ...storedCodexIdentities.filter((identity) => (
+          !identityWasRemoved(identity) &&
+          !identityWasDeleted(config, identity)
+        ))
       ])
     )
   };
@@ -594,7 +657,7 @@ function mergeRefreshedConfig(latestConfig, refreshedConfig) {
     identities: mergeIdentities([
       ...latestConfig.identities,
       ...refreshedConfig.identities.filter((identity) => !identityWasRemoved(identity))
-    ])
+    ]).filter((identity) => !identityWasDeleted(latestConfig, identity))
   };
 }
 
@@ -1616,6 +1679,9 @@ async function discoverCurrentCodexIdentity(config) {
       label: "Current Codex",
       codeHome: defaultCodexHome
     });
+    if (identityWasDeleted(config, { type: "codex", ...data })) {
+      return { ok: false, changed: false, error: "This account was deleted from Usage Meter." };
+    }
     let identity = findIdentityForUsage(config.identities, "codex", data);
     let changed = false;
 
@@ -1629,6 +1695,14 @@ async function discoverCurrentCodexIdentity(config) {
       });
       config.identities.push(identity);
       changed = true;
+    }
+
+    if (identity.loggedOut) {
+      return {
+        ok: false,
+        changed: false,
+        error: "This Usage Meter account is logged out."
+      };
     }
 
     changed = updateIdentityFromUsage(identity, data) || changed;
@@ -1661,6 +1735,9 @@ async function discoverCurrentClaudeIdentity(config) {
       label: "Current Claude",
       workspace: defaultWorkspace
     });
+    if (identityWasDeleted(config, { type: "claude", ...data })) {
+      return { ok: false, changed: false, error: "This account was deleted from Usage Meter." };
+    }
     let identity = findIdentityForUsage(config.identities, "claude", data);
     let changed = false;
 
@@ -1674,6 +1751,14 @@ async function discoverCurrentClaudeIdentity(config) {
       });
       config.identities.push(identity);
       changed = true;
+    }
+
+    if (identity.loggedOut) {
+      return {
+        ok: false,
+        changed: false,
+        error: "This Usage Meter account is logged out."
+      };
     }
 
     changed = updateIdentityFromUsage(identity, data) || changed;
@@ -1698,6 +1783,14 @@ async function discoverCurrentClaudeIdentity(config) {
 }
 
 async function refreshIdentity(config, identity, cachedResult = null) {
+  if (identity.loggedOut) {
+    return {
+      accountId: identity.id,
+      ok: false,
+      error: "Account is logged out. Run login first."
+    };
+  }
+
   if (cachedResult?.ok) {
     return cachedResult;
   }
@@ -2101,6 +2194,17 @@ function codexLoginCommandForAccount(account) {
   return `mkdir -p ${shellQuote(account.codeHome)} && export CODEX_HOME=${shellQuote(account.codeHome)} && (${shellQuote(googleChromeBin)} ${shellQuote(codexDeviceAuthUrl)} >/dev/null 2>&1 &) && ${shellQuote(codexBin)} login --device-auth`;
 }
 
+function onClaudeLoginCompleted(listener) {
+  claudeLoginCompletionListeners.add(listener);
+  return () => claudeLoginCompletionListeners.delete(listener);
+}
+
+function notifyClaudeLoginCompleted() {
+  for (const listener of claudeLoginCompletionListeners) {
+    try { listener(); } catch {}
+  }
+}
+
 function spawnClaudeLoginInChrome(spawnCommand, startupGraceMs) {
   const child = spawnCommand(claudeBin, ["auth", "login"], {
     cwd: defaultWorkspace,
@@ -2108,6 +2212,12 @@ function spawnClaudeLoginInChrome(spawnCommand, startupGraceMs) {
     env: { ...process.env, BROWSER: googleChromeBin },
     stdio: ["pipe", "ignore", "ignore"]
   });
+  const login = {
+    child,
+    startup: null,
+    started: false,
+    completionEligible: true
+  };
 
   const startup = new Promise((resolve, reject) => {
     let startupTimer = null;
@@ -2121,18 +2231,23 @@ function spawnClaudeLoginInChrome(spawnCommand, startupGraceMs) {
       clearTimeout(startupTimer);
       if (!startupComplete) reject(error);
     });
-    const onEarlyExit = (code, signal) => {
+    const onExit = (code, signal) => {
       clearActiveLogin();
       clearTimeout(startupTimer);
+      if (login.completionEligible && code === 0 && !signal) {
+        notifyClaudeLoginCompleted();
+        if (!startupComplete) resolve();
+        return;
+      }
       if (startupComplete) return;
       const detail = signal ? ` (signal ${signal})` : ` (exit ${code})`;
       reject(new Error(`Claude sign-in exited before opening Google Chrome${detail}.`));
     };
-    child.once("exit", onEarlyExit);
+    child.once("exit", onExit);
     child.once("spawn", () => {
       startupTimer = setTimeout(() => {
         startupComplete = true;
-        if (activeClaudeLogin?.child === child) activeClaudeLogin.started = true;
+        if (activeClaudeLogin === login) activeClaudeLogin.started = true;
         child.stdin?.unref?.();
         child.unref();
         resolve();
@@ -2140,7 +2255,8 @@ function spawnClaudeLoginInChrome(spawnCommand, startupGraceMs) {
     });
   });
 
-  activeClaudeLogin = { child, startup, started: false };
+  login.startup = startup;
+  activeClaudeLogin = login;
   return startup;
 }
 
@@ -2162,7 +2278,9 @@ function waitForClaudeLoginExit(child, signal, graceMs) {
   });
 }
 
-async function stopClaudeLogin(child, terminationGraceMs) {
+async function stopClaudeLogin(login, terminationGraceMs) {
+  login.completionEligible = false;
+  const { child } = login;
   try { child.stdin?.end(); } catch {}
   if (await waitForClaudeLoginExit(child, "SIGTERM", terminationGraceMs)) return;
   if (await waitForClaudeLoginExit(child, "SIGKILL", terminationGraceMs)) return;
@@ -2180,7 +2298,7 @@ async function startClaudeLoginInChrome(
 
   const previousLogin = activeClaudeLogin;
   const restart = (async () => {
-    await stopClaudeLogin(previousLogin.child, terminationGraceMs);
+    await stopClaudeLogin(previousLogin, terminationGraceMs);
     if (activeClaudeLogin === previousLogin) activeClaudeLogin = null;
     return spawnClaudeLoginInChrome(spawnCommand, startupGraceMs);
   })();
@@ -2208,15 +2326,137 @@ async function openLoginForAccount(account) {
 }
 
 async function openLoginForAccountById(accountId) {
-  const config = await ensureConfig();
-  const account = config.identities.find((entry) => entry.id === accountId);
+  const account = await queueConfigWrite(async () => {
+    const config = await ensureConfig();
+    const identity = config.identities.find((entry) => entry.id === accountId);
 
-  if (!account) {
-    throw new Error("Account not found.");
-  }
+    if (!identity) {
+      throw new Error("Account not found.");
+    }
+
+    if (identity.loggedOut) {
+      identity.loggedOut = false;
+      await writeConfig(config);
+    }
+
+    return identity;
+  });
 
   await openLoginForAccount(account);
   return { ok: true };
+}
+
+function loggedOutIdentity(account, removeLogin) {
+  const loggedOut = {
+    ...account,
+    loggedOut: true,
+    lastSeenAt: null,
+    lastSuccessfulRefreshAt: null,
+    lastUsage: null
+  };
+
+  if (!removeLogin) {
+    return loggedOut;
+  }
+
+  return {
+    ...loggedOut,
+    label: account.type === "claude" ? "Claude" : "Codex",
+    email: null,
+    providerAccountId: null,
+    organization: null
+  };
+}
+
+async function runLogoutForAccount(
+  account,
+  removeLogin = false,
+  runCommand = execFilePromise,
+  options = {}
+) {
+  if (account.type === "claude") {
+    const status = await getClaudeAuthStatus(account.workspace || defaultWorkspace, runCommand);
+    if (!status.loggedIn) return;
+    if (account.email && status.email && normalizeIdentityValue(account.email) !== normalizeIdentityValue(status.email)) {
+      throw new Error(`Claude is currently logged in as ${status.email}, not ${account.label}.`);
+    }
+    if (
+      account.organization &&
+      status.orgId &&
+      normalizeIdentityValue(account.organization) !== normalizeIdentityValue(status.orgId)
+    ) {
+      throw new Error(`Claude is currently logged in to a different organization than ${account.label}.`);
+    }
+    await runCommand(claudeBin, ["auth", "logout"], {
+      cwd: account.workspace || defaultWorkspace,
+      timeout: 10000
+    });
+    return;
+  }
+
+  const homes = new Set([expandHome(account.codeHome)]);
+  if (removeLogin) {
+    const storedIdentities = options.storedIdentities || await loadStoredCodexIdentities();
+    for (const identity of storedIdentities) {
+      if (identitiesMatch(account, identity)) homes.add(expandHome(identity.codeHome));
+    }
+
+    const currentCodexHome = options.defaultCodexHome || defaultCodexHome;
+    const defaultAuth = Object.prototype.hasOwnProperty.call(options, "defaultAuth")
+      ? options.defaultAuth
+      : await readJsonOrNull(path.join(currentCodexHome, "auth.json"));
+    if (defaultAuth) {
+      const defaultIdentity = normalizeIdentity({
+        type: "codex",
+        label: firstString(defaultAuth.email, defaultAuth?.account?.email, "Codex"),
+        codeHome: currentCodexHome,
+        email: firstString(defaultAuth.email, defaultAuth?.account?.email, defaultAuth?.user?.email),
+        providerAccountId: firstString(
+          defaultAuth?.tokens?.account_id,
+          defaultAuth.account_id,
+          defaultAuth?.account?.id
+        )
+      });
+      if (identitiesMatch(account, defaultIdentity)) homes.add(currentCodexHome);
+    }
+  }
+
+  for (const codeHome of homes) {
+    await runCommand(codexBin, ["logout"], {
+      timeout: 10000,
+      env: {
+        ...process.env,
+        CODEX_HOME: codeHome
+      }
+    });
+  }
+}
+
+async function logoutAccountById(accountId, { removeLogin = false } = {}) {
+  return queueConfigWrite(async () => {
+    const config = await ensureConfig();
+    const index = config.identities.findIndex((entry) => entry.id === accountId);
+
+    if (index < 0) {
+      throw new Error("Account not found.");
+    }
+
+    const account = config.identities[index];
+    const managedHomes = removeLogin
+      ? await findManagedCodexIdentityHomes(account)
+      : [];
+    await runLogoutForAccount(account, removeLogin);
+    if (removeLogin) {
+      await Promise.all(managedHomes.map((home) => fs.rm(home, { recursive: true, force: true })));
+    }
+    config.identities[index] = loggedOutIdentity(account, removeLogin);
+    const saved = await writeConfig(config);
+
+    return {
+      config: serializeConfig(saved),
+      appDataDir: compactHome(appDataDir)
+    };
+  });
 }
 
 function removeIdentityFromConfig(config, accountId) {
@@ -2225,10 +2465,15 @@ function removeIdentityFromConfig(config, accountId) {
     return null;
   }
 
+  const account = config.identities[index];
   return {
-    account: config.identities[index],
+    account,
     config: {
       ...config,
+      deletedIdentities: mergeDeletedIdentities([
+        ...(config.deletedIdentities || []),
+        account
+      ]),
       identities: config.identities.filter((entry, entryIndex) => entryIndex !== index)
     }
   };
@@ -2298,6 +2543,17 @@ app.post("/api/accounts/:id/login", async (request, response) => {
   }
 });
 
+app.post("/api/accounts/:id/logout", async (request, response) => {
+  try {
+    response.json(await logoutAccountById(request.params.id, {
+      removeLogin: Boolean(request.body?.removeLogin)
+    }));
+  } catch (error) {
+    const status = error.message === "Account not found." ? 404 : 500;
+    response.status(status).json({ error: error.message });
+  }
+});
+
 app.delete("/api/accounts/:id", async (request, response) => {
   try {
     response.json(await removeAccountById(request.params.id));
@@ -2350,12 +2606,16 @@ module.exports = {
   findIdentityForUsage,
   getClaudeAuthStatus,
   processAutoStartSnapshot,
+  onClaudeLoginCompleted,
   openLoginForAccountById,
+  logoutAccountById,
   removeAccountById,
   startServer,
   _test: {
     defaultConfig,
     normalizeConfig,
+    deletedIdentityMarker,
+    identityWasDeleted,
     makeIdentityIdsUnique,
     normalizeScanRoots,
     serializeConfig,
@@ -2367,6 +2627,9 @@ module.exports = {
     usageBelongsToIdentity,
     createBrowserIndexHtml,
     codexLoginCommandForAccount,
+    loggedOutIdentity,
+    runLogoutForAccount,
+    onClaudeLoginCompleted,
     startClaudeLoginInChrome,
     getActiveClaudeLoginProcess: () => activeClaudeLogin?.child || null,
     loadStoredCodexIdentities,
