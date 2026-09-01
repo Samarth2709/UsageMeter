@@ -14,12 +14,12 @@
     <header class="history-header">
       <h1>Usage History</h1>
       <div class="header-controls">
-        <div class="range-toggle">
+        <div class="range-toggle" role="group" aria-label="Date range">
           <button data-range="7">7d</button>
           <button data-range="30" class="active">30d</button>
           <button data-range="90">90d</button>
         </div>
-        <button id="diag-toggle" class="mini-toggle" title="Diagnostics">⚙</button>
+        <button id="diag-toggle" class="mini-toggle" title="Diagnostics" aria-label="Toggle diagnostics" aria-expanded="false">⚙</button>
       </div>
     </header>
 
@@ -46,12 +46,27 @@
       <!-- daily usage -->
       <div class="chart-head">
         <h2>Daily usage</h2>
-        <div class="mini-toggle" id="ov-metric">
-          <button data-metric="tokens" class="active">Tokens</button>
-          <button data-metric="cost">Cost</button>
+        <div class="mini-toggle" id="ov-metric" role="group" aria-label="Daily chart metric">
+          <button data-metric="tokens" class="active" aria-pressed="true">Tokens</button>
+          <button data-metric="cost" aria-pressed="false">Cost</button>
         </div>
       </div>
       <div id="ov-chart" class="history-chart"></div>
+      <details class="data-table-details">
+        <summary>Daily data table</summary>
+        <div id="daily-table"></div>
+      </details>
+
+      <div class="two-col">
+        <div>
+          <h2>Top models</h2>
+          <div id="top-models"></div>
+        </div>
+        <div>
+          <h2>Top projects</h2>
+          <div id="top-projects"></div>
+        </div>
+      </div>
 
       <!-- cumulative spend -->
       <h2>Cumulative spend</h2>

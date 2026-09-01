@@ -52,6 +52,10 @@ function parseClaudeTranscriptChunk(text, initialState = {}) {
       inputTokens: Number(usage.input_tokens) || 0,
       cachedReadTokens: Number(usage.cache_read_input_tokens) || 0,
       cacheWriteTokens: Number(usage.cache_creation_input_tokens) || 0,
+      cacheWrite1hTokens: Number(
+        usage.cache_creation?.ephemeral_1h_input_tokens
+        || usage.cache_creation_1h_input_tokens
+      ) || 0,
       outputTokens: Number(usage.output_tokens) || 0
     };
     const id = msg.id || obj.requestId;
@@ -61,6 +65,7 @@ function parseClaudeTranscriptChunk(text, initialState = {}) {
         inputTokens: currentUsage.inputTokens - previousUsage.inputTokens,
         cachedReadTokens: currentUsage.cachedReadTokens - previousUsage.cachedReadTokens,
         cacheWriteTokens: currentUsage.cacheWriteTokens - previousUsage.cacheWriteTokens,
+        cacheWrite1hTokens: currentUsage.cacheWrite1hTokens - (previousUsage.cacheWrite1hTokens || 0),
         outputTokens: currentUsage.outputTokens - previousUsage.outputTokens
       }
       : currentUsage;
@@ -77,6 +82,7 @@ function parseClaudeTranscriptChunk(text, initialState = {}) {
       cli: "claude",
       model: msg.model || "unknown",
       ...tokenUsage,
+      ...(id ? { eventId: id } : {}),
       isSidechain: Boolean(obj.isSidechain)
     };
     if (previousUsage && !uncountedUsageIds.has(id)) record.isCorrection = true;

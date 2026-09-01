@@ -30,7 +30,7 @@ function parseCodexTranscriptChunk(text, initialState = {}) {
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
     currentProjectPath = structuralCwd(obj) || currentProjectPath;
-    sessionIdentity = structuralSessionIdentity("codex", obj) || sessionIdentity;
+    sessionIdentity = sessionIdentity || structuralSessionIdentity("codex", obj);
 
     const model = extractModel(obj);
     if (model) currentModel = model;
@@ -54,7 +54,12 @@ function parseCodexTranscriptChunk(text, initialState = {}) {
       "output_tokens"
     ].some((key) => Number(total[key]) > 0);
     const totalUsage = hasTotalUsage ? {
-      inputTokens: Number(total.input_tokens) || 0,
+      inputTokens: Math.max(
+        0,
+        (Number(total.input_tokens) || 0)
+          - (Number(total.cached_input_tokens) || 0)
+          - (Number(total.cache_write_input_tokens) || 0)
+      ),
       cachedReadTokens: Number(total.cached_input_tokens) || 0,
       cacheWriteTokens: Number(total.cache_write_input_tokens) || 0,
       outputTokens: Number(total.output_tokens) || 0
@@ -66,7 +71,6 @@ function parseCodexTranscriptChunk(text, initialState = {}) {
     ) {
       continue;
     }
-    if (totalUsage) lastTotalUsage = totalUsage;
 
     const input = Number(last.input_tokens) || 0;
     const cached = Number(last.cached_input_tokens) || 0;
@@ -85,6 +89,32 @@ function parseCodexTranscriptChunk(text, initialState = {}) {
       cacheWriteTokens: cacheWrite,
       outputTokens: output
     };
+    if (totalUsage && lastTotalUsage) {
+      const totalDelta = {
+        inputTokens: totalUsage.inputTokens - lastTotalUsage.inputTokens,
+        cachedReadTokens: totalUsage.cachedReadTokens - lastTotalUsage.cachedReadTokens,
+        cacheWriteTokens: totalUsage.cacheWriteTokens - lastTotalUsage.cacheWriteTokens,
+        outputTokens: totalUsage.outputTokens - lastTotalUsage.outputTokens
+      };
+      if (Object.values(totalDelta).every((tokens) => tokens >= 0)) {
+        const emitted = {
+          inputTokens: record.inputTokens,
+          cachedReadTokens: record.cachedReadTokens,
+          cacheWriteTokens: record.cacheWriteTokens,
+          outputTokens: record.outputTokens
+        };
+        for (const key of Object.keys(emitted)) {
+          record[key] += Math.max(0, totalDelta[key] - emitted[key]);
+        }
+      }
+    }
+    if (input > 272_000 && /^gpt-5\.6(?:-|$)/i.test(currentModel)) {
+      record.longContextInputTokens = record.inputTokens;
+      record.longContextCachedReadTokens = record.cachedReadTokens;
+      record.longContextCacheWriteTokens = record.cacheWriteTokens;
+      record.longContextOutputTokens = record.outputTokens;
+    }
+    if (totalUsage) lastTotalUsage = totalUsage;
     if (currentProjectPath) record.projectPath = currentProjectPath;
     records.push(record);
   }

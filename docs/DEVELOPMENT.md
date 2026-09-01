@@ -70,7 +70,7 @@ The packaged app enables macOS launch-at-login independently of `RATE_LIMIT_TOOL
 | History file discovery and parsing | `usage-history/sources.js`, `parseClaude.js`, `parseCodex.js` |
 | Cost, cache savings, or pricing | `usage-history/pricing.js` |
 | Range aggregation or persistence | `usage-history/aggregate.js`, `store.js` |
-| Runway, project, or model insights | `usage-history/windows.js`, `runway.js`, `model-insights.js` |
+| Subscription value, project, or model insights | `usage-history/windows.js`, `model-insights.js` |
 | Electron lifecycle or IPC | `electron-main.js`, `preload.js` |
 | Core download, activation, or rollback | `core-updater.js`, `bootstrap-updater.js`, `bootstrap.js` |
 | Popover/dashboard UI | `public/` and its `site/` counterpart |

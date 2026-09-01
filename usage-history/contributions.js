@@ -13,6 +13,15 @@ function addBuckets(target, src) {
   target.cachedReadTokens += src.cachedReadTokens || 0;
   target.cacheWriteTokens += src.cacheWriteTokens || 0;
   target.outputTokens += src.outputTokens || 0;
+  for (const field of [
+    "cacheWrite1hTokens",
+    "longContextInputTokens",
+    "longContextCachedReadTokens",
+    "longContextCacheWriteTokens",
+    "longContextOutputTokens"
+  ]) {
+    if (src[field]) target[field] = (target[field] || 0) + src[field];
+  }
   target.calls += src.calls || 0;
   return target;
 }
@@ -127,6 +136,46 @@ function mergeProjectContribution(target, source) {
 }
 
 function appendRecords(entry, records, filePath, cli) {
+  if (cli === "claude") {
+    entry.claudeEvents = entry.claudeEvents || {};
+    const unkeyed = [];
+    for (const record of records) {
+      if (!record.eventId) {
+        unkeyed.push(record);
+        continue;
+      }
+      const previous = entry.claudeEvents[record.eventId];
+      if (previous && record.isCorrection) {
+        const corrected = { ...previous };
+        addBuckets(corrected, record);
+        corrected.timestampMs = record.timestampMs;
+        corrected.day = record.day;
+        corrected.model = record.model;
+        corrected.projectPath = record.projectPath || previous.projectPath;
+        corrected.isSidechain = record.isSidechain;
+        corrected.isCorrection = false;
+        corrected.calls = 0;
+        entry.claudeEvents[record.eventId] = corrected;
+      } else if (!previous) {
+        entry.claudeEvents[record.eventId] = {
+          ...record,
+          isCorrection: false,
+          calls: 0
+        };
+      }
+    }
+    if (!unkeyed.length) return;
+    entry.unkeyedContribution = entry.unkeyedContribution || {};
+    entry.unkeyedProjectContribution = entry.unkeyedProjectContribution || {};
+    entry.unkeyedMinuteContribution = entry.unkeyedMinuteContribution || {};
+    mergeContribution(entry.unkeyedContribution, recordsToContribution(unkeyed));
+    mergeProjectContribution(
+      entry.unkeyedProjectContribution,
+      recordsToProjectContribution(unkeyed, filePath, cli)
+    );
+    mergeContribution(entry.unkeyedMinuteContribution, recordsToMinuteContribution(unkeyed));
+    return;
+  }
   mergeContribution(entry.contribution, recordsToContribution(records));
   mergeProjectContribution(
     entry.projectContribution,

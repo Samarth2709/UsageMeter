@@ -4,6 +4,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
+const { atomicWriteJson } = require("./atomic-file");
 
 const execFileAsync = promisify(execFile);
 const CORE_STATE_FILE = "current.json";
@@ -11,6 +12,9 @@ const CORE_VERSION_FILE = "core-version.json";
 const CORE_MANIFEST_FILE = "manifest.json";
 const CORE_SIGNATURE_FILE = "manifest.sig";
 const CORE_CONTROL_FILES = new Set([CORE_MANIFEST_FILE, CORE_SIGNATURE_FILE]);
+const UPDATE_FETCH_TIMEOUT_MS = 30_000;
+const UPDATE_TEXT_LIMIT_BYTES = 2 * 1024 * 1024;
+const UPDATE_ARCHIVE_LIMIT_BYTES = 256 * 1024 * 1024;
 const REQUIRED_CORE_FILES = [
   "electron-main.js",
   "server.js",
@@ -161,10 +165,42 @@ async function readJson(filePath, fallback = null) {
 }
 
 async function writeJsonAtomic(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await fs.rename(tempPath, filePath);
+  await atomicWriteJson(filePath, value);
+}
+
+function normalizeInstallState(raw) {
+  const safeVersion = (value) => isSafeVersion(value) ? value : null;
+  const activeVersion = safeVersion(raw?.activeVersion);
+  const previousVersion = safeVersion(raw?.previousVersion);
+  const pendingVersion = safeVersion(raw?.pendingVersion);
+  const pendingLaunches = Number.isSafeInteger(raw?.pendingLaunches) && raw.pendingLaunches >= 0
+    ? raw.pendingLaunches
+    : 0;
+  return {
+    activeVersion,
+    previousVersion: previousVersion === activeVersion ? null : previousVersion,
+    pendingVersion: pendingVersion === activeVersion ? pendingVersion : null,
+    pendingLaunches: pendingVersion === activeVersion ? pendingLaunches : 0,
+    healthyVersion: safeVersion(raw?.healthyVersion)
+  };
+}
+
+async function readResponseBytes(response, limitBytes, tooLargeMessage) {
+  if (!response.body) throw new Error("Update response had no body.");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.length;
+    if (received > limitBytes) {
+      await reader.cancel().catch(() => {});
+      throw new Error(tooLargeMessage);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, received);
 }
 
 async function assertCoreFiles(corePath, expectedVersion) {
@@ -281,13 +317,13 @@ class CoreUpdater extends EventEmitter {
 
   async loadInstallState() {
     if (this.installState) return this.installState;
-    this.installState = (await readJson(this.statePath, null)) || {
+    this.installState = normalizeInstallState((await readJson(this.statePath, null)) || {
       activeVersion: null,
       previousVersion: null,
       pendingVersion: null,
       pendingLaunches: 0,
       healthyVersion: null
-    };
+    });
     return this.installState;
   }
 
@@ -316,6 +352,23 @@ class CoreUpdater extends EventEmitter {
 
   async selectCore() {
     const state = await this.loadInstallState();
+    const bundledVersion = (
+      await readJson(path.join(this.fallbackCorePath, CORE_VERSION_FILE), {})
+    ).version || this.shellVersion;
+    const resetBelowBundledCore = () => {
+      if (!state.activeVersion || compareVersions(state.activeVersion, bundledVersion) >= 0) {
+        return false;
+      }
+      state.activeVersion = null;
+      state.previousVersion = null;
+      state.pendingVersion = null;
+      state.pendingLaunches = 0;
+      state.healthyVersion = null;
+      return true;
+    };
+    if (resetBelowBundledCore()) {
+      await this.saveInstallState();
+    }
     if (state.pendingVersion && state.pendingVersion === state.activeVersion) {
       if (state.pendingLaunches >= 1) {
         state.activeVersion = state.previousVersion || null;
@@ -326,6 +379,9 @@ class CoreUpdater extends EventEmitter {
         state.pendingLaunches += 1;
         await this.saveInstallState();
       }
+    }
+    if (resetBelowBundledCore()) {
+      await this.saveInstallState();
     }
 
     if (state.activeVersion) {
@@ -341,7 +397,7 @@ class CoreUpdater extends EventEmitter {
         state.pendingVersion = null;
         state.pendingLaunches = 0;
         state.healthyVersion = null;
-        if (previousVersion) {
+        if (previousVersion && compareVersions(previousVersion, bundledVersion) >= 0) {
           try {
             const corePath = await this.verifyInstalledCore(previousVersion);
             state.activeVersion = previousVersion;
@@ -356,7 +412,7 @@ class CoreUpdater extends EventEmitter {
         await this.saveInstallState();
       }
     }
-    this.runningVersion = (await readJson(path.join(this.fallbackCorePath, CORE_VERSION_FILE), {})).version || this.shellVersion;
+    this.runningVersion = bundledVersion;
     return this.fallbackCorePath;
   }
 
@@ -372,11 +428,29 @@ class CoreUpdater extends EventEmitter {
 
   async fetchText(url) {
     if (typeof this.fetchImpl !== "function") throw new Error("Updates are unavailable in this environment.");
-    const response = await this.fetchImpl(url, {
-      headers: { Accept: "application/json, text/plain", "User-Agent": "UsageMeter" }
-    });
-    if (!response.ok) throw new Error(`Update request failed (${response.status}).`);
-    return response.text();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+    try {
+      const response = await this.fetchImpl(url, {
+        headers: { Accept: "application/json, text/plain", "User-Agent": "UsageMeter" },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`Update request failed (${response.status}).`);
+      const length = Number(response.headers.get("content-length"));
+      if (Number.isFinite(length) && length > UPDATE_TEXT_LIMIT_BYTES) {
+        throw new Error("Update metadata is too large.");
+      }
+      return (await readResponseBytes(
+        response,
+        UPDATE_TEXT_LIMIT_BYTES,
+        "Update metadata is too large."
+      )).toString("utf8");
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("Update request timed out.");
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async fetchManifest() {
@@ -453,27 +527,49 @@ class CoreUpdater extends EventEmitter {
 
     try {
       await fs.mkdir(extractedRoot, { recursive: true });
-      const response = await this.fetchImpl(manifest.archiveUrl, {
-        headers: { Accept: "application/octet-stream", "User-Agent": "UsageMeter" }
-      });
-      if (!response.ok) throw new Error(`Update download failed (${response.status}).`);
-      const total = Number(response.headers.get("content-length")) || null;
-      const chunks = [];
-      let received = 0;
-      if (!response.body) throw new Error("Update download had no body.");
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        if (total) this.setState({ progress: Math.min(99, Math.round((received / total) * 100)) });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+      const digest = crypto.createHash("sha256");
+      let archiveHandle;
+      try {
+        const response = await this.fetchImpl(manifest.archiveUrl, {
+          headers: { Accept: "application/octet-stream", "User-Agent": "UsageMeter" },
+          signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`Update download failed (${response.status}).`);
+        const total = Number(response.headers.get("content-length")) || null;
+        if (total && total > UPDATE_ARCHIVE_LIMIT_BYTES) {
+          throw new Error("Update archive is too large.");
+        }
+        let received = 0;
+        if (!response.body) throw new Error("Update download had no body.");
+        archiveHandle = await fs.open(archivePath, "wx", 0o600);
+        const reader = response.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.length;
+          if (received > UPDATE_ARCHIVE_LIMIT_BYTES) {
+            await reader.cancel().catch(() => {});
+            throw new Error("Update archive is too large.");
+          }
+          digest.update(value);
+          await archiveHandle.write(value);
+          if (total) this.setState({ progress: Math.min(99, Math.round((received / total) * 100)) });
+        }
+        await archiveHandle.sync();
+        await archiveHandle.close();
+        archiveHandle = null;
+      } catch (error) {
+        if (error?.name === "AbortError") throw new Error("Update download timed out.");
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+        await archiveHandle?.close().catch(() => {});
       }
-      const archive = Buffer.concat(chunks);
-      if (sha256(archive) !== manifest.archiveSha256.toLowerCase()) {
+      if (digest.digest("hex") !== manifest.archiveSha256.toLowerCase()) {
         throw new Error("Downloaded update failed its integrity check.");
       }
-      await fs.writeFile(archivePath, archive, { mode: 0o600 });
       await extractArchive(archivePath, extractedRoot);
       const extractedCore = path.join(extractedRoot, "core");
       await fs.writeFile(path.join(extractedCore, CORE_MANIFEST_FILE), manifestText, { mode: 0o600 });
@@ -501,7 +597,11 @@ class CoreUpdater extends EventEmitter {
     state.pendingVersion = version;
     state.pendingLaunches = 0;
     await this.saveInstallState();
-    await this.retainCores();
+    try {
+      await this.retainCores();
+    } catch (error) {
+      console.warn(`Could not remove older Cores: ${error.message}`);
+    }
   }
 
   async retainCores() {
@@ -531,5 +631,6 @@ module.exports = {
   validateArchiveEntries,
   validateManifest,
   verifySignedManifest,
+  normalizeInstallState,
   writeJsonAtomic
 };

@@ -10,11 +10,9 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 
 - Shows live Codex and Claude Code allowance windows, including dynamically reported weekly-only plans.
 - Refreshes limit data in the background and preserves the last successful value if a provider is temporarily unavailable.
-- Shows one normal seven-day runway estimate and sends one macOS alert per allowance reset when that pace is projected to exhaust a limit early.
-- Logs local forecast samples and first-observed limit hits so prediction error can be reviewed after enough matched outcomes accumulate.
 - Opens with the menu-bar icon or `Control` + `Option` + `L`.
 - Enables macOS launch-at-login on the first packaged launch from `/Applications`; later changes in macOS Login Items are respected.
-- Reads local Claude Code and Codex transcripts to power a Usage History dashboard with daily trends, project grouping, model cost/cache analysis, subscription value, runway estimates, and diagnostics.
+- Reads local Claude Code and Codex transcripts to power a Usage History dashboard with daily trends, project grouping, model cost/cache analysis, subscription value, and diagnostics.
 - Lets you add extra transcript folders when your CLI sessions live outside the standard locations.
 
 ## Install and use
@@ -42,8 +40,6 @@ Usage Meter is designed around local CLI state:
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
 
 Append validation detects truncation, replacement, source reclassification, and changes at the saved file tail. An in-place rewrite earlier in an already-indexed prefix cannot be detected without rereading the whole prefix, so **Usage History → Diagnostics → Rebuild index** provides an explicit full repair from current transcripts while preserving retained 90-day history for files the CLIs already cleaned up.
-- Runway prediction and outcome records stay local under `~/.rate-limit-tool/`; they are not uploaded.
-
 See [Architecture](docs/ARCHITECTURE.md) for the exact data flow and [Development](docs/DEVELOPMENT.md) for environment overrides.
 
 ## Run from source

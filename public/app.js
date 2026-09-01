@@ -3,6 +3,8 @@ const accountTemplate = document.querySelector("#account-template");
 const limitWindowTemplate = document.querySelector("#limit-window-template");
 const refreshButton = document.querySelector("#refresh-button");
 const overallStatus = document.querySelector("#overall-status");
+const overallStatusText = document.querySelector("#overall-status-text");
+const overallStatusAnchor = document.querySelector(".status-anchor");
 const nativeApi = window.rateLimitAPI || null;
 const serverToken = document.querySelector('meta[name="rate-limit-server-token"]')?.content || "";
 
@@ -15,8 +17,6 @@ let countdownTimer = null;
 let statusHeartbeat = null;
 let lastSnapshotAt = null;
 let rowsExpanded = true;
-let runwaysByService = new Map();
-let runwayRequestId = 0;
 
 // Background usage refresh runs every 60s. If no live snapshot has arrived in
 // ~2.5 cycles, the data source is effectively down — the status dot must show
@@ -54,6 +54,27 @@ function openAccountLogin(accountId) {
   });
 }
 
+function logoutAccount(accountId, removeLogin = false) {
+  if (nativeApi) {
+    return nativeApi.logoutAccount(accountId, removeLogin);
+  }
+
+  return requestJson(`/api/accounts/${accountId}/logout`, {
+    method: "POST",
+    body: JSON.stringify({ removeLogin })
+  });
+}
+
+function removeAccount(accountId) {
+  if (nativeApi) {
+    return nativeApi.removeAccount(accountId);
+  }
+
+  return requestJson(`/api/accounts/${accountId}`, {
+    method: "DELETE"
+  });
+}
+
 function refreshAppUsage() {
   if (nativeApi) {
     return nativeApi.refresh();
@@ -73,7 +94,7 @@ function loadSnapshot() {
 }
 
 function isLoginNeededError(error) {
-  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|web login|login_required/i.test(error || "");
+  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|web login|login_required|claude auth status --json/i.test(error || "");
 }
 
 function compactWindowLabel(label) {
@@ -241,57 +262,8 @@ function renderLimitWindows(elements, data) {
   elements.limitGrid.classList.toggle("hidden", !displayWindows.length);
 }
 
-function hideRunway(elements) {
-  elements.runway.textContent = "";
-  elements.runway.title = "";
-  elements.runway.className = "account-runway hidden";
-}
-
-function formatRunwayDuration(minutes) {
-  const totalMinutes = Math.max(0, Math.ceil(Number(minutes) || 0));
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const mins = totalMinutes % 60;
-  if (days) return `${days}d ${hours}h`;
-  if (hours) return `${hours}h ${mins}m`;
-  return `${mins}m`;
-}
-
-function formatRunwayHitTime(minutes) {
-  return new Date(Date.now() + Math.max(0, Number(minutes) || 0) * 60000).toLocaleTimeString([], {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit"
-  });
-}
-
-function renderRunway(elements, data) {
-  if (!nativeApi?.getRunways || !data?.service) {
-    hideRunway(elements);
-    return;
-  }
-
-  const runway = runwaysByService.get(data.service);
-  if (!runway || runway.status !== "ready") {
-    hideRunway(elements);
-    return;
-  }
-
-  const nextLimit = runway.windows
-    .filter((window) => !window.lastsUntilReset && Number.isFinite(Number(window.estimatedMinutes)))
-    .sort((a, b) => Number(a.estimatedMinutes) - Number(b.estimatedMinutes))[0];
-  if (!nextLimit) {
-    hideRunway(elements);
-    return;
-  }
-  const exhaustsAt = formatRunwayHitTime(nextLimit.estimatedMinutes);
-  elements.runway.textContent = `Runs out in ${formatRunwayDuration(nextLimit.estimatedMinutes)} · ${exhaustsAt}`;
-  elements.runway.title = `Based on your normal seven-day pace, this limit is predicted to be exhausted ${exhaustsAt}.`;
-  elements.runway.className = "account-runway at-risk";
-}
-
 function showStatusSummary(elements, text, className, title = "") {
-  if (elements.runway) hideRunway(elements);
+  elements.limitGrid.replaceChildren();
   elements.limitGrid.classList.add("hidden");
   elements.summary.textContent = text;
   elements.summary.title = title;
@@ -331,10 +303,30 @@ function buildAccountName(account, data) {
   return emailLabel;
 }
 
+function confirmAccountRemoval(account) {
+  const name = buildAccountName(account);
+  return window.confirm(
+    `Delete ${name} from Usage Meter?\n\n` +
+    "This removes its cached usage and any UsageMeter-managed login copy. " +
+    "It will not sign you out of the main Claude Code or Codex app."
+  );
+}
+
+function confirmLoginRemoval(account) {
+  const name = buildAccountName(account);
+  return window.confirm(
+    `Log out and remove the saved login for ${name}?\n\n` +
+    "This removes matching credentials from this computer and cannot be undone. " +
+    "The row will stay in Usage Meter so you can sign in again."
+  );
+}
+
 function setOverallStatus(statusText, className) {
+  overallStatusAnchor?.classList.toggle("hidden", !statusText);
   overallStatus.className = `header-status ${className}`;
   overallStatus.title = statusText;
   overallStatus.setAttribute("aria-label", statusText);
+  if (overallStatusText) overallStatusText.textContent = statusText;
 }
 
 function syncOverallStatus() {
@@ -366,7 +358,7 @@ function syncOverallStatus() {
     headline = "Some accounts need attention";
     className = "status-error";
   } else if (entries.every((entry) => entry.kind === "ok")) {
-    headline = "All accounts connected";
+    headline = "";
     className = "status-ok";
   } else if (entries.some((entry) => entry.detail === "Loading…")) {
     headline = "Refreshing usage";
@@ -413,7 +405,9 @@ function setLoading(accountId) {
 
   showStatusSummary(elements, "Loading…", "pending");
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.add("hidden");
   elements.connectButton.classList.add("hidden");
+  elements.deleteButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
   updateAccountState(accountId, {
     kind: "pending",
@@ -429,7 +423,9 @@ function setIdle(accountId) {
 
   showStatusSummary(elements, "Waiting…", "pending");
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.add("hidden");
   elements.connectButton.classList.add("hidden");
+  elements.deleteButton.classList.add("hidden");
   elements.connectButton.textContent = "Connect";
   updateAccountState(accountId, {
     kind: "pending",
@@ -443,38 +439,64 @@ function renderConnected(accountId, data, metadata = {}) {
     return;
   }
 
+  if (metadata.stale) {
+    if (isLoginNeededError(metadata.error)) {
+      renderDisconnected(accountId);
+    } else {
+      renderError(accountId, metadata.error);
+    }
+    return;
+  }
+
   const summary = buildSummary(data);
   renderLimitWindows(elements, data);
-  renderRunway(elements, data);
   elements.summary.textContent = "";
-  elements.summary.title = metadata.stale
-    ? `Last known usage. Live refresh failed: ${metadata.error || "Unavailable"}`
-    : buildResetTitle(data);
+  elements.summary.title = buildResetTitle(data);
   elements.summary.className = "account-summary hidden";
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.add("hidden");
   elements.connectButton.classList.add("hidden");
-  elements.connectButton.textContent = "Connect";
+  elements.deleteButton.classList.add("hidden");
+  elements.connectButton.textContent = "Sign in";
+  elements.connectButton.title = "";
+  elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
     kind: "ok",
-    detail: metadata.stale ? `Last known: ${summary}` : summary,
-    data
+    detail: summary,
+    data,
+    stale: false,
+    error: null
   });
 }
 
-function renderDisconnected(accountId) {
+function renderDisconnected(accountId, error = null) {
   const elements = accountElements.get(accountId);
   if (!elements) {
     return;
   }
 
-  showStatusSummary(elements, "Not connected", "error");
-  hideRunway(elements);
+  const detail = error?.message || String(error || "");
+  showStatusSummary(
+    elements,
+    detail ? `Could not open sign-in · ${detail}` : "",
+    detail ? "error" : "hidden",
+    detail
+  );
   elements.row.classList.toggle("expanded", rowsExpanded);
+  elements.actions.classList.remove("hidden");
   elements.connectButton.classList.remove("hidden");
-  elements.connectButton.textContent = "Connect";
+  elements.connectButton.textContent = "Sign in";
+  elements.connectButton.title = "Open sign-in in Google Chrome";
+  elements.connectButton.dataset.action = "login";
+  elements.deleteButton.classList.remove("hidden");
+  elements.deleteButton.textContent = "Delete";
+  elements.deleteButton.title = "Delete this account from Usage Meter";
   updateAccountState(accountId, {
     kind: "disconnected",
-    detail: "Not connected"
+    detail: detail || "Sign in required",
+    data: null,
+    stale: false,
+    error: detail || null
   });
 }
 
@@ -485,14 +507,20 @@ function renderError(accountId, error) {
   }
 
   const detail = String(error || "Unavailable");
-  showStatusSummary(elements, "Unavailable", "error", detail);
-  hideRunway(elements);
+  showStatusSummary(elements, `Unavailable · ${detail}`, "error", detail);
   elements.row.classList.toggle("expanded", rowsExpanded);
-  elements.connectButton.classList.add("hidden");
-  elements.connectButton.textContent = "Connect";
+  elements.actions.classList.remove("hidden");
+  elements.connectButton.classList.remove("hidden");
+  elements.connectButton.textContent = "Retry";
+  elements.connectButton.title = "Try refreshing usage again";
+  elements.connectButton.dataset.action = "retry";
+  elements.deleteButton.classList.add("hidden");
   updateAccountState(accountId, {
     kind: "error",
-    detail
+    detail,
+    data: null,
+    stale: false,
+    error: detail
   });
 }
 
@@ -519,7 +547,6 @@ function applySnapshot(snapshot) {
   }
 
   lastSnapshotAt = Date.now();
-  runwaysByService = new Map();
 
   if (snapshot.config?.accounts) {
     syncAccountsFromConfig(snapshot.config);
@@ -530,24 +557,6 @@ function applySnapshot(snapshot) {
   }
 
   syncViewSize();
-  refreshRunways();
-}
-
-async function refreshRunways() {
-  if (!nativeApi?.getRunways) return;
-  const requestId = ++runwayRequestId;
-  try {
-    const runways = await nativeApi.getRunways();
-    if (requestId !== runwayRequestId) return;
-    runwaysByService = new Map((runways || []).map((runway) => [runway.cli, runway]));
-    renderCurrentRows();
-    syncViewSize();
-  } catch {
-    if (requestId !== runwayRequestId) return;
-    runwaysByService = new Map();
-    renderCurrentRows();
-    syncViewSize();
-  }
 }
 
 function syncAccountsFromConfig(config) {
@@ -594,8 +603,9 @@ function createAccountRow(account) {
   const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
   const summary = node.querySelector(".account-summary");
-  const runway = node.querySelector(".account-runway");
+  const actions = node.querySelector(".account-actions");
   const connectButton = node.querySelector(".connect-button");
+  const deleteButton = node.querySelector(".delete-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
   typeTag.textContent = account.type === "claude" ? "Claude" : "Codex";
@@ -603,37 +613,103 @@ function createAccountRow(account) {
   showStatusSummary(
     {
       limitGrid,
-      summary,
-      runway
+      summary
     },
     "Loading…",
     "pending"
   );
 
   connectButton.addEventListener("click", async () => {
+    if (connectButton.dataset.action === "retry") {
+      await refreshAll();
+      return;
+    }
     connectButton.disabled = true;
     connectButton.textContent = "Opening…";
-    showStatusSummary(
-      {
-      limitGrid,
-      summary,
-      runway
-      },
-      "Waiting for login…",
-      "pending"
-    );
     updateAccountState(account.id, {
       kind: "pending",
-      detail: "Waiting for login"
+      detail: "Opening sign-in",
+      data: null,
+      stale: false,
+      error: null
     });
 
     try {
       await openAccountLogin(account.id);
-      connectButton.textContent = "Connect";
-    } catch {
       renderDisconnected(account.id);
+    } catch (error) {
+      renderDisconnected(account.id, error);
     } finally {
       connectButton.disabled = false;
+    }
+  });
+
+  node.addEventListener?.("contextmenu", async (event) => {
+    if (!nativeApi?.showAccountMenu) return;
+    event.preventDefault();
+
+    const action = await nativeApi.showAccountMenu(account.id);
+    if (!action) return;
+
+    if (action === "delete-row") {
+      deleteButton.click();
+      return;
+    }
+
+    const removeLogin = action === "remove-login";
+    if (removeLogin && !confirmLoginRemoval(account)) return;
+
+    connectButton.disabled = true;
+    deleteButton.disabled = true;
+    showStatusSummary(
+      { limitGrid, summary },
+      removeLogin ? "Removing login…" : "Logging out…",
+      "pending"
+    );
+
+    try {
+      const loggedOut = await logoutAccount(account.id, removeLogin);
+      syncAccountsFromConfig(loggedOut.config);
+      renderDisconnected(account.id);
+    } catch (error) {
+      renderError(account.id, error?.message || "Couldn’t log out.");
+    } finally {
+      connectButton.disabled = false;
+      deleteButton.disabled = false;
+    }
+  });
+
+  deleteButton.addEventListener("click", async () => {
+    if (!confirmAccountRemoval(account)) {
+      return;
+    }
+
+    connectButton.disabled = true;
+    deleteButton.disabled = true;
+    deleteButton.textContent = "Deleting…";
+    updateAccountState(account.id, {
+      kind: "pending",
+      detail: "Deleting account",
+      data: null,
+      stale: false,
+      error: null
+    });
+
+    try {
+      const removed = await removeAccount(account.id);
+      syncAccountsFromConfig(removed.config);
+    } catch (error) {
+      renderDisconnected(account.id);
+      showStatusSummary(
+        { limitGrid, summary },
+        "Couldn’t delete",
+        "error",
+        error?.message || "Account deletion failed."
+      );
+    } finally {
+      connectButton.disabled = false;
+      deleteButton.disabled = false;
+      deleteButton.textContent = "Delete";
     }
   });
 
@@ -642,8 +718,9 @@ function createAccountRow(account) {
     name,
     limitGrid,
     summary,
-    runway,
-    connectButton
+    actions,
+    connectButton,
+    deleteButton
   });
 
   return node;
@@ -655,7 +732,10 @@ function renderCurrentRows() {
     elements.row.classList.toggle("expanded", rowsExpanded);
 
     if (existing?.kind === "ok" && existing.data) {
-      renderConnected(accountId, existing.data);
+      renderConnected(accountId, existing.data, {
+        stale: existing.stale,
+        error: existing.error
+      });
     }
   }
 }
@@ -790,12 +870,6 @@ document.addEventListener("visibilitychange", () => {
 
 for (const account of state.config.accounts) {
   setIdle(account.id);
-  if (account.lastUsage) {
-    renderConnected(account.id, account.lastUsage, {
-      stale: true,
-      error: "Waiting for live refresh"
-    });
-  }
 }
 
 syncViewSize();

@@ -142,6 +142,38 @@ test("computeWindowValues marks future models unpriced instead of inventing valu
   });
 });
 
+test("computeWindowValues does not invent a full-window value without local usage", () => {
+  withTempHome((home) => {
+    const [row] = computeWindowValues({
+      homeDir: home,
+      nowMs: NOW,
+      limits: [{ cli: "codex", label: "weekly", usedPercent: 100, resetAt: iso(NOW + 3600000) }]
+    });
+    assert.equal(row.usedTokens, 0);
+    assert.equal(row.projectedDollars, null);
+    assert.equal(row.full, false);
+  });
+});
+
+test("computeWindowValues marks provider windows beyond retained coverage incomplete", () => {
+  withTempHome((home) => {
+    writeCodexFixture(home, [codexTurn(NOW - 3600000)]);
+    const [row] = computeWindowValues({
+      homeDir: home,
+      nowMs: NOW,
+      limits: [{
+        cli: "codex",
+        label: "monthly",
+        durationSeconds: 30 * 86400,
+        usedPercent: 50,
+        resetAt: iso(NOW + 3600000)
+      }]
+    });
+    assert.equal(row.coverageComplete, false);
+    assert.equal(row.projectedDollars, null);
+  });
+});
+
 test("transcriptFingerprint changes when usage is written", () => {
   withTempHome((home) => {
     writeCodexFixture(home, [codexTurn(NOW - 3600000)]);

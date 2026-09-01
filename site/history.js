@@ -4,6 +4,7 @@ const serverToken = document.querySelector('meta[name="rate-limit-server-token"]
 let rangeDays = 30;
 let metric = "tokens"; // Daily chart: tokens | cost
 let data = null;
+let loadRequestId = 0;
 
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -84,6 +85,7 @@ function dayBars(el, days, segFn, hoverFn) {
   }).join("");
   const hits = days.map((d, i) => `<rect class="bar-hit" data-idx="${i}" x="${(pad + i * bw).toFixed(1)}" y="${pad}" width="${bw.toFixed(1)}" height="${plot}"></rect>`).join("");
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${bars}${hits}</svg>`;
+  el.querySelector("svg")?.setAttribute("aria-hidden", "true");
   attachHover(el, ".bar-hit", (hit) => hoverFn(days[+hit.dataset.idx]));
 }
 
@@ -98,6 +100,7 @@ function cumulativeLine(el, days) {
   const area = `${line} L${xy.at(-1)[0].toFixed(1)} ${base} L${xy[0][0].toFixed(1)} ${base} Z`;
   const hits = pts.map((p, i) => `<rect class="bar-hit" data-idx="${i}" x="${(pad + (i - 0.5) * bw).toFixed(1)}" y="${pad}" width="${bw.toFixed(1)}" height="${plot}"></rect>`).join("");
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none"><path d="${area}" fill="rgba(116,194,120,0.16)"></path><path d="${line}" fill="none" stroke="#74c278" stroke-width="2"></path>${hits}</svg>`;
+  el.querySelector("svg")?.setAttribute("aria-hidden", "true");
   attachHover(el, ".bar-hit", (hit) => {
     const p = pts[+hit.dataset.idx];
     return `<div class="tt-date">${fmtDay(p.day.day)}</div><div class="tt-row"><span>Cumulative</span><b>${fmtDollars(p.cum)}</b></div><div class="tt-row"><span>That day</span><span>${fmtDollars(p.day.dollars)}</span></div>`;
@@ -107,10 +110,10 @@ function cumulativeLine(el, days) {
 function hBars(el, rows) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   el.innerHTML = rows.map((r) => `
-    <div class="hbar"${r.title ? ` title="${r.title}"` : ""}>
-      <span class="hbar-label">${r.label}</span>
+    <div class="hbar"${r.title ? ` title="${esc(r.title)}"` : ""}>
+      <span class="hbar-label">${esc(r.label)}</span>
       <span class="hbar-track"><span class="hbar-fill" style="width:${((r.value / max) * 100).toFixed(1)}%;background:${r.color || "var(--accent)"}"></span></span>
-      <span class="hbar-val">${r.valueText}</span>
+      <span class="hbar-val">${esc(r.valueText)}</span>
     </div>`).join("");
 }
 
@@ -224,6 +227,8 @@ function renderDaily(d) {
       : [{ value: day.byCli.claude.tokens.total, color: CLI_COLORS.claude }, { value: day.byCli.codex.tokens.total, color: CLI_COLORS.codex }],
     useCost ? dayCostHover : dayTokenHover
   );
+  const rows = r.days.map((day) => `<tr><th scope="row">${esc(fmtDay(day.day))}</th><td>${esc(fmtTokens(day.tokens.total))}</td><td>${esc(fmtDollars(day.dollars))}</td><td>${day.tokens.calls.toLocaleString()}</td></tr>`).join("");
+  document.querySelector("#daily-table").innerHTML = `<table><thead><tr><th>Date</th><th>Tokens</th><th>Cost</th><th>Calls</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 /* ---------- diagnostics ---------- */
@@ -416,6 +421,19 @@ function renderAll(d) {
   hBars(document.querySelector("#ec-top-days"), topDays.map((day) => ({
     label: fmtDay(day.day), value: day.dollars, valueText: fmtDollars(day.dollars), color: "var(--accent)"
   })));
+  hBars(document.querySelector("#top-models"), r.byModel.slice(0, 8).map((model) => ({
+    label: `${CLI_LABEL[model.cli] || model.cli} · ${model.model}`,
+    value: model.dollars || model.tokens.total,
+    valueText: model.dollars == null ? `${fmtTokens(model.tokens.total)} tok` : fmtDollars(model.dollars),
+    color: CLI_COLORS[model.cli] || "var(--accent)"
+  })));
+  hBars(document.querySelector("#top-projects"), r.byProject.slice(0, 8).map((project) => ({
+    label: project.parentLabel ? `${project.parentLabel}/${project.label}` : project.label,
+    value: project.dollars || project.tokens.total,
+    valueText: project.pricing?.complete === false ? `${fmtTokens(project.tokens.total)} tok` : fmtDollars(project.dollars),
+    title: project.path || project.label,
+    color: "var(--accent)"
+  })));
 
   // diagnostics panel (rendered even when hidden so it's correct when opened)
   renderDiagnostics(d);
@@ -428,9 +446,9 @@ function renderAll(d) {
 }
 
 /* ---------- data ---------- */
-async function fetchUsageHistory() {
-  if (nativeApi?.getUsageHistory) return nativeApi.getUsageHistory({ rangeDays });
-  const response = await fetch(`/api/usage-history?rangeDays=${rangeDays}`, {
+async function fetchUsageHistory(requestedRangeDays) {
+  if (nativeApi?.getUsageHistory) return nativeApi.getUsageHistory({ rangeDays: requestedRangeDays });
+  const response = await fetch(`/api/usage-history?rangeDays=${requestedRangeDays}`, {
     headers: serverToken ? { "X-Rate-Limit-Tool-Token": serverToken } : {}
   });
   const payload = await response.json();
@@ -439,8 +457,12 @@ async function fetchUsageHistory() {
 }
 
 async function load() {
+  const requestId = ++loadRequestId;
+  const requestedRangeDays = rangeDays;
   try {
-    data = await fetchUsageHistory();
+    const payload = await fetchUsageHistory(requestedRangeDays);
+    if (requestId !== loadRequestId || requestedRangeDays !== rangeDays) return;
+    data = payload;
     const unpriced = data.flags?.unpricedModels || [];
     document.querySelector("#history-note").textContent = unpriced.length
       ? `Unpriced model${unpriced.length === 1 ? "" : "s"}: ${unpriced.map(({ cli, model }) => `${CLI_LABEL[cli] || cli} · ${model}`).join(", ")}. Tokens and calls are included; dollar views show only models with known rates.`
@@ -457,6 +479,7 @@ for (const btn of document.querySelectorAll(".range-toggle button")) {
     document.querySelectorAll(".range-toggle button").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     rangeDays = Number(btn.dataset.range);
+    document.querySelectorAll(".range-toggle button").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
     load();
   });
 }
@@ -464,7 +487,10 @@ document.querySelector("#ov-metric").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-metric]");
   if (!btn) return;
   metric = btn.dataset.metric;
-  document.querySelectorAll("#ov-metric button").forEach((b) => b.classList.toggle("active", b === btn));
+  document.querySelectorAll("#ov-metric button").forEach((b) => {
+    b.classList.toggle("active", b === btn);
+    b.setAttribute("aria-pressed", String(b === btn));
+  });
   if (data) renderDaily(data);
 });
 
@@ -472,8 +498,12 @@ const diagToggle = document.querySelector("#diag-toggle");
 if (diagToggle && !diagToggle.dataset.wired) {
   diagToggle.dataset.wired = "1";
   diagToggle.addEventListener("click", () => {
-    document.querySelector("#diag-panel").classList.toggle("hidden");
+    const hidden = document.querySelector("#diag-panel").classList.toggle("hidden");
+    diagToggle.setAttribute("aria-expanded", String(!hidden));
   });
 }
 
+document.querySelectorAll(".range-toggle button").forEach((button) => {
+  button.setAttribute("aria-pressed", String(button.classList.contains("active")));
+});
 load();

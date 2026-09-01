@@ -86,6 +86,55 @@ test("skips malformed lines without throwing", () => {
   assert.equal(recs[0].model, "gpt-5.4");
 });
 
+test("keeps the first structural session identity in a forked transcript", () => {
+  const child = "019fabcd-1234-7abc-8123-123456789abc";
+  const parent = "029fabcd-1234-7abc-8123-123456789abc";
+  const parsed = parseCodexTranscriptChunk([
+    L({ type: "session_meta", payload: { id: child, model: "gpt-5.6-terra" } }),
+    L({ type: "session_meta", payload: { id: parent, model: "gpt-5.6-terra" } })
+  ].join("\n"));
+
+  assert.equal(parsed.state.sessionIdentity, child);
+});
+
+test("uses cumulative totals to repair tokens hidden by a malformed row", () => {
+  const first = tc(
+    "2026-06-16T18:00:01.000Z",
+    { input_tokens: 100, cached_input_tokens: 0, output_tokens: 0 },
+    { input_tokens: 100, cached_input_tokens: 0, output_tokens: 0 }
+  );
+  const afterMissing = tc(
+    "2026-06-16T18:00:03.000Z",
+    { input_tokens: 100, cached_input_tokens: 0, output_tokens: 0 },
+    { input_tokens: 300, cached_input_tokens: 0, output_tokens: 0 }
+  );
+  const records = parseCodexTranscript([meta("gpt-5.6-terra"), first, "{damaged", afterMissing].join("\n"));
+
+  assert.equal(records.reduce((sum, record) => sum + record.inputTokens, 0), 300);
+  assert.equal(records.length, 2);
+});
+
+test("cumulative repair does not count cached input as uncached input", () => {
+  const records = parseCodexTranscript([
+    meta("gpt-5.6-terra"),
+    tc(
+      "2026-06-16T18:00:01.000Z",
+      { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10 },
+      { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10 }
+    ),
+    tc(
+      "2026-06-16T18:00:02.000Z",
+      { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10 },
+      { input_tokens: 200, cached_input_tokens: 160, output_tokens: 20 }
+    )
+  ].join("\n"));
+
+  assert.equal(records.reduce((sum, record) => sum + record.inputTokens, 0), 40);
+  assert.equal(records.reduce((sum, record) => sum + record.cachedReadTokens, 0), 160);
+  assert.equal(records.reduce((sum, record) => sum + record.outputTokens, 0), 20);
+  assert.equal(records.reduce((sum, record) => sum + record.inputTokens + record.cachedReadTokens + record.outputTokens, 0), 220);
+});
+
 test("carries payload working-directory metadata into token records", () => {
   const text = [
     L({ type: "session_meta", timestamp: "2026-06-16T18:00:00.000Z", payload: { model: "gpt-5.5", cwd: "/Users/you/Projects/kernel" } }),

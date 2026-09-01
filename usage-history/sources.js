@@ -78,8 +78,13 @@ function listAllTranscriptFiles(homeDir, extraRoots = {}) {
   const seen = new Set();
   const out = [];
   for (const file of tagged) {
-    if (seen.has(file.path)) continue;
-    seen.add(file.path);
+    let identity = `${file.cli}:path:${file.path}`;
+    try {
+      const stat = fs.statSync(file.path);
+      identity = `${file.cli}:inode:${stat.dev}:${stat.ino}`;
+    } catch { /* discovery tolerates files disappearing mid-scan */ }
+    if (seen.has(identity)) continue;
+    seen.add(identity);
     out.push(file);
   }
   return out;

@@ -1799,12 +1799,57 @@ test("version 2 migration restores retained legacy history for deleted transcrip
       dataDir: f.dataDir,
       nowMs: NOW
     });
-    assert.equal(migrated.index.version, 3);
+    assert.equal(migrated.index.version, 4);
     assert.equal(migrated.index.files[deletedFile].missing, true);
     assert.equal(
       mergeAndPrice(migrated.index.files, { rangeDays: 90, nowMs: NOW }).range.tokens.total,
       100
     );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Claude message ids are owned globally across forked sessions", () => {
+  const f = fixture();
+  try {
+    const claudeDir = path.join(f.homeDir, ".claude", "projects", "p");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const shared = claudeTurn("shared", 100, 10);
+    fs.writeFileSync(path.join(claudeDir, "parent.jsonl"), shared);
+    fs.writeFileSync(
+      path.join(claudeDir, "child.jsonl"),
+      shared + claudeTurn("child-only", 7, 2)
+    );
+
+    const updated = updateUsageIndex({ homeDir: f.homeDir, dataDir: f.dataDir, nowMs: NOW });
+    const history = mergeAndPrice(updated.index.files, { rangeDays: 7, nowMs: NOW });
+
+    assert.equal(history.range.tokens.calls, 2);
+    assert.equal(history.range.tokens.input, 107);
+    assert.equal(history.range.tokens.output, 12);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("semantically corrupt current indexes fail closed during refresh and repair", () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(
+      path.join(f.dataDir, "usage-index.json"),
+      JSON.stringify({ version: 4, files: { "/missing": null }, duplicates: {} })
+    );
+    const refreshed = updateUsageIndex({ homeDir: f.homeDir, dataDir: f.dataDir, nowMs: NOW });
+    assert.deepEqual(refreshed.index.files, {});
+
+    const repaired = updateUsageIndex({
+      homeDir: f.homeDir,
+      dataDir: f.dataDir,
+      nowMs: NOW,
+      forceRebuild: true
+    });
+    assert.deepEqual(repaired.index.files, {});
   } finally {
     f.cleanup();
   }

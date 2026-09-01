@@ -3,21 +3,6 @@ const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-test("provider snapshots publish before runway indexing and do not await it", async () => {
-  const source = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
-  const refreshStart = source.indexOf("async function refreshSnapshot");
-  const refreshEnd = source.indexOf("function startBackgroundRefresh", refreshStart);
-  const refreshSource = source.slice(refreshStart, refreshEnd);
-  const broadcastAt = refreshSource.indexOf(
-    "broadcastSnapshot(latestSnapshot, { refreshHistory: false });"
-  );
-  const runwayAt = refreshSource.indexOf("scheduleRunwayRefresh(latestSnapshot);");
-
-  assert.ok(broadcastAt >= 0, "refresh publishes the provider snapshot");
-  assert.ok(runwayAt > broadcastAt, "runway indexing starts after the provider snapshot");
-  assert.equal(refreshSource.includes("await refreshRunways("), false);
-});
-
 test("the utility worker uses Electron's process parentPort API", async () => {
   const source = await fs.readFile(
     path.join(__dirname, "..", "usage-history", "index-worker.js"),

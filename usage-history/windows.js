@@ -183,8 +183,9 @@ function computeWindowValues({
         else unpricedTokens += p.tokens;
       }
     }
-    const pricingComplete = unpricedTokens === 0;
-    const projected = pricingComplete
+    const coverageComplete = w.durationMs <= LOOKBACK_MS;
+    const pricingComplete = unpricedTokens === 0 && coverageComplete;
+    const projected = pricingComplete && usedTokens > 0
       ? projectFull(pricedDollars, usedTokens, w.usedPercent, blendedRate(w.cli))
       : { value: null, full: false };
     return {
@@ -197,6 +198,7 @@ function computeWindowValues({
       usedTokens,
       unpricedTokens,
       pricingComplete,
+      coverageComplete,
       projectedDollars: projected.value,
       full: projected.full,
       resetAt: w.resetAt

@@ -3,15 +3,22 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("rateLimitAPI", {
   getState: () => ipcRenderer.invoke("rate-limit:get-state"),
   getSnapshot: () => ipcRenderer.invoke("rate-limit:get-snapshot"),
-  getRunways: () => ipcRenderer.invoke("rate-limit:get-runways"),
   saveConfig: (config) => ipcRenderer.invoke("rate-limit:save-config", config),
   openLogin: (accountId) => ipcRenderer.invoke("rate-limit:open-login", accountId),
+  showAccountMenu: (accountId) => ipcRenderer.invoke("rate-limit:show-account-menu", accountId),
+  logoutAccount: (accountId, removeLogin = false) => ipcRenderer.invoke("rate-limit:logout-account", accountId, removeLogin),
+  removeAccount: (accountId) => ipcRenderer.invoke("rate-limit:remove-account", accountId),
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),
   toggle: () => ipcRenderer.invoke("rate-limit:toggle"),
   moveToTopRight: () => ipcRenderer.send("rate-limit:move-top-right"),
   openHistory: () => ipcRenderer.send("usage-history:open"),
   getUsageHistory: (options) => ipcRenderer.invoke("usage-history:get", options),
   repairUsageHistory: (options) => ipcRenderer.invoke("usage-history:repair", options),
+  onUsageHistoryUpdated: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on("usage-history:updated", listener);
+    return () => ipcRenderer.removeListener("usage-history:updated", listener);
+  },
   pickFolder: () => ipcRenderer.invoke("usage-history:pick-folder"),
   setExpandedView: (expanded, rowCount, contentHeight) => ipcRenderer.send("rate-limit:set-expanded-view", expanded, rowCount, contentHeight),
   onSnapshot: (callback) => {

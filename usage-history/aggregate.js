@@ -294,7 +294,8 @@ function mergeAndPrice(files, { rangeDays, nowMs }) {
         primaryModel: primaryModel && { cli: primaryModel.cli, model: primaryModel.model }
       };
     })
-    .sort((a, b) => b.dollars - a.dollars);
+    .sort((a, b) => b.dollars - a.dollars)
+    .slice(0, 20);
 
   return {
     today: {

@@ -28,7 +28,7 @@ function startWorker() {
     fork: () => child,
     workerPath: "/worker.js",
     cwd: "/app",
-    request: { operation: "runways" },
+    request: { operation: "history" },
     activeWorkers,
     timeoutMs: 1000
   });
@@ -39,7 +39,7 @@ test("index worker errors reject the job and exit performs active-worker cleanup
   const { activeWorkers, child, promise } = startWorker();
   const rejected = assert.rejects(promise, /fatal worker failure/);
   child.emit("spawn");
-  assert.deepEqual(child.request, { operation: "runways" });
+  assert.deepEqual(child.request, { operation: "history" });
 
   child.emit("error", new Error("fatal worker failure"));
   assert.equal(activeWorkers.has(child), true);
@@ -52,12 +52,12 @@ test("index worker errors reject the job and exit performs active-worker cleanup
 test("index worker messages resolve the job and stop the worker", async () => {
   const { activeWorkers, child, promise } = startWorker();
   child.emit("spawn");
-  child.emit("message", { ok: true, result: { runways: [] } });
+  child.emit("message", { ok: true, result: { payload: {} } });
 
   assert.equal(child.killed, true);
   assert.equal(activeWorkers.has(child), true);
   child.emit("exit", 0);
-  assert.deepEqual(await promise, { runways: [] });
+  assert.deepEqual(await promise, { payload: {} });
   assert.equal(activeWorkers.has(child), false);
 });
 
@@ -68,7 +68,7 @@ test("a timed-out worker blocks the serialized queue until exit", async () => {
     fork: () => child,
     workerPath: "/worker.js",
     cwd: "/app",
-    request: { operation: "runways" },
+    request: { operation: "history" },
     activeWorkers,
     timeoutMs: 10
   });
@@ -89,4 +89,26 @@ test("a timed-out worker blocks the serialized queue until exit", async () => {
   await next;
   assert.equal(activeWorkers.has(child), false);
   assert.equal(nextStarted, true);
+});
+
+test("a timed-out worker retains writer ownership until it exits", async () => {
+  const child = new FakeWorker();
+  const activeWorkers = new Set();
+  const promise = runIndexWorkerProcess({
+    fork: () => child,
+    workerPath: "/worker.js",
+    cwd: "/app",
+    request: { operation: "history" },
+    activeWorkers,
+    timeoutMs: 5
+  });
+  child.emit("spawn");
+  let settled = false;
+  promise.catch(() => {}).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(settled, false);
+  assert.equal(activeWorkers.has(child), true);
+  child.emit("exit", 0);
+  await assert.rejects(promise, /timed out/);
+  assert.equal(activeWorkers.has(child), false);
 });

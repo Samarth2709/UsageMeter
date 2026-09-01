@@ -2,6 +2,25 @@ name: Release desktop app
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "bootstrap.js"
+      - "bootstrap-updater.js"
+      - "core-updater.js"
+      - "atomic-file.js"
+      - "preload.js"
+      - "electron-main.js"
+      - "server.js"
+      - "usage-windows.js"
+      - "pricing.js"
+      - "usage-history/**"
+      - "public/**"
+      - "assets/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "update-public-key.pem"
 
 permissions:
   contents: write
@@ -38,17 +57,21 @@ jobs:
           pending_tag=""
           published_tag=""
           while IFS= read -r tag; do
-            release_json="$(gh release view "$tag" --json isDraft,isPrerelease 2>/dev/null || true)"
-            if [ -z "$release_json" ]; then
+            release_error="$RUNNER_TEMP/release-view-error"
+            if release_json="$(gh release view "$tag" --json isDraft,isPrerelease 2>"$release_error")"; then
+              if node -e 'const release = JSON.parse(process.argv[1]); process.exit(release.isDraft || release.isPrerelease ? 1 : 0)' "$release_json"; then
+                published_tag="$tag"
+                break
+              fi
               pending_tag="$tag"
               break
             fi
-            if node -e 'const release = JSON.parse(process.argv[1]); process.exit(release.isDraft || release.isPrerelease ? 1 : 0)' "$release_json"; then
-              published_tag="$tag"
+            if grep -Eqi "HTTP 404|release not found" "$release_error"; then
+              pending_tag="$tag"
               break
             fi
-            pending_tag="$tag"
-            break
+            cat "$release_error" >&2
+            exit 1
           done < <(git tag --merged origin/main --list 'v*' --sort=-v:refname)
 
           if [ -n "$pending_tag" ]; then
@@ -81,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           npm version "$VERSION" --no-git-tag-version
-          shell_files=(bootstrap.js bootstrap-updater.js core-updater.js preload.js update-public-key.pem)
+          shell_files=(bootstrap.js bootstrap-updater.js core-updater.js atomic-file.js preload.js update-public-key.pem package.json package-lock.json scripts/dist-mac.sh)
           if [ -z "$BASE_TAG" ] || ! git diff --quiet "$BASE_TAG"..HEAD -- "${shell_files[@]}"; then
             npm pkg set "usageMeter.minimumShellVersion=$VERSION"
           fi
@@ -94,6 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CORE_SIGNING_KEY_B64"
+          test "$(node -p 'require("./package.json").version')" = "$VERSION"
           npm run dist:mac
           node scripts/build-core.js --version "$VERSION" --out build/core --archive "dist/UsageMeter-core-${VERSION}.tar.gz"
           key_path="$RUNNER_TEMP/usage-meter-core-signing-key.pem"
@@ -118,6 +142,20 @@ jobs:
             --public-key update-public-key.pem \
             --required "dist/UsageMeter-arm64.dmg" \
             --required "$zip_path"
+          hdiutil verify dist/UsageMeter-arm64.dmg
+          mount_path="$RUNNER_TEMP/usage-meter-dmg"
+          mkdir -p "$mount_path"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_path" dist/UsageMeter-arm64.dmg
+          trap 'hdiutil detach "$mount_path" >/dev/null 2>&1 || true' EXIT
+          test "$(defaults read "$mount_path/Usage Meter.app/Contents/Info" CFBundleShortVersionString)" = "$VERSION"
+          codesign --verify --deep --strict "$mount_path/Usage Meter.app"
+          unzip_path="$RUNNER_TEMP/usage-meter-zip"
+          mkdir -p "$unzip_path"
+          ditto -x -k "$zip_path" "$unzip_path"
+          test "$(defaults read "$unzip_path/Usage Meter.app/Contents/Info" CFBundleShortVersionString)" = "$VERSION"
+          codesign --verify --deep --strict "$unzip_path/Usage Meter.app"
+          hdiutil detach "$mount_path"
+          trap - EXIT
       - name: Commit and atomically tag the verified release
         if: steps.source.outputs.mode == 'release'
         env:
@@ -143,9 +181,14 @@ jobs:
             dist/UsageMeter-core-manifest.json
             dist/UsageMeter-core-manifest.sig
           )
-          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+          if release_json="$(gh release view "v${VERSION}" --json isDraft 2>"$RUNNER_TEMP/release-upload-error")"; then
+            node -e 'const release = JSON.parse(process.argv[1]); if (!release.isDraft) throw new Error("Refusing to overwrite assets on a published release.")' "$release_json"
             gh release upload "v${VERSION}" --clobber "${assets[@]}"
           else
+            if ! grep -Eqi "HTTP 404|release not found" "$RUNNER_TEMP/release-upload-error"; then
+              cat "$RUNNER_TEMP/release-upload-error" >&2
+              exit 1
+            fi
             gh release create "v${VERSION}" "${assets[@]}" --verify-tag --draft --title "Usage Meter ${VERSION}" --generate-notes
           fi
       - name: Verify and publish the release

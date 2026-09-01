@@ -2,7 +2,14 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { appendRecords, recordsToMinuteContribution } = require("./contributions");
+const {
+  appendRecords,
+  mergeContribution,
+  mergeProjectContribution,
+  recordsToContribution,
+  recordsToMinuteContribution,
+  recordsToProjectContribution
+} = require("./contributions");
 const { parseClaudeTranscriptChunk } = require("./parseClaude");
 const { parseCodexTranscriptChunk } = require("./parseCodex");
 const { listAllTranscriptFiles } = require("./sources");
@@ -12,9 +19,10 @@ const {
   filenameSessionIdentity,
   structuralSessionIdentity
 } = require("./session-identity");
+const { atomicWriteJsonSync } = require("../atomic-file");
 
 const INDEX_FILE = "usage-index.json";
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 const LEGACY_POINTS_FILE = "window-points.json";
 const LEGACY_POINTS_VERSION = 3;
 const RECONCILE_INTERVAL_MS = 60 * 60 * 1000;
@@ -23,11 +31,14 @@ const HISTORY_RETENTION_DAYS = 90;
 const READ_BUFFER_BYTES = 4 * 1024 * 1024;
 const TAIL_HASH_BYTES = 4096;
 const SESSION_ID_SCAN_BYTES = 256 * 1024;
+const MAX_JSONL_LINE_BYTES = 128 * 1024 * 1024;
+const REBUILD_CHECKPOINT_FILES = 1000;
 
 function freshIndex() {
   return {
     version: INDEX_VERSION,
     lastReconciledAt: 0,
+    needsClaudeRebuild: false,
     files: {},
     duplicates: {}
   };
@@ -460,6 +471,59 @@ function migrateVersionTwoIndex(dataDir, parsed) {
   return index;
 }
 
+function plainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function validIndexShape(parsed) {
+  return Boolean(
+    plainObject(parsed)
+    && plainObject(parsed.files)
+    && Object.values(parsed.files).every((entry) => (
+      plainObject(entry)
+      && typeof entry.cli === "string"
+      && plainObject(entry.contribution)
+      && plainObject(entry.projectContribution)
+      && plainObject(entry.minuteContribution)
+    ))
+    && (parsed.duplicates === undefined || plainObject(parsed.duplicates))
+  );
+}
+
+function migratePreviousIndex(dataDir, parsed) {
+  const prior = parsed.version === 2 ? migrateVersionTwoIndex(dataDir, parsed) : parsed;
+  const index = {
+    ...prior,
+    version: INDEX_VERSION,
+    lastReconciledAt: 0,
+    needsClaudeRebuild: true,
+    files: {},
+    duplicates: plainObject(prior.duplicates) ? prior.duplicates : {}
+  };
+  for (const [filePath, entry] of Object.entries(prior.files || {})) {
+    const sessionIdentity = (
+      entry.sessionIdentity
+      || entry.parserState?.sessionIdentity
+      || filenameSessionIdentity(filePath)
+      || null
+    );
+    index.files[filePath] = {
+      ...entry,
+      sessionIdentity,
+      parserState: null,
+      appendReady: false,
+      needsRebuild: true,
+      ...(entry.cli === "claude" ? {
+        claudeEvents: {},
+        unkeyedContribution: structuredClone(entry.contribution || {}),
+        unkeyedProjectContribution: structuredClone(entry.projectContribution || {}),
+        unkeyedMinuteContribution: structuredClone(entry.minuteContribution || {})
+      } : {})
+    };
+  }
+  return index;
+}
+
 function loadUsageIndex(dataDir) {
   if (!dataDir) return freshIndex();
   try {
@@ -467,18 +531,16 @@ function loadUsageIndex(dataDir) {
       fs.readFileSync(path.join(dataDir, INDEX_FILE), "utf8")
     );
     if (
-      parsed
-      && parsed.version === INDEX_VERSION
-      && parsed.files
-      && typeof parsed.files === "object"
+      parsed.version === INDEX_VERSION
+      && validIndexShape(parsed)
     ) {
       if (!parsed.duplicates || typeof parsed.duplicates !== "object") {
         parsed.duplicates = {};
       }
       return parsed;
     }
-    if (parsed && parsed.version === 2 && parsed.files && typeof parsed.files === "object") {
-      return migrateVersionTwoIndex(dataDir, parsed);
+    if ((parsed?.version === 2 || parsed?.version === 3) && validIndexShape(parsed)) {
+      return migratePreviousIndex(dataDir, parsed);
     }
     // An explicit schema mismatch must rebuild from transcripts. Retained legacy
     // caches may be older than the index they would otherwise replace.
@@ -491,11 +553,7 @@ function loadUsageIndex(dataDir) {
 
 function saveUsageIndex(dataDir, index) {
   if (!dataDir) return;
-  fs.mkdirSync(dataDir, { recursive: true });
-  const target = path.join(dataDir, INDEX_FILE);
-  const temporary = `${target}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(index));
-  fs.renameSync(temporary, target);
+  atomicWriteJsonSync(path.join(dataDir, INDEX_FILE), index, { pretty: false });
 }
 
 function emptyFileEntry(cli, sessionIdentity = null, identityScanComplete = false) {
@@ -514,7 +572,13 @@ function emptyFileEntry(cli, sessionIdentity = null, identityScanComplete = fals
     needsRebuild: false,
     contribution: {},
     projectContribution: {},
-    minuteContribution: {}
+    minuteContribution: {},
+    ...(cli === "claude" ? {
+      claudeEvents: {},
+      unkeyedContribution: {},
+      unkeyedProjectContribution: {},
+      unkeyedMinuteContribution: {}
+    } : {})
   };
 }
 
@@ -522,6 +586,21 @@ function parseChunk(cli, text, state) {
   return cli === "codex"
     ? parseCodexTranscriptChunk(text, state || {})
     : parseClaudeTranscriptChunk(text, state || {});
+}
+
+function parserStateForEntry(entry, cli) {
+  const state = structuredClone(entry?.parserState || {});
+  if (cli !== "claude") return state;
+  state.usageById = Object.fromEntries(
+    Object.entries(entry?.claudeEvents || {}).map(([eventId, record]) => [eventId, {
+      inputTokens: record.inputTokens || 0,
+      cachedReadTokens: record.cachedReadTokens || 0,
+      cacheWriteTokens: record.cacheWriteTokens || 0,
+      cacheWrite1hTokens: record.cacheWrite1hTokens || 0,
+      outputTokens: record.outputTokens || 0
+    }])
+  );
+  return state;
 }
 
 function validJsonLine(buffer) {
@@ -540,7 +619,8 @@ function readAppendedRecords(filePath, cli, startOffset, initialState, targetSiz
   const buffer = Buffer.allocUnsafe(READ_BUFFER_BYTES);
   let readPosition = startOffset;
   let processedBytes = startOffset;
-  let pending = Buffer.alloc(0);
+  let pendingChunks = [];
+  let pendingBytes = 0;
   let parserState = initialState || {};
   let bytesRead = 0;
 
@@ -552,29 +632,38 @@ function readAppendedRecords(filePath, cli, startOffset, initialState, targetSiz
       readPosition += count;
       bytesRead += count;
 
-      const combined = pending.length
-        ? Buffer.concat([pending, buffer.subarray(0, count)])
-        : Buffer.from(buffer.subarray(0, count));
-      const newline = combined.lastIndexOf(0x0a);
+      const chunk = Buffer.from(buffer.subarray(0, count));
+      const newline = chunk.lastIndexOf(0x0a);
       if (newline < 0) {
-        pending = combined;
+        pendingChunks.push(chunk);
+        pendingBytes += chunk.length;
+        if (pendingBytes > MAX_JSONL_LINE_BYTES) {
+          throw new Error("Transcript contains an oversized JSONL record.");
+        }
         continue;
       }
 
-      const complete = combined.subarray(0, newline + 1);
-      pending = Buffer.from(combined.subarray(newline + 1));
+      const prefix = chunk.subarray(0, newline + 1);
+      const complete = pendingChunks.length
+        ? Buffer.concat([...pendingChunks, prefix], pendingBytes + prefix.length)
+        : prefix;
+      const suffix = Buffer.from(chunk.subarray(newline + 1));
+      pendingChunks = suffix.length ? [suffix] : [];
+      pendingBytes = suffix.length;
       const parsed = parseChunk(cli, complete.toString("utf8"), parserState);
       parserState = parsed.state;
       if (parsed.records.length) onRecords(parsed.records);
       processedBytes += complete.length;
     }
 
+    const pending = pendingChunks.length
+      ? Buffer.concat(pendingChunks, pendingBytes)
+      : Buffer.alloc(0);
     if (pending.length && validJsonLine(pending)) {
       const parsed = parseChunk(cli, pending.toString("utf8"), parserState);
       parserState = parsed.state;
       if (parsed.records.length) onRecords(parsed.records);
       processedBytes += pending.length;
-      pending = Buffer.alloc(0);
     }
   } finally {
     fs.closeSync(fd);
@@ -652,6 +741,41 @@ function hasDailyHistory(entry) {
   return Object.keys(entry.contribution || {}).length > 0;
 }
 
+function pruneClaudeEvents(entry, cutoffDay) {
+  let changed = false;
+  for (const [eventId, record] of Object.entries(entry.claudeEvents || {})) {
+    if (!record || record.day < cutoffDay) {
+      delete entry.claudeEvents[eventId];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function rebuildClaudeContributions(index, cutoffDay, cutoffMinute) {
+  const seenEvents = new Set();
+  for (const filePath of Object.keys(index.files).sort()) {
+    const entry = index.files[filePath];
+    if (entry.cli !== "claude") continue;
+    pruneClaudeEvents(entry, cutoffDay);
+    entry.contribution = structuredClone(entry.unkeyedContribution || {});
+    entry.projectContribution = structuredClone(entry.unkeyedProjectContribution || {});
+    entry.minuteContribution = structuredClone(entry.unkeyedMinuteContribution || {});
+    for (const [eventId, record] of Object.entries(entry.claudeEvents || {}).sort(([a], [b]) => a.localeCompare(b))) {
+      if (seenEvents.has(eventId)) continue;
+      seenEvents.add(eventId);
+      mergeContribution(entry.contribution, recordsToContribution([record]));
+      mergeProjectContribution(
+        entry.projectContribution,
+        recordsToProjectContribution([record], filePath, "claude")
+      );
+      mergeContribution(entry.minuteContribution, recordsToMinuteContribution([record]));
+    }
+    pruneDailyHistory(entry, cutoffDay);
+    pruneRecentMinutes(entry, cutoffMinute);
+  }
+}
+
 function updateUsageIndex({
   homeDir,
   dataDir = null,
@@ -663,6 +787,8 @@ function updateUsageIndex({
   const index = providedIndex || loadUsageIndex(dataDir);
   if (!index.duplicates || typeof index.duplicates !== "object") index.duplicates = {};
   let dirty = false;
+  let claudeDirty = index.needsClaudeRebuild === true;
+  let rebuiltSinceCheckpoint = 0;
   if (forceRebuild) {
     if (Object.keys(index.duplicates).length) {
       index.duplicates = {};
@@ -671,8 +797,10 @@ function updateUsageIndex({
     for (const entry of Object.values(index.files)) {
       entry.needsRebuild = true;
       entry.appendReady = false;
+      if (entry.cli === "claude") claudeDirty = true;
     }
     dirty = true;
+    if (claudeDirty) index.needsClaudeRebuild = true;
   }
   const discovered = listAllTranscriptFiles(homeDir, extraRoots);
   const discoveredPaths = new Set(discovered.map(({ path: filePath }) => filePath));
@@ -742,6 +870,10 @@ function updateUsageIndex({
         entry.missingSince = entry.missingSince || nowMs;
         pruneDailyHistory(entry, dailyCutoff);
         pruneRecentMinutes(entry, cutoff);
+        if (entry.cli === "claude") {
+          pruneClaudeEvents(entry, dailyCutoff);
+          claudeDirty = true;
+        }
         if (hasDailyHistory(entry)) {
           stats.retainedMissingFiles += 1;
         } else {
@@ -824,6 +956,7 @@ function updateUsageIndex({
         missingByIdentity.delete(pendingInodeKey);
         if (pendingSessionKey) missingBySessionIdentity.delete(pendingSessionKey);
         dirty = true;
+        if (cli === "claude") claudeDirty = true;
       }
       if (sessionIdentity && !entry.sessionIdentity) {
         entry.sessionIdentity = sessionIdentity;
@@ -838,12 +971,18 @@ function updateUsageIndex({
         entry.missingSince = null;
         dirty = true;
       }
-      if (pruneRecentMinutes(entry, cutoff) || pruneDailyHistory(entry, dailyCutoff)) dirty = true;
+      if (pruneRecentMinutes(entry, cutoff) || pruneDailyHistory(entry, dailyCutoff)) {
+        dirty = true;
+        if (cli === "claude") claudeDirty = true;
+      }
       if (
         sessionIdentity
         && entry.sessionIdentity === sessionIdentity
         && commitDuplicatesOrQueue(index, found, duplicateFiles, cli, sessionIdentity)
-      ) dirty = true;
+      ) {
+        dirty = true;
+        if (cli === "claude") claudeDirty = true;
+      }
       if (index.duplicates[filePath]) {
         delete index.duplicates[filePath];
         dirty = true;
@@ -862,7 +1001,7 @@ function updateUsageIndex({
         : emptyFileEntry(cli, sessionIdentity, identityScanComplete);
       const startOffset = append ? nextEntry.processedBytes : 0;
       const parserState = append
-        ? nextEntry.parserState
+        ? parserStateForEntry(nextEntry, cli)
         : null;
       result = readAppendedRecords(
         filePath,
@@ -896,6 +1035,10 @@ function updateUsageIndex({
     entry.ino = stat.ino;
     entry.processedBytes = result.processedBytes;
     entry.parserState = result.parserState;
+    if (cli === "claude" && entry.parserState) {
+      delete entry.parserState.usageById;
+      delete entry.parserState.seenIds;
+    }
     const parsedSessionIdentity = result.parserState.sessionIdentity || null;
     const currentFilenameIdentity = filenameSessionIdentity(filePath);
     entry.sessionIdentity = (
@@ -913,6 +1056,10 @@ function updateUsageIndex({
     entry.missingSince = null;
     pruneRecentMinutes(entry, cutoff);
     pruneDailyHistory(entry, dailyCutoff);
+    if (cli === "claude") {
+      pruneClaudeEvents(entry, dailyCutoff);
+      claudeDirty = true;
+    }
     const confirmedDiscoveryIdentity = (
       sessionIdentity
       && entry.sessionIdentity === sessionIdentity
@@ -920,7 +1067,10 @@ function updateUsageIndex({
     if (confirmedDiscoveryIdentity) {
       if (
         commitDuplicatesOrQueue(index, found, duplicateFiles, cli, sessionIdentity)
-      ) dirty = true;
+      ) {
+        dirty = true;
+        if (cli === "claude") claudeDirty = true;
+      }
     }
     if (pendingPreviousPath) {
       const previousIdentity = (
@@ -954,11 +1104,41 @@ function updateUsageIndex({
     stats.parserBytesRead += result.bytesRead;
     stats.bytesRead += result.bytesRead;
     if (append) stats.appendedFiles += 1;
-    else stats.rebuiltFiles += 1;
+    else {
+      stats.rebuiltFiles += 1;
+      rebuiltSinceCheckpoint += 1;
+    }
     dirty = true;
+    if (
+      dataDir
+      && rebuiltSinceCheckpoint >= REBUILD_CHECKPOINT_FILES
+    ) {
+      if (claudeDirty) index.needsClaudeRebuild = true;
+      saveUsageIndex(dataDir, index);
+      rebuiltSinceCheckpoint = 0;
+    }
   }
 
-  if (deduplicateIndexedSessions(index, foundPaths)) dirty = true;
+  const claudePathsBeforeDedup = Object.entries(index.files)
+    .filter(([, entry]) => entry.cli === "claude")
+    .map(([filePath]) => filePath)
+    .sort()
+    .join("\n");
+  if (deduplicateIndexedSessions(index, foundPaths)) {
+    dirty = true;
+    const claudePathsAfterDedup = Object.entries(index.files)
+      .filter(([, entry]) => entry.cli === "claude")
+      .map(([filePath]) => filePath)
+      .sort()
+      .join("\n");
+    if (claudePathsAfterDedup !== claudePathsBeforeDedup) claudeDirty = true;
+  }
+
+  if (claudeDirty) {
+    rebuildClaudeContributions(index, dailyCutoff, cutoff);
+    index.needsClaudeRebuild = false;
+    dirty = true;
+  }
 
   if (dirty) saveUsageIndex(dataDir, index);
   return { index, stats };

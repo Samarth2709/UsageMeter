@@ -4,7 +4,7 @@ function runIndexWorkerProcess({
   cwd,
   request,
   activeWorkers,
-  timeoutMs = 120000
+  timeoutMs = 300000
 }) {
   return new Promise((resolve, reject) => {
     const child = fork(workerPath, [], {
@@ -16,6 +16,16 @@ function runIndexWorkerProcess({
     let settled = false;
     let outcome = null;
     let stopping = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      activeWorkers.delete(child);
+      if (outcome?.error) reject(outcome.error);
+      else if (outcome) resolve(outcome.result);
+      else reject(new Error("Usage index worker stopped without a result."));
+    };
 
     const errorValue = (error) => (
       error instanceof Error ? error : new Error(String(error))
@@ -46,13 +56,9 @@ function runIndexWorkerProcess({
       stopAfter({ error: errorValue(error) }, { kill: false });
     });
     child.once("exit", (code) => {
-      activeWorkers.delete(child);
       if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (outcome?.error) reject(outcome.error);
-      else if (outcome) resolve(outcome.result);
-      else reject(new Error(`Usage index worker exited with code ${code}.`));
+      if (!outcome) outcome = { error: new Error(`Usage index worker exited with code ${code}.`) };
+      finish();
     });
     child.once("spawn", () => {
       if (stopping) {
