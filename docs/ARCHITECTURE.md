@@ -91,6 +91,6 @@ Transcript parsing is read-only. The cache stores aggregate buckets plus normali
 
 ## Keeping app and site aligned
 
-`public/history.js` and `site/history.js` share dashboard behavior. When a dashboard interaction changes, update both deliberately and verify their content hashes or diff. The site can omit native-only controls such as folder editing because it has no Electron IPC.
+`public/history.js` and `site/history.js` share dashboard behavior. When a dashboard interaction changes, update both deliberately and verify their content hashes or diff. The site can omit native-only controls such as folder editing because it has no Electron IPC. The app's visual design (tokens, type, the allowance ring in `public/ring.js`) is documented in [Design](DESIGN.md); the site keeps its own stylesheet.
 
 For implementation commands and validation, see [Development](DEVELOPMENT.md). For publishing behavior, see [Releasing](RELEASING.md).

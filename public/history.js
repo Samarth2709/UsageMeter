@@ -10,7 +10,8 @@ let unsubscribeHistory = null;
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const CLI_COLORS = { claude: "#f4ab5e", codex: "#74c278" };
+const CLI_COLORS = { claude: "var(--tint-claude)", codex: "var(--tint-codex)" };
+const NEUTRAL_BAR = "var(--bar-neutral)";
 
 /* ---------- formatting ---------- */
 function fmtTokens(n) {
@@ -75,13 +76,15 @@ function dayBars(el, days, segFn, hoverFn) {
   const W = 700, H = 180, pad = 16, base = H - pad, plot = H - pad * 2;
   const max = Math.max(1, ...days.map((d) => segFn(d).reduce((s, x) => s + x.value, 0)));
   const bw = (W - pad * 2) / Math.max(1, days.length);
+  const barW = Math.max(1.5, bw * 0.68);
+  const rx = Math.min(2, barW / 2);
   const bars = days.map((d, i) => {
-    const x = pad + i * bw;
+    const x = pad + i * bw + (bw - barW) / 2;
     let y = base;
     return segFn(d).map((seg) => {
       const h = (seg.value / max) * plot;
       y -= h;
-      return `<rect x="${(x + 0.7).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 1.4).toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" fill="${seg.color}"></rect>`;
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="${rx}" fill="${seg.color}"></rect>`;
     }).join("");
   }).join("");
   const hits = days.map((d, i) => `<rect class="bar-hit" data-idx="${i}" x="${(pad + i * bw).toFixed(1)}" y="${pad}" width="${bw.toFixed(1)}" height="${plot}"></rect>`).join("");
@@ -100,7 +103,7 @@ function cumulativeLine(el, days) {
   const line = xy.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
   const area = `${line} L${xy.at(-1)[0].toFixed(1)} ${base} L${xy[0][0].toFixed(1)} ${base} Z`;
   const hits = pts.map((p, i) => `<rect class="bar-hit" data-idx="${i}" x="${(pad + (i - 0.5) * bw).toFixed(1)}" y="${pad}" width="${bw.toFixed(1)}" height="${plot}"></rect>`).join("");
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none"><path d="${area}" fill="rgba(116,194,120,0.16)"></path><path d="${line}" fill="none" stroke="#74c278" stroke-width="2"></path>${hits}</svg>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none"><path d="${area}" fill="color-mix(in srgb, var(--blue) 12%, transparent)"></path><path d="${line}" fill="none" stroke="var(--blue)" stroke-width="1.5" stroke-linejoin="round"></path>${hits}</svg>`;
   el.querySelector("svg")?.setAttribute("aria-hidden", "true");
   attachHover(el, ".bar-hit", (hit) => {
     const p = pts[+hit.dataset.idx];
@@ -113,7 +116,7 @@ function hBars(el, rows) {
   el.innerHTML = rows.map((r) => `
     <div class="hbar"${r.title ? ` title="${esc(r.title)}"` : ""}>
       <span class="hbar-label">${esc(r.label)}</span>
-      <span class="hbar-track"><span class="hbar-fill" style="width:${((r.value / max) * 100).toFixed(1)}%;background:${r.color || "var(--accent)"}"></span></span>
+      <span class="hbar-track"><span class="hbar-fill" style="width:${((r.value / max) * 100).toFixed(1)}%;background:${r.color || NEUTRAL_BAR}"></span></span>
       <span class="hbar-val">${esc(r.valueText)}</span>
     </div>`).join("");
 }
@@ -137,7 +140,7 @@ function heatmap(el, days) {
 }
 
 function card(label, value, sub) {
-  return `<div class="card"><span class="card-label">${esc(label)}</span><span class="card-value">${esc(value)}</span><span class="card-sub">${esc(sub || "")}</span></div>`;
+  return `<div class="stat"><span class="stat-label">${esc(label)}</span><span class="stat-value">${esc(value)}</span><span class="stat-sub">${esc(sub || "")}</span></div>`;
 }
 
 /* ---------- per-day hover bodies ---------- */
@@ -163,7 +166,8 @@ function dayCostHover(d) {
 const WINDOW_ORDER = { fiveHour: 0, week: 1 };
 const CLI_ORDER = { claude: 0, codex: 1 };
 const CLI_LABEL = { claude: "Claude", codex: "Codex" };
-const WINDOW_LABEL = { fiveHour: "5H", week: "Week" };
+const WINDOW_LABEL = { fiveHour: "5-hour", week: "Weekly" };
+const LOW_REMAINING_PERCENT = 15;
 
 function formatResetAt(resetAt) {
   const when = Date.parse(resetAt);
@@ -184,35 +188,36 @@ function renderWindowValues(rows) {
   const sorted = [...rows].sort((a, b) =>
     ((CLI_ORDER[a.cli] ?? 99) - (CLI_ORDER[b.cli] ?? 99)) ||
     ((WINDOW_ORDER[a.kind] ?? 99) - (WINDOW_ORDER[b.kind] ?? 99)));
-  el.innerHTML = sorted.map((w) => {
+  el.innerHTML = sorted.map((w, index) => {
     const pct = Math.min(100, Math.max(0, w.usedPercent));
     const service = CLI_LABEL[w.cli] || w.cli;
-    const window = WINDOW_LABEL[w.kind] || w.label;
+    const rawLabel = String(w.label || "");
+    const window = WINDOW_LABEL[w.kind] || (rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1));
     const pricingComplete = w.pricingComplete !== false;
-    const projectionLabel = !pricingComplete ? "Projection unavailable" : w.full ? "Full-window value" : "Projected window value";
+    const projectionLabel = !pricingComplete ? "Projection unavailable" : w.full ? "Full-window value" : "Projected value";
     const projection = w.projectedDollars == null ? "—" : fmtDollars(w.projectedDollars);
     const usedLabel = pricingComplete ? "Value used" : "Unpriced usage";
     const usedValue = pricingComplete ? fmtDollars(w.usedDollars) : `${fmtTokens(w.unpricedTokens)} tok`;
     return `
-    <article class="window-value-card window-value-card--${esc(w.cli)}">
-      <div class="window-value-card-head">
-        <span class="window-service">${esc(service)}</span>
-        <span class="window-kind">${esc(window)}</span>
+    <article class="allowance-row allowance-row--${esc(w.cli)}">
+      <div class="allowance-ring" data-ring="${index}" role="progressbar" aria-label="${esc(service)} ${esc(window)} allowance used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct.toFixed(1)}"></div>
+      <div class="allowance-id">
+        <span class="allowance-service">${esc(service)}</span>
+        <span class="allowance-kind">${esc(window)}</span>
       </div>
-      <div class="window-value-card-main">
-        <div>
-          <span class="window-value-kicker">${usedLabel}</span>
-          <strong>${usedValue}</strong>
-        </div>
-        <span class="window-percent"><b>${Math.round(pct)}%</b><small>used</small></span>
-      </div>
-      <div class="window-meter" role="progressbar" aria-label="${esc(service)} ${esc(window)} allowance used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct.toFixed(1)}"><i style="width:${pct.toFixed(1)}%"></i></div>
-      <div class="window-value-card-foot">
-        <span><small>${projectionLabel}</small><b>${projection}</b></span>
-        <span class="window-reset">${formatResetAt(w.resetAt)}</span>
-      </div>
+      <div class="allowance-metric"><small>${usedLabel}</small><b>${usedValue}</b></div>
+      <div class="allowance-metric"><small>${projectionLabel}</small><b>${projection}</b></div>
+      <div class="allowance-metric"><small>Used</small><b>${Math.round(pct)}%</b></div>
+      <span class="allowance-reset">${formatResetAt(w.resetAt)}</span>
     </article>`;
   }).join("");
+  if (window.UMRing) {
+    for (const host of el.querySelectorAll(".allowance-ring[data-ring]")) {
+      const w = sorted[Number(host.dataset.ring)];
+      const remaining = 100 - Math.min(100, Math.max(0, w.usedPercent));
+      window.UMRing.renderRing(host, [{ remainingPercent: remaining, low: remaining <= LOW_REMAINING_PERCENT }]);
+    }
+  }
 }
 
 /* ---------- sections ---------- */
@@ -274,9 +279,8 @@ function renderDiagnostics(d) {
   if (repairBtn) repairBtn.style.display = nativeApi?.repairUsageHistory ? "" : "none";
 
   const mark = (b) => (b ? "✓" : "✗");
-  const row = (label, val) =>
-    `<div style="display:flex;justify-content:space-between;gap:16px;padding:4px 0;border-bottom:1px solid rgba(244,240,231,0.08);font-size:0.8rem"><span style="color:var(--muted);word-break:break-all">${label}</span><b style="color:var(--fg);text-align:right;white-space:nowrap">${val}</b></div>`;
-  const head = (t) => `<div style="margin-top:14px;margin-bottom:4px;font-weight:600;font-size:0.82rem;color:var(--fg)">${t}</div>`;
+  const row = (label, val) => `<div class="diag-row"><span>${label}</span><b>${val}</b></div>`;
+  const head = (t) => `<div class="diag-head">${t}</div>`;
   const r = d.range;
 
   const out = [];
@@ -354,9 +358,9 @@ function renderHelp(dg) {
   const btn = document.querySelector("#diag-help");
   if (!panel) return;
   const items = window.UMHelp ? window.UMHelp.buildHelp(dg) : [];
-  const color = (lvl) => (lvl === "ok" ? "#74c278" : lvl === "warn" ? "#e0796a" : "var(--muted)");
+  const levelClass = (lvl) => (lvl === "ok" ? "help-ok" : lvl === "warn" ? "help-warn" : "help-info");
   panel.innerHTML = items
-    .map((it) => `<div style="border-left:3px solid ${color(it.level)};padding:6px 10px;margin:6px 0;font-size:0.8rem;line-height:1.45;color:var(--fg)">${esc(it.text)}</div>`)
+    .map((it) => `<div class="help-item ${levelClass(it.level)}">${esc(it.text)}</div>`)
     .join("");
   if (btn && !btn.dataset.wired) {
     btn.dataset.wired = "1";
@@ -377,11 +381,11 @@ function renderFolderEditor(dg) {
       ? (paths || [])
           .map(
             (p) =>
-              `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:4px 0;font-size:0.8rem"><span style="color:var(--fg);word-break:break-all">${esc(p)}</span><button class="mini-toggle diag-remove" data-cli="${cli}" data-path="${encodeURIComponent(p)}">Remove</button></div>`
+              `<div class="folder-row"><span>${esc(p)}</span><button class="mini-toggle diag-remove" data-cli="${cli}" data-path="${encodeURIComponent(p)}">Remove</button></div>`
           )
           .join("")
-      : `<div style="color:var(--muted);font-size:0.8rem;padding:4px 0">No extra folders — scanning defaults only.</div>`;
-    return `<div style="margin:8px 0"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:0.82rem">${label}</b><button class="mini-toggle diag-add" data-cli="${cli}">+ Add folder</button></div>${rows}</div>`;
+      : `<div class="folder-empty">No extra folders. Scanning the default locations only.</div>`;
+    return `<div class="folder-group"><div class="folder-group-head"><span>${label}</span><button class="mini-toggle diag-add" data-cli="${cli}">Add folder</button></div>${rows}</div>`;
   };
   host.innerHTML = group("claude", "Claude folders", conf.claude) + group("codex", "Codex folders", conf.codex);
   wireFolderEditor();
@@ -424,7 +428,7 @@ function renderAll(d) {
   const empty = document.querySelector("#ov-empty");
   if (empty) {
     empty.innerHTML = r.tokens.total === 0
-      ? `<div style="border:1px solid var(--accent);border-radius:8px;padding:12px 14px;margin-bottom:12px;color:var(--fg);font-size:0.82rem;line-height:1.45">No CLI usage found in the last ${rangeDays} days. Usage history is built only from local <b>Claude Code</b> &amp; <b>Codex</b> CLI transcripts — API/SDK or IDE usage isn't counted. Open the <b>Diagnostics</b> panel (⚙) to see exactly what was scanned.</div>`
+      ? `<div class="empty-state">No CLI usage found in the last ${rangeDays} days. Usage history is built only from local <b>Claude Code</b> and <b>Codex</b> CLI transcripts. API, SDK, and IDE usage isn't counted. Open <b>Diagnostics</b> from the toolbar to see exactly what was scanned.</div>`
       : "";
   }
 
@@ -450,21 +454,21 @@ function renderAll(d) {
   heatmap(document.querySelector("#ot-heatmap"), r.days);
   const topDays = [...r.days].sort((a, b) => b.dollars - a.dollars).slice(0, 7);
   hBars(document.querySelector("#ec-top-days"), topDays.map((day) => ({
-    label: fmtDay(day.day), value: day.dollars, valueText: fmtDollars(day.dollars), color: "var(--accent)"
+    label: fmtDay(day.day), value: day.dollars, valueText: fmtDollars(day.dollars), color: NEUTRAL_BAR
   })));
 
   hBars(document.querySelector("#top-models"), r.byModel.slice(0, 8).map((model) => ({
     label: `${CLI_LABEL[model.cli] || model.cli} · ${model.model}`,
     value: model.dollars || model.tokens.total,
     valueText: model.dollars == null ? `${fmtTokens(model.tokens.total)} tok` : fmtDollars(model.dollars),
-    color: CLI_COLORS[model.cli] || "var(--accent)"
+    color: CLI_COLORS[model.cli] || NEUTRAL_BAR
   })));
   hBars(document.querySelector("#top-projects"), r.byProject.slice(0, 8).map((project) => ({
     label: project.parentLabel ? `${project.parentLabel}/${project.label}` : project.label,
     value: project.dollars || project.tokens.total,
     valueText: project.pricing?.complete === false ? `${fmtTokens(project.tokens.total)} tok` : fmtDollars(project.dollars),
     title: project.path || project.label,
-    color: "var(--accent)"
+    color: NEUTRAL_BAR
   })));
 
   // diagnostics panel (rendered even when hidden so it's correct when opened)

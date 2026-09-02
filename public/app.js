@@ -117,6 +117,63 @@ function usageWindows(data) {
   return data.windows.filter((window) => window && typeof window === "object");
 }
 
+// Band order: the 5-hour allowance on top, weekly beneath it.
+function windowOrder(window) {
+  if (/5-hour/i.test(window?.label || "")) return 0;
+  if (/week/i.test(window?.label || "")) return 1;
+  return 2;
+}
+
+function displayWindowLabel(label) {
+  if (/5-hour/i.test(label || "")) return "5-hour";
+  if (/week/i.test(label || "")) return "Weekly";
+  return String(label || "Allowance").trim();
+}
+
+// At or below this share remaining, the meter fill turns red.
+const LOW_REMAINING_PERCENT = 15;
+
+function isLowRemaining(window) {
+  return (Number(window?.remainingPercent) || 0) <= LOW_REMAINING_PERCENT;
+}
+
+const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+
+// Count the displayed percent from its previous value to the new one.
+function animatePercent(node, from, to) {
+  if (from === to || reducedMotion?.matches || typeof requestAnimationFrame !== "function") {
+    node.textContent = `${Math.round(to)}%`;
+    return;
+  }
+
+  const start = performance.now();
+  const duration = 900;
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    node.textContent = `${Math.round(from + (to - from) * eased)}%`;
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// The row paints one full-width band per window (at most two) as its own
+// pseudo-elements, so the fills run beneath the account identity. Their shares
+// are CSS variables on the row; a changed value glides there instead of jumping.
+function paintRowMeter(elements, windows) {
+  const row = elements?.row;
+  if (!row?.style) return;
+  row.dataset.bands = String(Math.min(2, windows.length));
+  // The 5-hour band is drawn at half height; a weekly-only row keeps full height.
+  row.dataset.thinTop = /5-hour/i.test(windows[0]?.label || "") ? "1" : "0";
+  [0, 1].forEach((index) => {
+    const window = windows[index];
+    const remaining = window ? Math.min(100, Math.max(0, Number(window.remainingPercent) || 0)) : 0;
+    row.style.setProperty(`--r${index + 1}`, `${remaining.toFixed(1)}%`);
+    row.classList.toggle(`low-${index + 1}`, Boolean(window) && isLowRemaining(window));
+  });
+}
+
 function buildCompactSummary(data) {
   const windows = usageWindows(data);
 
@@ -245,24 +302,32 @@ function buildResetTitle(data) {
 }
 
 function renderLimitWindows(elements, data) {
-  const displayWindows = usageWindows(data);
-
+  const displayWindows = usageWindows(data).slice().sort((a, b) => windowOrder(a) - windowOrder(b));
+  const previous = new Map(
+    [...elements.limitGrid.querySelectorAll?.(".limit-window") ?? []].map((node) => [node.dataset.label, Number(node.dataset.remaining)])
+  );
+  paintRowMeter(elements, displayWindows);
   elements.limitGrid.replaceChildren(...displayWindows.map((window) => {
     const root = limitWindowTemplate.content.firstElementChild.cloneNode(true);
-    const label = compactWindowLabel(window.label);
     const resetDate = getResetDate(window);
+    const label = displayWindowLabel(window.label);
+    const remaining = Math.min(100, Math.max(0, Number(window.remainingPercent) || 0));
+    const before = previous.has(label) ? previous.get(label) : 0;
+    root.dataset.label = label;
+    root.dataset.remaining = remaining.toFixed(1);
     root.querySelector(".limit-label").textContent = label;
-    root.querySelector(".limit-value").textContent = `${Math.round(Number(window.remainingPercent) || 0)}%`;
+    animatePercent(root.querySelector(".limit-value"), before, remaining);
+    root.classList.toggle("low", isLowRemaining(window));
     const reset = root.querySelector(".limit-reset");
     reset.textContent = resetDetail(window);
     reset.title = resetDate ? `Resets ${formatResetTime(resetDate.toISOString(), true)}` : "Reset time not reported.";
-    root.classList.remove("empty");
     return root;
   }));
   elements.limitGrid.classList.toggle("hidden", !displayWindows.length);
 }
 
 function showStatusSummary(elements, text, className, title = "") {
+  paintRowMeter(elements, []);
   elements.limitGrid.replaceChildren();
   elements.limitGrid.classList.add("hidden");
   elements.summary.textContent = text;
@@ -395,6 +460,10 @@ function updateAccountState(accountId, patch = {}) {
 
   if (elements) {
     elements.name.textContent = nextState.name;
+    // The identity is not drawn; it is available as the tooltip of the name block.
+    // (The row's own tooltip is reserved for the cached-data detail.)
+    const meta = elements.name?.parentElement;
+    if (meta) meta.title = nextState.name;
   }
 
   syncOverallStatus();
@@ -627,6 +696,7 @@ function createAccountRow(account) {
   name.textContent = buildAccountName(account);
   showStatusSummary(
     {
+      row: node,
       limitGrid,
       summary
     },
@@ -677,7 +747,7 @@ function createAccountRow(account) {
     connectButton.disabled = true;
     deleteButton.disabled = true;
     showStatusSummary(
-      { limitGrid, summary },
+      { row: node, limitGrid, summary },
       removeLogin ? "Removing login…" : "Logging out…",
       "pending"
     );
@@ -716,7 +786,7 @@ function createAccountRow(account) {
     } catch (error) {
       renderDisconnected(account.id);
       showStatusSummary(
-        { limitGrid, summary },
+        { row: node, limitGrid, summary },
         "Couldn’t delete",
         "error",
         error?.message || "Account deletion failed."
