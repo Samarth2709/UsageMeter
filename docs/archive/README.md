@@ -18,6 +18,7 @@ Archived planning material:
 - `2026-06-16-usage-history-tracker-implementation-plan.md` — original task-by-task implementation plan.
 - `2026-06-25-28-scan-roots-and-diagnostics-plan.md` — completed scan-root and Diagnostics plan.
 - `2026-08-27-incremental-usage-index-plan.md` — completed incremental-index implementation plan.
+- `2026-09-01-prevent-claude-auth-race-plan.md` — web-only Claude allowance and cached-state implementation plan.
 
 Archived review material:
 

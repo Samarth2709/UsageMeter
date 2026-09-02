@@ -44,7 +44,6 @@ const backgroundRefreshMs = 60000;
 const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
 // The claude.ai web scrape recreates a full renderer each time, so keep it infrequent.
 const claudeWebRefreshMs = 300000;
-const claudeCliUsageRefreshMs = 300000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = globalThis.__usageMeterSingleInstanceLockAcquired
   ?? app.requestSingleInstanceLock();
@@ -66,9 +65,7 @@ let autoStartPromise = null;
 let claudeUsageWindow = null;
 let claudeWebRefreshTimer = null;
 let claudeWebRefreshPromise = null;
-let claudeCliUsageRefreshPromise = null;
 let lastClaudeWebScrapeAt = 0;
-let lastClaudeCliUsageRefreshAt = 0;
 let claudeWebIdentity = null;
 let stopClaudeLoginCompletionRefresh = null;
 // Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
@@ -926,63 +923,6 @@ async function mergeClaudeWebUsage(snapshot) {
   return mergedSnapshot;
 }
 
-function hasClaudeFiveHourWindow(windows = []) {
-  return windows.some((window) => /5[-\s]?hour|5h|current\s*session/i.test(window?.label || ""));
-}
-
-async function shouldRefreshClaudeCliUsage(force = false) {
-  if (force) return true;
-  if (claudeWebUsageCache.ok && hasClaudeFiveHourWindow(claudeWebUsageCache.data?.windows || [])) {
-    const state = await getState();
-    const target = findIdentityForUsage(
-      state.config.accounts.filter((account) => account.type === "claude"),
-      "claude",
-      claudeWebUsageCache.data,
-      { requireStrong: true }
-    );
-    if (target) return false;
-  }
-
-  return Date.now() - lastClaudeCliUsageRefreshAt >= claudeCliUsageRefreshMs;
-}
-
-async function refreshClaudeCliUsage() {
-  if (claudeCliUsageRefreshPromise) {
-    return claudeCliUsageRefreshPromise;
-  }
-
-  lastClaudeCliUsageRefreshAt = Date.now();
-  claudeCliUsageRefreshPromise = refreshAllAccounts({
-    onlyAccountTypes: ["claude"]
-  });
-
-  try {
-    return await claudeCliUsageRefreshPromise;
-  } finally {
-    claudeCliUsageRefreshPromise = null;
-  }
-}
-
-function mergeAccountRefresh(snapshot, refreshedSnapshot) {
-  if (!refreshedSnapshot?.results?.length) {
-    return snapshot;
-  }
-
-  const refreshedByAccountId = new Map(
-    refreshedSnapshot.results.map((result) => [result.accountId, result])
-  );
-
-  const seen = new Set(snapshot.results.map((result) => result.accountId));
-  return {
-    ...snapshot,
-    config: refreshedSnapshot.config || snapshot.config,
-    results: [
-      ...snapshot.results.map((result) => refreshedByAccountId.get(result.accountId) || result),
-      ...refreshedSnapshot.results.filter((result) => !seen.has(result.accountId))
-    ]
-  };
-}
-
 // Flatten the live snapshot's per-account limit windows into the shape
 // computeWindowValues wants. One account per
 // service is the norm; take the first OK result per service to avoid double rows.
@@ -1202,7 +1142,7 @@ function preserveStoredClaudeUsage(snapshot) {
   return {
     ...snapshot,
     results: (snapshot?.results || []).map((result) => {
-      if (result.error !== "Skipped for fast refresh.") {
+      if (result.ok || !storedUsageByAccountId.has(result.accountId)) {
         return result;
       }
 
@@ -1347,10 +1287,10 @@ function logRefreshMetric(fields) {
   console.log(`[refresh-metric] ${JSON.stringify(enrichedFields)}`);
 }
 
-async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
+async function refreshSnapshot({ forceClaudeWebUsage = false } = {}) {
   if (refreshPromise) {
-    if (!forceClaudeCliUsage) return refreshPromise;
-    return refreshPromise.then(() => refreshSnapshot({ forceClaudeCliUsage: true }));
+    if (!forceClaudeWebUsage) return refreshPromise;
+    return refreshPromise.then(() => refreshSnapshot({ forceClaudeWebUsage: true }));
   }
 
   refreshPromise = (async () => {
@@ -1360,7 +1300,7 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     const previousSnapshot = latestSnapshot;
 
     const claudeStartedAt = nowMs();
-    const claudeRefresh = refreshClaudeWebUsage();
+    const claudeRefresh = refreshClaudeWebUsage({ force: forceClaudeWebUsage });
 
     const accountRefreshStartedAt = nowMs();
     try {
@@ -1372,13 +1312,9 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
 
     await claudeRefresh;
     const claudeFetchMs = nowMs() - claudeStartedAt;
-    const claudeCliSnapshot = await shouldRefreshClaudeCliUsage(forceClaudeCliUsage)
-      ? await refreshClaudeCliUsage()
-      : null;
 
     const mergeStartedAt = nowMs();
     snapshot = preserveRecentSuccessfulResults(snapshot, previousSnapshot);
-    snapshot = mergeAccountRefresh(snapshot, claudeCliSnapshot);
     snapshot = preserveStoredClaudeUsage(snapshot);
     let nextSnapshot = await mergeClaudeWebUsage(snapshot);
     if (refreshAccountGeneration !== accountMutationGeneration) {
@@ -1425,7 +1361,7 @@ function startBackgroundRefresh() {
 function startClaudeLoginCompletionRefresh() {
   if (stopClaudeLoginCompletionRefresh) return;
   stopClaudeLoginCompletionRefresh = onClaudeLoginCompleted(() => {
-    refreshSnapshot({ forceClaudeCliUsage: true }).catch((error) => {
+    refreshSnapshot({ forceClaudeWebUsage: true }).catch((error) => {
       console.warn(`Could not refresh after Claude sign-in: ${error.message}`);
     });
   });
@@ -1490,7 +1426,7 @@ function registerIpcHandlers() {
     broadcastSnapshot(latestSnapshot, { refreshHistory: false });
     return removed;
   });
-  ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeCliUsage: true }));
+  ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeWebUsage: true }));
   ipcMain.handle("rate-limit:toggle", togglePopover);
   ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount, contentHeight) => {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
@@ -1551,7 +1487,7 @@ if (!gotSingleInstanceLock) {
     setTimeout(showPopover, 800);
     startBackgroundRefresh();
     startClaudeWebUsageRefresh();
-    refreshSnapshot({ forceClaudeCliUsage: true }).catch(() => {});
+    refreshSnapshot({ forceClaudeWebUsage: true }).catch(() => {});
     startUpdateChecks();
 
     const registered = globalShortcut.register(toggleShortcut, togglePopover);

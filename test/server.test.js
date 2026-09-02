@@ -1207,14 +1207,23 @@ test("Electron toggle path does not create implicit globals", async () => {
   assert.equal(electronSource.includes("lastPopoverBounds"), false);
 });
 
-test("Electron refresh uses the throttled Claude CLI usage supplement", async () => {
+test("Electron refresh uses web-only Claude usage and never starts Claude automatically", async () => {
   const electronSource = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const serverSource = await fs.readFile(path.join(__dirname, "..", "server.js"), "utf8");
 
-  assert.equal(electronSource.includes("refreshClaudeFallbackUsage"), false);
-  assert.equal(electronSource.includes("shouldRefreshClaudeFallback"), false);
-  assert.ok(electronSource.includes("claudeCliUsageRefreshMs"));
-  assert.equal(electronSource.includes('skipDiscoveryTypes: ["claude"]'), false);
-  assert.ok(electronSource.includes('onlyAccountTypes: ["claude"]'));
+  assert.ok(electronSource.includes('refreshAllAccounts({ skipAccountTypes: ["claude"] })'));
+  assert.ok(electronSource.includes("refreshClaudeWebUsage({ force: forceClaudeWebUsage })"));
+  assert.equal(electronSource.includes("forceClaudeCliUsage"), false);
+  assert.equal(electronSource.includes("claudeCliUsageRefreshMs"), false);
+  assert.equal(electronSource.includes("refreshClaudeCliUsage"), false);
+  assert.equal(serverSource.includes("async function captureClaudeUsage"), false);
+  assert.equal(serverSource.includes("async function triggerClaudeTimer"), false);
+  assert.equal(
+    (serverSource.match(/\bclaudeBin\b/g) || []).length,
+    4,
+    "Claude executable references must stay limited to its declaration plus explicit auth status, login, and logout"
+  );
+  assert.match(serverSource, /if \(!account \|\| account\.type === "claude" \|\| !result\.ok\)/);
   assert.ok(electronSource.includes("Never fan one"));
 });
 
@@ -1254,11 +1263,41 @@ test("Electron reconciliation cannot repaint a logged-out row from a stale refre
   assert.equal(reconciled.results[1].ok, true);
 });
 
-test("Claude CLI capture opens the usage screen, not status", async () => {
-  const serverSource = await fs.readFile(path.join(__dirname, "..", "server.js"), "utf8");
+test("stored Claude limits become stale when the web refresh is unavailable", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
+  const start = source.indexOf("function preserveStoredClaudeUsage(");
+  const end = source.indexOf("function startClaudeWebUsageRefresh(", start);
+  const context = {
+    claudeWebUsageCache: {
+      ok: false,
+      error: "Claude usage API timed out."
+    }
+  };
 
-  assert.ok(serverSource.includes("printf '/usage\\\\r';"));
-  assert.equal(serverSource.includes("printf '/status\\\\r';"), false);
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nthis.preserveStoredClaudeUsage = preserveStoredClaudeUsage;`,
+    context
+  );
+
+  const cached = {
+    service: "claude",
+    windows: [{ label: "5-hour", remainingPercent: 42 }]
+  };
+  const result = context.preserveStoredClaudeUsage({
+    config: {
+      accounts: [{ id: "claude-1", type: "claude", lastUsage: cached }]
+    },
+    results: [{
+      accountId: "claude-1",
+      ok: false,
+      error: "Skipped for web-only refresh."
+    }]
+  });
+
+  assert.equal(result.results[0].ok, true);
+  assert.equal(result.results[0].stale, true);
+  assert.equal(result.results[0].error, "Claude usage API timed out.");
+  assert.deepEqual(result.results[0].data, cached);
 });
 
 test("parseClaudeUsageScreen uses the all-models weekly limit, not a 0% model-only sub-limit", () => {

@@ -56,8 +56,8 @@ For a packaging change, additionally build the DMG, install it into `/Applicatio
 | `CLAUDE_USAGE_URL` | Overrides the authenticated Claude web Usage URL. |
 | `RATE_LIMIT_TOOL_DEBUG=1` | Enables development diagnostics. |
 | `RATE_LIMIT_TOOL_KEEP_OPEN=1` | Keeps the History window open after blur while debugging. |
-| `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` | Opts into the 5-hour reset automation; this can run a CLI task and consume usage. |
-| `RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN=1` | Reports eligible automation actions without running a task. |
+| `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` | Opts into the Codex-only 5-hour reset automation; this can run a Codex CLI task and consume usage. Claude accounts are excluded. |
+| `RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN=1` | Reports eligible Codex automation actions without running a task. |
 
 The packaged app enables macOS launch-at-login independently of `RATE_LIMIT_TOOL_AUTOSTART_ENABLED`. They are different features.
 

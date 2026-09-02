@@ -14,7 +14,6 @@ const configPath = path.join(appDataDir, "accounts.json");
 const configBackupPath = `${configPath}.bak`;
 const automationStatePath = path.join(appDataDir, "automation-state.json");
 const automationWorkspaceRoot = path.join(appDataDir, "automation-workspaces");
-const claudeWorkspaceRoot = path.join(appDataDir, "claude-workspaces");
 const codexIdentityRoot = path.join(appDataDir, "codex-identities");
 const defaultCodexHome = path.join(os.homedir(), ".codex");
 const legacySecondCodexHome = path.join(appDataDir, "codex-account-2");
@@ -57,7 +56,6 @@ const claudeBin = resolveExecutable("claude", [
 const googleChromeBin = process.env.RATE_LIMIT_TOOL_LOGIN_BROWSER
   || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const codexDeviceAuthUrl = "https://auth.openai.com/codex/device";
-const scriptBin = resolveExecutable("script", ["/usr/bin/script"]);
 const codexUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
 const codexOAuthTokenEndpoint = "https://auth.openai.com/oauth/token";
 const codexOAuthClientId = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -741,38 +739,6 @@ function execFilePromise(command, args, options = {}) {
   });
 }
 
-function execFileProcessGroupPromise(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const timeoutMs = Number(options.timeout) || 0;
-    const child = execFile(
-      command,
-      args,
-      { ...options, timeout: undefined, detached: true },
-      (error, stdout, stderr) => {
-        clearTimeout(timeout);
-        clearTimeout(killTimeout);
-        if (error) {
-          error.stdout = stdout;
-          error.stderr = stderr;
-          error.timedOut = timedOut;
-          reject(error);
-          return;
-        }
-        resolve({ stdout, stderr });
-      }
-    );
-    let timedOut = false;
-    let killTimeout = null;
-    const timeout = timeoutMs > 0 ? setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill(); }
-      killTimeout = setTimeout(() => {
-        try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
-      }, 1000);
-    }, timeoutMs) : null;
-  });
-}
-
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
@@ -1362,81 +1328,6 @@ function parseClaudeResetAt(value, now = new Date()) {
   return resetDate.toISOString();
 }
 
-function stripTerminalControl(input) {
-  return String(input)
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
-    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n");
-}
-
-async function captureClaudeUsage(account) {
-  const command = [
-    "(",
-    "sleep 2;",
-    "printf '/usage\\r';",
-    "sleep 6;",
-    "printf '\\033';",
-    "sleep 3;",
-    "printf '/exit\\r';",
-    "sleep 1",
-    ")",
-    "|",
-    shellQuote(scriptBin),
-    "-q",
-    "/dev/null",
-    shellQuote(claudeBin)
-  ].join(" ");
-
-  try {
-    const workspace = await ensureClaudeWorkspace(account.id || "status");
-    const { stdout } = await execFileProcessGroupPromise("/bin/zsh", ["-lc", command], {
-      cwd: workspace,
-      timeout: 20000,
-      maxBuffer: 2 * 1024 * 1024,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color"
-      }
-    });
-    return stripTerminalControl(stdout);
-  } catch (error) {
-    const stdout = error.stdout ? stripTerminalControl(error.stdout) : "";
-
-    if (stdout && !error.timedOut) {
-      return stdout;
-    }
-
-    throw new Error(
-      `Claude usage automation failed. ${error.message}${error.stderr ? ` ${error.stderr}` : ""}`
-    );
-  }
-}
-
-async function fetchClaudeUsage(account) {
-  const authStatus = await getClaudeAuthStatus(account.workspace);
-
-  if (!authStatus.loggedIn) {
-    throw new Error("Claude is not logged in on this machine. Run Claude login first.");
-  }
-
-  const usageLog = await captureClaudeUsage(account);
-  const usageData = parseClaudeUsageScreen(usageLog);
-
-  if (!usageData.windows.length) {
-    throw new Error("Claude /usage screen loaded, but the limits could not be parsed.");
-  }
-
-  return {
-    service: "claude",
-    planType: account.planType || null,
-    organization: authStatus.orgId || account.organization || null,
-    email: authStatus.email || account.email || null,
-    ...usageData
-  };
-}
-
 async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = execFilePromise) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -1478,7 +1369,7 @@ async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = ex
 
 async function fetchUsageForAccount(account) {
   if (account.type === "claude") {
-    return fetchClaudeUsage(account);
+    throw new Error("Claude usage is refreshed through the authenticated app web session.");
   }
 
   return fetchCodexUsage(account);
@@ -1723,61 +1614,6 @@ async function discoverCurrentCodexIdentity(config) {
   }
 }
 
-async function discoverCurrentClaudeIdentity(config) {
-  try {
-    const data = await fetchClaudeUsage({
-      id: "claude-current",
-      type: "claude",
-      label: "Current Claude",
-      workspace: defaultWorkspace
-    });
-    if (identityWasDeleted(config, { type: "claude", ...data })) {
-      return { ok: false, changed: false, error: "This account was deleted from Usage Meter." };
-    }
-    let identity = findIdentityForUsage(config.identities, "claude", data);
-    let changed = false;
-
-    if (!identity) {
-      identity = findUnclaimedIdentity(config.identities, "claude");
-    }
-
-    if (!identity) {
-      identity = createIdentityFromUsage("claude", data, {
-        workspace: defaultWorkspace
-      });
-      config.identities.push(identity);
-      changed = true;
-    }
-
-    if (identity.loggedOut) {
-      return {
-        ok: false,
-        changed: false,
-        error: "This Usage Meter account is logged out."
-      };
-    }
-
-    changed = updateIdentityFromUsage(identity, data) || changed;
-
-    return {
-      ok: true,
-      changed,
-      identity,
-      result: {
-        accountId: identity.id,
-        ok: true,
-        data
-      }
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      changed: false,
-      error: error.message
-    };
-  }
-}
-
 async function refreshIdentity(config, identity, cachedResult = null) {
   if (identity.loggedOut) {
     return {
@@ -1902,23 +1738,11 @@ async function refreshAllAccounts(options = {}) {
     : null;
   const cachedResults = new Map();
   let configChanged = false;
-  let currentClaudeIdentityId = null;
-  let currentClaudeLabel = null;
 
   if ((!onlyTypes || onlyTypes.has("codex")) && !skippedTypes.has("codex") && !skippedDiscoveryTypes.has("codex")) {
     const discovery = await discoverCurrentCodexIdentity(config);
     configChanged = discovery.changed || configChanged;
     if (discovery.ok) {
-      cachedResults.set(discovery.identity.id, discovery.result);
-    }
-  }
-
-  if ((!onlyTypes || onlyTypes.has("claude")) && !skippedTypes.has("claude") && !skippedDiscoveryTypes.has("claude")) {
-    const discovery = await discoverCurrentClaudeIdentity(config);
-    configChanged = discovery.changed || configChanged;
-    if (discovery.ok) {
-      currentClaudeIdentityId = discovery.identity.id;
-      currentClaudeLabel = identityLabelFromUsage(discovery.result.data);
       cachedResults.set(discovery.identity.id, discovery.result);
     }
   }
@@ -1936,15 +1760,9 @@ async function refreshAllAccounts(options = {}) {
         return {
           accountId: identity.id,
           ok: false,
-          error: "Skipped for fast refresh."
-        };
-      }
-
-      if (identity.type === "claude" && currentClaudeIdentityId && identity.id !== currentClaudeIdentityId) {
-        return {
-          accountId: identity.id,
-          ok: false,
-          error: `Claude is currently logged in as ${currentClaudeLabel}. Run login for this account to refresh it.`
+          error: identity.type === "claude"
+            ? "Skipped for web-only refresh."
+            : "Skipped for fast refresh."
         };
       }
 
@@ -2000,12 +1818,6 @@ async function ensureAutomationWorkspace(accountId) {
   return workspace;
 }
 
-async function ensureClaudeWorkspace(accountId) {
-  const workspace = path.join(claudeWorkspaceRoot, safeSegment(accountId));
-  await fs.mkdir(workspace, { recursive: true });
-  return workspace;
-}
-
 async function triggerCodexTimer(account) {
   const workspace = await ensureAutomationWorkspace(account.id);
 
@@ -2042,40 +1854,6 @@ async function triggerCodexTimer(account) {
   };
 }
 
-async function triggerClaudeTimer(account) {
-  const workspace = await ensureClaudeWorkspace(account.id);
-  const { stdout, stderr } = await execFilePromise(
-    claudeBin,
-    [
-      "-p",
-      "--output-format",
-      "text",
-      "--no-session-persistence",
-      "--tools",
-      "",
-      timerKickPrompt
-    ],
-    {
-      cwd: workspace,
-      timeout: 120000,
-      maxBuffer: 2 * 1024 * 1024
-    }
-  );
-
-  return {
-    stdout: String(stdout || "").trim(),
-    stderr: String(stderr || "").trim()
-  };
-}
-
-async function triggerFiveHourTimerForAccount(account) {
-  if (account.type === "claude") {
-    return triggerClaudeTimer(account);
-  }
-
-  return triggerCodexTimer(account);
-}
-
 function summarizeTriggerOutput(result) {
   const text = String(result?.stdout || result?.stderr || "").trim();
 
@@ -2099,7 +1877,7 @@ async function processAutoStartSnapshot(snapshot) {
   for (const result of snapshot?.results || []) {
     const account = configById.get(result.accountId);
 
-    if (!account || !result.ok) {
+    if (!account || account.type === "claude" || !result.ok) {
       continue;
     }
 
@@ -2145,7 +1923,7 @@ async function processAutoStartSnapshot(snapshot) {
     await saveAutomationState(automationState);
 
     try {
-      const triggerResult = await triggerFiveHourTimerForAccount(account);
+      const triggerResult = await triggerCodexTimer(account);
       automationState.accounts[identityKey] = {
         ...automationState.accounts[identityKey],
         lastSuccessfulWindowId: windowId,

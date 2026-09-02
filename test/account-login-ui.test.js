@@ -62,11 +62,17 @@ test("healthy accounts hide the redundant overall status message", async () => {
   context.syncOverallStatus();
   assert.equal(statusAnchor.classList.values.has("hidden"), false);
   assert.equal(statusText.textContent, "Some accounts need attention");
+
+  accountStates.set("claude-1", { kind: "stale" });
+  context.syncOverallStatus();
+  assert.equal(statusAnchor.classList.values.has("hidden"), false);
+  assert.equal(statusDot.className, "header-status status-stale");
+  assert.equal(statusText.textContent, "Showing cached data");
 });
 
-test("stale usage is hidden behind a minimal sign-in or retry action", async () => {
+test("stale usage stays visible in a grey cached state", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
-  const start = source.indexOf("function renderConnected(");
+  const start = source.indexOf("function setStalePresentation(");
   const end = source.indexOf("function renderResult(");
   assert.ok(start >= 0 && end > start, "connected account renderer must be present");
 
@@ -76,10 +82,14 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
       classList: classList(),
       replaceChildren(...children) {
         this.children = children;
+      },
+      setAttribute(name, value) {
+        this[name] = value;
       }
     },
     summary: { textContent: "", title: "", className: "" },
-    row: { classList: classList() },
+    row: { classList: classList(), title: "" },
+    typeTag: { textContent: "", title: "" },
     actions: { classList: classList() },
     connectButton: {
       classList: classList(),
@@ -133,6 +143,8 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
   context.renderConnected("claude-1", freshUsage, { stale: false });
   assert.equal(renderedWindows, 1);
   assert.equal(elements.limitGrid.children.length, 1);
+  assert.equal(elements.typeTag.textContent, "Claude");
+  assert.equal(elements.row.classList.values.has("is-stale"), false);
   assert.equal(latestState.data, freshUsage);
 
   context.renderConnected("claude-1", freshUsage, {
@@ -142,41 +154,42 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
 
   assert.equal(elements.summary.textContent, "");
   assert.equal(elements.summary.className, "account-summary hidden");
-  assert.equal(elements.limitGrid.classList.values.has("hidden"), true);
-  assert.equal(elements.connectButton.textContent, "Sign in");
-  assert.equal(elements.connectButton.dataset.action, "login");
-  assert.equal(elements.connectButton.classList.values.has("hidden"), false);
-  assert.equal(elements.deleteButton.classList.values.has("hidden"), false);
-  assert.equal(elements.deleteButton.title, "Delete this account from Usage Meter");
-  assert.equal(renderedWindows, 1);
-  assert.equal(elements.limitGrid.children.length, 0);
-  assert.equal(latestState.data, null);
-  assert.equal(latestState.kind, "disconnected");
+  assert.equal(elements.limitGrid.classList.values.has("hidden"), false);
+  assert.equal(elements.limitGrid["aria-label"], "Cached usage limits");
+  assert.equal(elements.actions.classList.values.has("hidden"), true);
+  assert.equal(elements.typeTag.textContent, "Claude · Cached");
+  assert.equal(elements.typeTag.title, "Cached data · Claude is not logged in on this machine.");
+  assert.equal(elements.row.classList.values.has("is-stale"), true);
+  assert.equal(elements.row.title, "Cached data · Claude is not logged in on this machine.");
+  assert.equal(renderedWindows, 2);
+  assert.equal(elements.limitGrid.children.length, 1);
+  assert.equal(latestState.data, freshUsage);
+  assert.equal(latestState.kind, "stale");
+  assert.equal(latestState.stale, true);
 
   context.renderConnected("claude-1", freshUsage, {
     stale: true,
     error: "Command failed: /Users/example/.local/bin/claude auth status --json"
   });
-  assert.equal(elements.connectButton.textContent, "Sign in");
-  assert.equal(elements.deleteButton.classList.values.has("hidden"), false);
-  assert.equal(latestState.kind, "disconnected");
+  assert.equal(elements.typeTag.textContent, "Claude · Cached");
+  assert.equal(latestState.kind, "stale");
 
   accountType = "codex";
   context.renderConnected("claude-1", freshUsage, { stale: false });
+  assert.equal(elements.typeTag.textContent, "Codex");
+  assert.equal(elements.row.classList.values.has("is-stale"), false);
   assert.equal(elements.limitGrid.children.length, 1);
   context.renderConnected("claude-1", freshUsage, {
     stale: true,
     error: "Refresh timed out."
   });
 
-  assert.match(elements.summary.textContent, /^Unavailable/);
-  assert.equal(elements.connectButton.textContent, "Retry");
-  assert.equal(elements.connectButton.classList.values.has("hidden"), false);
-  assert.equal(elements.deleteButton.classList.values.has("hidden"), true);
-  assert.equal(renderedWindows, 2);
-  assert.equal(elements.limitGrid.children.length, 0);
-  assert.equal(latestState.data, null);
-  assert.equal(latestState.stale, false);
+  assert.equal(elements.typeTag.textContent, "Codex · Cached");
+  assert.equal(elements.row.classList.values.has("is-stale"), true);
+  assert.equal(renderedWindows, 5);
+  assert.equal(elements.limitGrid.children.length, 1);
+  assert.equal(latestState.data, freshUsage);
+  assert.equal(latestState.stale, true);
   assert.equal(latestState.error, "Refresh timed out.");
 
   context.renderDisconnected("claude-1");
@@ -199,6 +212,16 @@ test("stale usage is hidden behind a minimal sign-in or retry action", async () 
   assert.equal(elements.connectButton.textContent, "Retry");
   assert.equal(elements.connectButton.title, "Try refreshing usage again");
   assert.equal(elements.connectButton.dataset.action, "retry");
+});
+
+test("stale account values use a neutral grey treatment", async () => {
+  const styles = await fs.readFile(path.join(__dirname, "..", "public", "styles.css"), "utf8");
+
+  assert.match(styles, /--stale:\s*rgba\(/);
+  assert.match(styles, /\.account-row\.is-stale\s+\.limit-window/);
+  assert.match(styles, /\.account-row\.is-stale\s+\.limit-value/);
+  assert.match(styles, /\.account-row\.is-stale\s+\.limit-countdown[\s\S]*?animation:\s*none;/);
+  assert.match(styles, /\.status-stale\s*\{/);
 });
 
 test("account login click returns to the minimal account actions", async () => {

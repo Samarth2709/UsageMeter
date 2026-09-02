@@ -11,6 +11,9 @@
   --fg: #f4f0e7;
   --muted: rgba(244, 240, 231, 0.62);
   --dim: rgba(244, 240, 231, 0.42);
+  --stale: rgba(190, 190, 190, 0.72);
+  --stale-line: rgba(190, 190, 190, 0.26);
+  --stale-surface: rgba(150, 150, 150, 0.1);
   --line: rgba(244, 240, 231, 0.13);
   --accent: #d7c56f;
   --danger: #d15f55;
@@ -262,6 +265,10 @@ h1 {
   background: var(--dim);
 }
 
+.status-stale {
+  background: var(--stale);
+}
+
 .status-ok {
   background: var(--ok);
 }
@@ -383,6 +390,33 @@ h1 {
 
 .account-row-claude.expanded .limit-window {
   background: var(--claude-strong);
+}
+
+.account-row.is-stale {
+  border-color: var(--stale-line);
+  background: var(--stale-surface);
+}
+
+.account-row.is-stale .limit-window,
+.account-row.is-stale.expanded .limit-window {
+  border-color: var(--stale-line);
+  background: var(--stale-surface);
+}
+
+.account-row.is-stale .account-type,
+.account-row.is-stale .account-name,
+.account-row.is-stale .account-summary,
+.account-row.is-stale .limit-label,
+.account-row.is-stale .limit-value,
+.account-row.is-stale .limit-reset,
+.account-row.is-stale .limit-separator,
+.account-row.is-stale .limit-time {
+  color: var(--stale);
+}
+
+.account-row.is-stale .limit-countdown {
+  color: var(--stale);
+  animation: none;
 }
 
 .account-row.expanded .limit-reset {
