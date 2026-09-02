@@ -6,6 +6,7 @@ const { existsSync } = require("fs");
 const { execFile, spawn } = require("child_process");
 const crypto = require("crypto");
 const { atomicWriteFile, atomicWriteJson } = require("./atomic-file");
+const { coerceResetAt } = require("./usage-windows");
 
 const app = express();
 const port = Number(process.env.PORT || 4545);
@@ -62,6 +63,11 @@ const codexOAuthClientId = "app_EMoamEEZ73f0CkXaXp7hrann";
 const codexUsageRequestTimeoutMs = 10000;
 const codexAuthRefreshTimeoutMs = 10000;
 const codexTokenRefreshSkewMs = 60000;
+const claudeCredentialsService = "Claude Code-credentials";
+const claudeOAuthProfileEndpoint = "https://api.anthropic.com/api/oauth/profile";
+const claudeOAuthUsageEndpoint = "https://api.anthropic.com/api/oauth/usage";
+const claudeOAuthBeta = "oauth-2025-04-20";
+const claudeUsageRequestTimeoutMs = 10000;
 const claudeFiveHourResetMaxMs = (5 * 60 * 60 * 1000) + (60 * 1000);
 
 app.use(express.json());
@@ -888,6 +894,151 @@ async function fetchJsonWithTimeout(url, options, timeoutMs, timeoutMessage) {
   }
 }
 
+async function readClaudeOAuthCredentials(
+  runCommand = execFilePromise,
+  nowMs = Date.now()
+) {
+  let stdout;
+
+  try {
+    ({ stdout } = await runCommand(
+      "/usr/bin/security",
+      ["find-generic-password", "-s", claudeCredentialsService, "-w"],
+      { timeout: 10000, maxBuffer: 1024 * 1024, encoding: "utf8" }
+    ));
+  } catch {
+    throw new Error("No saved Claude Code login was found. Sign in to Claude again.");
+  }
+
+  let credentials;
+  try {
+    credentials = JSON.parse(stdout);
+  } catch {
+    throw new Error("The saved Claude Code login is unreadable. Sign in to Claude again.");
+  }
+
+  const oauth = credentials?.claudeAiOauth;
+  const accessToken = firstString(oauth?.accessToken);
+  if (!accessToken) {
+    throw new Error("The saved Claude Code login is incomplete. Sign in to Claude again.");
+  }
+
+  const expiresAt = Number(oauth?.expiresAt || 0);
+  if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowMs) {
+    throw new Error("The saved Claude Code login has expired. Sign in to Claude again.");
+  }
+
+  // Deliberately return no refresh token. Usage Meter reads the login written by
+  // Claude Code, but only Claude Code is allowed to rotate that credential.
+  return {
+    accessToken,
+    expiresAt: expiresAt || null,
+    subscriptionType: firstString(oauth?.subscriptionType),
+    rateLimitTier: firstString(oauth?.rateLimitTier)
+  };
+}
+
+async function requestClaudeOAuthJson(
+  url,
+  accessToken,
+  requestJson = fetchJsonWithTimeout
+) {
+  const requested = await requestJson(
+    url,
+    {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        "anthropic-beta": claudeOAuthBeta
+      }
+    },
+    claudeUsageRequestTimeoutMs,
+    "Claude usage request timed out."
+  );
+
+  if (requested.response.status === 401 || requested.response.status === 403) {
+    throw new Error("The saved Claude Code login was rejected. Sign in to Claude again.");
+  }
+
+  if (!requested.response.ok) {
+    throw new Error(`Claude usage request failed with ${requested.response.status}.`);
+  }
+
+  return requested.payload;
+}
+
+function claudeUsageWindow(label, raw) {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const usedPercent = Number(raw.utilization);
+  if (!Number.isFinite(usedPercent)) {
+    return null;
+  }
+
+  const clampedUsedPercent = Math.min(100, Math.max(0, usedPercent));
+  return {
+    label,
+    usedPercent: clampedUsedPercent,
+    remainingPercent: Math.max(0, 100 - clampedUsedPercent),
+    resetAt: coerceResetAt(raw.resets_at),
+    source: "claude_oauth_usage"
+  };
+}
+
+function parseClaudeOAuthUsage(profile, payload, credentials = {}, now = new Date()) {
+  const windows = [
+    claudeUsageWindow("5-hour", payload?.five_hour),
+    claudeUsageWindow("weekly", payload?.seven_day)
+  ].filter(Boolean);
+
+  if (!windows.length) {
+    throw new Error("Claude usage responded, but no usage windows were found.");
+  }
+
+  const providerAccountId = firstString(profile?.account?.uuid, profile?.account?.id);
+  const email = firstString(profile?.account?.email, profile?.email);
+  if (!providerAccountId && !email) {
+    throw new Error("Claude profile responded without an account identity.");
+  }
+
+  return {
+    service: "claude",
+    source: "claude_oauth_usage",
+    providerAccountId,
+    email,
+    organization: firstString(profile?.organization?.uuid, profile?.organization?.id),
+    planType: firstString(
+      profile?.organization?.rate_limit_tier,
+      credentials.rateLimitTier,
+      credentials.subscriptionType
+    ),
+    windows,
+    extraUsage: payload?.extra_usage || null,
+    fetchedAt: now.toISOString()
+  };
+}
+
+async function fetchClaudeUsage(account, options = {}) {
+  const readCredentials = options.readCredentials || readClaudeOAuthCredentials;
+  const requestJson = options.requestJson || fetchJsonWithTimeout;
+  const now = options.now || new Date();
+  const credentials = await readCredentials();
+  const profile = await requestClaudeOAuthJson(
+    claudeOAuthProfileEndpoint,
+    credentials.accessToken,
+    requestJson
+  );
+  const usage = await requestClaudeOAuthJson(
+    claudeOAuthUsageEndpoint,
+    credentials.accessToken,
+    requestJson
+  );
+
+  return parseClaudeOAuthUsage(profile, usage, credentials, now);
+}
+
 function codexUsageCredentials(auth) {
   const accessToken = auth?.tokens?.access_token;
   const accountId = auth?.tokens?.account_id;
@@ -1369,7 +1520,7 @@ async function getClaudeAuthStatus(workspace = defaultWorkspace, runCommand = ex
 
 async function fetchUsageForAccount(account) {
   if (account.type === "claude") {
-    throw new Error("Claude usage is refreshed through the authenticated app web session.");
+    return fetchClaudeUsage(account);
   }
 
   return fetchCodexUsage(account);
@@ -1448,6 +1599,17 @@ function findUnclaimedIdentity(identities, type) {
     !identity.providerAccountId &&
     !identity.email
   )) || null;
+}
+
+function findSingleActiveUnclaimedIdentity(identities, type) {
+  const candidates = identities.filter((identity) => (
+    identity.type === type &&
+    !identity.loggedOut &&
+    !identity.providerAccountId &&
+    !identity.email
+  ));
+
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function codexIdentityHome(data) {
@@ -1614,6 +1776,105 @@ async function discoverCurrentCodexIdentity(config) {
   }
 }
 
+async function discoverCurrentClaudeIdentity(config, fetchUsage = fetchClaudeUsage) {
+  try {
+    const data = await fetchUsage({
+      id: "claude-current",
+      type: "claude",
+      label: "Current Claude",
+      workspace: defaultWorkspace
+    });
+
+    if (identityWasDeleted(config, { type: "claude", ...data })) {
+      return { ok: false, changed: false, error: "This account was deleted from Usage Meter." };
+    }
+
+    let identity = findIdentityForUsage(
+      config.identities,
+      "claude",
+      data,
+      { requireStrong: true }
+    );
+    let changed = false;
+
+    if (!identity) {
+      const unclaimed = config.identities.filter((candidate) => (
+        candidate.type === "claude" &&
+        !candidate.loggedOut &&
+        !candidate.providerAccountId &&
+        !candidate.email
+      ));
+
+      if (unclaimed.length > 1) {
+        return {
+          ok: false,
+          changed: false,
+          error: "Multiple unclaimed Claude rows exist. Remove the extra row before refreshing."
+        };
+      }
+
+      identity = findSingleActiveUnclaimedIdentity(config.identities, "claude");
+    }
+
+    if (!identity) {
+      identity = createIdentityFromUsage("claude", data, {
+        workspace: defaultWorkspace
+      });
+      config.identities.push(identity);
+      changed = true;
+    }
+
+    if (identity.loggedOut) {
+      return {
+        ok: false,
+        changed: false,
+        error: "This Usage Meter account is logged out."
+      };
+    }
+
+    changed = updateIdentityFromUsage(identity, data) || changed;
+
+    return {
+      ok: true,
+      changed,
+      identity,
+      result: {
+        accountId: identity.id,
+        ok: true,
+        data
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      changed: false,
+      error: error.message
+    };
+  }
+}
+
+function unavailableIdentityResult(identity, error) {
+  if (identity.lastUsage) {
+    return {
+      accountId: identity.id,
+      ok: true,
+      stale: true,
+      error,
+      data: {
+        ...identity.lastUsage,
+        stale: true,
+        staleReason: error
+      }
+    };
+  }
+
+  return {
+    accountId: identity.id,
+    ok: false,
+    error
+  };
+}
+
 async function refreshIdentity(config, identity, cachedResult = null) {
   if (identity.loggedOut) {
     return {
@@ -1623,7 +1884,7 @@ async function refreshIdentity(config, identity, cachedResult = null) {
     };
   }
 
-  if (cachedResult?.ok) {
+  if (cachedResult) {
     return cachedResult;
   }
 
@@ -1644,25 +1905,7 @@ async function refreshIdentity(config, identity, cachedResult = null) {
       data
     };
   } catch (error) {
-    if (identity.lastUsage) {
-      return {
-        accountId: identity.id,
-        ok: true,
-        stale: true,
-        error: error.message,
-        data: {
-          ...identity.lastUsage,
-          stale: true,
-          staleReason: error.message
-        }
-      };
-    }
-
-    return {
-      accountId: identity.id,
-      ok: false,
-      error: error.message
-    };
+    return unavailableIdentityResult(identity, error.message);
   }
 }
 
@@ -1747,6 +1990,34 @@ async function refreshAllAccounts(options = {}) {
     }
   }
 
+  const activeClaudeIdentities = config.identities.filter((identity) => (
+    identity.type === "claude" && !identity.loggedOut
+  ));
+  if (
+    activeClaudeIdentities.length &&
+    (!onlyTypes || onlyTypes.has("claude")) &&
+    !skippedTypes.has("claude") &&
+    !skippedDiscoveryTypes.has("claude")
+  ) {
+    const discovery = await discoverCurrentClaudeIdentity(config);
+    configChanged = discovery.changed || configChanged;
+    if (discovery.ok) {
+      cachedResults.set(discovery.identity.id, discovery.result);
+    }
+
+    for (const identity of activeClaudeIdentities) {
+      if (discovery.ok && identity.id === discovery.identity.id) {
+        cachedResults.set(identity.id, discovery.result);
+        continue;
+      }
+
+      const error = discovery.ok
+        ? `The active Claude Code login belongs to ${identityLabelFromUsage(discovery.result.data)}, not ${identity.label}.`
+        : discovery.error;
+      cachedResults.set(identity.id, unavailableIdentityResult(identity, error));
+    }
+  }
+
   const identities = config.identities.filter((identity) => {
     if (onlyTypes && !onlyTypes.has(identity.type)) {
       return false;
@@ -1760,9 +2031,7 @@ async function refreshAllAccounts(options = {}) {
         return {
           accountId: identity.id,
           ok: false,
-          error: identity.type === "claude"
-            ? "Skipped for web-only refresh."
-            : "Skipped for fast refresh."
+          error: "Skipped for fast refresh."
         };
       }
 
@@ -2411,10 +2680,18 @@ module.exports = {
     removedIdentities,
     removeIdentityFromConfig,
     refreshIdentity,
+    discoverCurrentClaudeIdentity,
+    unavailableIdentityResult,
+    findSingleActiveUnclaimedIdentity,
     codexUsageRequestTimeoutMs,
     codexAccessTokenNeedsRefresh,
     mergeRefreshedCodexAuth,
     fetchCodexUsage,
+    readClaudeOAuthCredentials,
+    requestClaudeOAuthJson,
+    parseClaudeOAuthUsage,
+    fetchClaudeUsage,
+    claudeUsageRequestTimeoutMs,
     normalizeCodexRateWindows,
     parseClaudeResetAt,
     parseClaudeUsageScreen

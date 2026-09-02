@@ -94,7 +94,7 @@ function loadSnapshot() {
 }
 
 function isLoginNeededError(error) {
-  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|web login|login_required|claude auth status --json/i.test(error || "");
+  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|saved Claude Code login|Sign in to Claude|login_required|claude auth status --json/i.test(error || "");
 }
 
 function compactWindowLabel(label) {
@@ -541,7 +541,7 @@ function renderResult(result) {
   if (result.ok) {
     renderConnected(result.accountId, result.data, {
       stale: result.stale,
-      error: result.error
+      error: result.error || result.staleReason || result.data?.staleReason
     });
     return;
   }

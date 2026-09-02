@@ -17,6 +17,24 @@ function classList() {
   };
 }
 
+test("Claude Keychain failures route to the explicit sign-in action", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("function isLoginNeededError(");
+  const end = source.indexOf("function compactWindowLabel(", start);
+  const context = {};
+
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nthis.isLoginNeededError = isLoginNeededError;`,
+    context
+  );
+
+  assert.equal(
+    context.isLoginNeededError("No saved Claude Code login was found. Sign in to Claude again."),
+    true
+  );
+  assert.equal(context.isLoginNeededError("Claude usage request timed out."), false);
+});
+
 test("healthy accounts hide the redundant overall status message", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const start = source.indexOf("function setOverallStatus(");
@@ -222,6 +240,37 @@ test("stale account values use a neutral grey treatment", async () => {
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-value/);
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-countdown[\s\S]*?animation:\s*none;/);
   assert.match(styles, /\.status-stale\s*\{/);
+});
+
+test("stale renderer tooltips use a preserved stale reason", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("function renderResult(");
+  const end = source.indexOf("function applySnapshot(", start);
+  let received = null;
+  const context = {
+    renderConnected(accountId, data, metadata) {
+      received = { accountId, data, metadata };
+    },
+    isLoginNeededError: () => false,
+    renderDisconnected() {},
+    renderError() {}
+  };
+
+  vm.runInNewContext(
+    `${source.slice(start, end)}\nthis.renderResult = renderResult;`,
+    context
+  );
+
+  context.renderResult({
+    accountId: "claude-1",
+    ok: true,
+    stale: true,
+    staleReason: "The saved Claude Code login has expired.",
+    data: { service: "claude", windows: [] }
+  });
+
+  assert.equal(received.metadata.stale, true);
+  assert.equal(received.metadata.error, "The saved Claude Code login has expired.");
 });
 
 test("account login click returns to the minimal account actions", async () => {

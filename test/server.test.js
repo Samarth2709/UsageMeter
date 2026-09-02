@@ -804,7 +804,7 @@ test("provider usage cannot claim a same-email identity with a conflicting provi
   }), null);
 });
 
-test("Claude web usage requires an exact stored organization or email", () => {
+test("Claude usage requires an exact stored organization or email", () => {
   const identities = [{
     id: "claude-one",
     type: "claude",
@@ -822,6 +822,224 @@ test("Claude web usage requires an exact stored organization or email", () => {
     }, { requireStrong: true }),
     identities[0]
   );
+});
+
+test("Claude OAuth credentials are read from Keychain without exposing a refresh token", async () => {
+  const calls = [];
+  const credentials = await _test.readClaudeOAuthCredentials(async (command, args, options) => {
+    calls.push({ command, args, options });
+    return {
+      stdout: JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "saved-access-token",
+          refreshToken: "must-not-leave-keychain-reader",
+          expiresAt: Date.parse("2030-01-01T00:00:00.000Z"),
+          subscriptionType: "team"
+        }
+      })
+    };
+  }, Date.parse("2026-09-02T00:00:00.000Z"));
+
+  assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [{
+    command: "/usr/bin/security",
+    args: ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+  }]);
+  assert.equal(credentials.accessToken, "saved-access-token");
+  assert.equal(credentials.subscriptionType, "team");
+  assert.equal(Object.prototype.hasOwnProperty.call(credentials, "refreshToken"), false);
+  assert.equal(calls[0].options.timeout, 10000);
+});
+
+test("Claude OAuth credential expiry requires explicit sign-in instead of token refresh", async () => {
+  let calls = 0;
+  await assert.rejects(
+    _test.readClaudeOAuthCredentials(async () => {
+      calls += 1;
+      return {
+        stdout: JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "expired-access-token",
+            refreshToken: "unused-refresh-token",
+            expiresAt: Date.parse("2026-09-01T00:00:00.000Z")
+          }
+        })
+      };
+    }, Date.parse("2026-09-02T00:00:00.000Z")),
+    /expired.*Sign in/i
+  );
+  assert.equal(calls, 1);
+});
+
+test("Claude usage reads profile and fresh windows directly without launching Claude", async () => {
+  const calls = [];
+  const data = await _test.fetchClaudeUsage({ type: "claude" }, {
+    now: new Date("2026-09-02T12:00:00.000Z"),
+    readCredentials: async () => ({
+      accessToken: "saved-access-token",
+      subscriptionType: "team"
+    }),
+    requestJson: async (url, options, timeoutMs) => {
+      calls.push({ url, options, timeoutMs });
+      if (url.endsWith("/profile")) {
+        return {
+          response: { ok: true, status: 200 },
+          payload: {
+            account: { uuid: "acct-claude", email: "samarthk@cantina.security" },
+            organization: { uuid: "org-cantina", rate_limit_tier: "team" }
+          }
+        };
+      }
+      return {
+        response: { ok: true, status: 200 },
+        payload: {
+          seven_day: { utilization: 31, resets_at: "2026-09-08T12:00:00.000Z" }
+        }
+      };
+    }
+  });
+
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://api.anthropic.com/api/oauth/profile",
+    "https://api.anthropic.com/api/oauth/usage"
+  ]);
+  assert.equal(calls.every((call) => call.options.headers.Authorization === "Bearer saved-access-token"), true);
+  assert.equal(calls.every((call) => call.options.headers["anthropic-beta"] === "oauth-2025-04-20"), true);
+  assert.equal(calls.every((call) => call.timeoutMs === _test.claudeUsageRequestTimeoutMs), true);
+  assert.equal(data.providerAccountId, "acct-claude");
+  assert.equal(data.email, "samarthk@cantina.security");
+  assert.equal(data.organization, "org-cantina");
+  assert.deepEqual(data.windows.map((window) => window.label), ["weekly"]);
+  assert.equal(data.windows[0].remainingPercent, 69);
+});
+
+test("a strongly identified Claude response claims the single default placeholder", async () => {
+  const config = _test.normalizeConfig({
+    identities: [{
+      id: "claude-1",
+      type: "claude",
+      label: "Claude Code",
+      workspace: process.cwd()
+    }]
+  });
+  const data = {
+    service: "claude",
+    providerAccountId: "acct-cantina",
+    email: "samarthk@cantina.security",
+    organization: "org-cantina",
+    windows: [{ label: "weekly", usedPercent: 15, remainingPercent: 85 }],
+    fetchedAt: "2026-09-02T12:00:00.000Z"
+  };
+
+  const discovery = await _test.discoverCurrentClaudeIdentity(config, async () => data);
+
+  assert.equal(discovery.ok, true);
+  assert.equal(discovery.identity.id, "claude-1");
+  assert.equal(config.identities.length, 1);
+  assert.equal(config.identities[0].providerAccountId, "acct-cantina");
+  assert.equal(config.identities[0].email, "samarthk@cantina.security");
+});
+
+test("Claude discovery fails closed when multiple unclaimed rows are ambiguous", async () => {
+  const config = _test.normalizeConfig({
+    identities: [
+      { id: "claude-1", type: "claude", workspace: process.cwd() },
+      { id: "claude-2", type: "claude", workspace: process.cwd() }
+    ]
+  });
+
+  const discovery = await _test.discoverCurrentClaudeIdentity(config, async () => ({
+    service: "claude",
+    providerAccountId: "acct-cantina",
+    email: "samarthk@cantina.security",
+    windows: [{ label: "weekly", remainingPercent: 85 }]
+  }));
+
+  assert.equal(discovery.ok, false);
+  assert.match(discovery.error, /Multiple unclaimed Claude rows/);
+  assert.equal(config.identities.length, 2);
+  assert.equal(config.identities.every((identity) => !identity.providerAccountId), true);
+});
+
+test("Claude discovery respects deletion tombstones and never recreates the account", async () => {
+  const deleted = {
+    id: "claude-cantina",
+    type: "claude",
+    email: "samarthk@cantina.security",
+    providerAccountId: "acct-cantina",
+    organization: "org-cantina"
+  };
+  const config = _test.normalizeConfig({ identities: [], deletedIdentities: [deleted] });
+
+  const discovery = await _test.discoverCurrentClaudeIdentity(config, async () => ({
+    service: "claude",
+    ...deleted,
+    windows: [{ label: "weekly", remainingPercent: 85 }]
+  }));
+
+  assert.equal(discovery.ok, false);
+  assert.match(discovery.error, /deleted from Usage Meter/);
+  assert.equal(config.identities.length, 0);
+});
+
+test("Claude discovery cannot repaint a logged-out identity", async () => {
+  const config = _test.normalizeConfig({
+    identities: [{
+      id: "claude-cantina",
+      type: "claude",
+      email: "samarthk@cantina.security",
+      providerAccountId: "acct-cantina",
+      organization: "org-cantina",
+      workspace: process.cwd(),
+      loggedOut: true
+    }]
+  });
+
+  const discovery = await _test.discoverCurrentClaudeIdentity(config, async () => ({
+    service: "claude",
+    email: "samarthk@cantina.security",
+    providerAccountId: "acct-cantina",
+    organization: "org-cantina",
+    windows: [{ label: "weekly", remainingPercent: 85 }]
+  }));
+
+  assert.equal(discovery.ok, false);
+  assert.match(discovery.error, /logged out/);
+  assert.equal(config.identities[0].loggedOut, true);
+  assert.equal(config.identities[0].lastUsage, null);
+});
+
+test("a partial fresh Claude response drops cached windows absent from the API", async () => {
+  const config = _test.normalizeConfig({
+    identities: [{
+      id: "claude-cantina",
+      type: "claude",
+      email: "samarthk@cantina.security",
+      providerAccountId: "acct-cantina",
+      workspace: process.cwd(),
+      lastUsage: {
+        service: "claude",
+        providerAccountId: "acct-cantina",
+        email: "samarthk@cantina.security",
+        fetchedAt: "2026-09-01T12:00:00.000Z",
+        windows: [
+          { label: "5-hour", remainingPercent: 40 },
+          { label: "weekly", remainingPercent: 70 }
+        ]
+      }
+    }]
+  });
+
+  const discovery = await _test.discoverCurrentClaudeIdentity(config, async () => ({
+    service: "claude",
+    providerAccountId: "acct-cantina",
+    email: "samarthk@cantina.security",
+    fetchedAt: "2026-09-02T12:00:00.000Z",
+    windows: [{ label: "weekly", remainingPercent: 65 }]
+  }));
+
+  assert.equal(discovery.ok, true);
+  assert.deepEqual(config.identities[0].lastUsage.windows.map((window) => window.label), ["weekly"]);
+  assert.equal(config.identities[0].lastUsage.windows[0].remainingPercent, 65);
 });
 
 test("refresh falls back to last successful usage when live auth is unavailable", async () => {
@@ -1207,15 +1425,20 @@ test("Electron toggle path does not create implicit globals", async () => {
   assert.equal(electronSource.includes("lastPopoverBounds"), false);
 });
 
-test("Electron refresh uses web-only Claude usage and never starts Claude automatically", async () => {
+test("Electron refresh uses Keychain-backed Claude usage and never starts Claude automatically", async () => {
   const electronSource = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
   const serverSource = await fs.readFile(path.join(__dirname, "..", "server.js"), "utf8");
 
-  assert.ok(electronSource.includes('refreshAllAccounts({ skipAccountTypes: ["claude"] })'));
-  assert.ok(electronSource.includes("refreshClaudeWebUsage({ force: forceClaudeWebUsage })"));
+  assert.ok(electronSource.includes("snapshot = await refreshAllAccounts()"));
+  assert.ok(serverSource.includes('"/usr/bin/security"'));
+  assert.ok(serverSource.includes("async function fetchClaudeUsage"));
+  assert.ok(serverSource.includes("async function discoverCurrentClaudeIdentity"));
+  assert.equal(electronSource.includes("persist:claude-usage"), false);
+  assert.equal(electronSource.includes("claude.ai/settings/usage"), false);
   assert.equal(electronSource.includes("forceClaudeCliUsage"), false);
   assert.equal(electronSource.includes("claudeCliUsageRefreshMs"), false);
   assert.equal(electronSource.includes("refreshClaudeCliUsage"), false);
+  assert.equal(serverSource.includes("refreshToken: firstString(oauth?.refreshToken)"), false);
   assert.equal(serverSource.includes("async function captureClaudeUsage"), false);
   assert.equal(serverSource.includes("async function triggerClaudeTimer"), false);
   assert.equal(
@@ -1224,7 +1447,6 @@ test("Electron refresh uses web-only Claude usage and never starts Claude automa
     "Claude executable references must stay limited to its declaration plus explicit auth status, login, and logout"
   );
   assert.match(serverSource, /if \(!account \|\| account\.type === "claude" \|\| !result\.ok\)/);
-  assert.ok(electronSource.includes("Never fan one"));
 });
 
 test("Electron account deletion invalidates and reconciles in-flight refresh snapshots", async () => {
@@ -1263,19 +1485,14 @@ test("Electron reconciliation cannot repaint a logged-out row from a stale refre
   assert.equal(reconciled.results[1].ok, true);
 });
 
-test("stored Claude limits become stale when the web refresh is unavailable", async () => {
+test("timed-out live values retain their stale reason for the renderer", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "electron-main.js"), "utf8");
-  const start = source.indexOf("function preserveStoredClaudeUsage(");
-  const end = source.indexOf("function startClaudeWebUsageRefresh(", start);
-  const context = {
-    claudeWebUsageCache: {
-      ok: false,
-      error: "Claude usage API timed out."
-    }
-  };
+  const start = source.indexOf("function preserveRecentSuccessfulResults(");
+  const end = source.indexOf("function broadcastSnapshot(", start);
+  const context = {};
 
   vm.runInNewContext(
-    `${source.slice(start, end)}\nthis.preserveStoredClaudeUsage = preserveStoredClaudeUsage;`,
+    `${source.slice(start, end)}\nthis.preserveRecentSuccessfulResults = preserveRecentSuccessfulResults;`,
     context
   );
 
@@ -1283,21 +1500,21 @@ test("stored Claude limits become stale when the web refresh is unavailable", as
     service: "claude",
     windows: [{ label: "5-hour", remainingPercent: 42 }]
   };
-  const result = context.preserveStoredClaudeUsage({
-    config: {
-      accounts: [{ id: "claude-1", type: "claude", lastUsage: cached }]
-    },
+  const result = context.preserveRecentSuccessfulResults({
     results: [{
       accountId: "claude-1",
       ok: false,
-      error: "Skipped for web-only refresh."
+      error: "Claude usage request timed out."
     }]
+  }, {
+    results: [{ accountId: "claude-1", ok: true, data: cached }]
   });
 
   assert.equal(result.results[0].ok, true);
   assert.equal(result.results[0].stale, true);
-  assert.equal(result.results[0].error, "Claude usage API timed out.");
-  assert.deepEqual(result.results[0].data, cached);
+  assert.equal(result.results[0].error, "Claude usage request timed out.");
+  assert.equal(result.results[0].staleReason, "Claude usage request timed out.");
+  assert.equal(result.results[0].data.staleReason, "Claude usage request timed out.");
 });
 
 test("parseClaudeUsageScreen uses the all-models weekly limit, not a 0% model-only sub-limit", () => {

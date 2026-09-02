@@ -296,7 +296,7 @@ test("Electron delegates sign-in to the CLI path instead of an embedded browser"
   assert.match(source, /Sign in to Claude with Chrome/);
   assert.match(
     source,
-    /onClaudeLoginCompleted\(\(\) => \{[\s\S]*?refreshSnapshot\(\{ forceClaudeWebUsage: true \}\)/
+    /onClaudeLoginCompleted\(\(\) => \{[\s\S]*?refreshSnapshot\(\{ forceClaudeUsage: true \}\)/
   );
   assert.match(source, /startClaudeLoginCompletionRefresh\(\);[\s\S]*?registerIpcHandlers\(\);/);
   assert.match(
@@ -342,7 +342,7 @@ test("Electron registers one behavioral forced refresh for Claude login completi
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(refreshCalls.length, 1);
-  assert.equal(refreshCalls[0].forceClaudeWebUsage, true);
+  assert.equal(refreshCalls[0].forceClaudeUsage, true);
   context.stopClaudeLoginCompletionRefresh();
   assert.equal(unsubscribeCount, 1);
   assert.equal(completionListener, null);

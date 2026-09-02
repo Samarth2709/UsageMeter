@@ -36,7 +36,7 @@ Usage Meter is designed around local CLI state:
 
 - Usage History indexes local `.jsonl` transcripts in a short-lived worker, reads only newly appended bytes after the first pass, and saves compact 90-day aggregates under `~/.rate-limit-tool/`. Indexed history stays available when a CLI cleans up an old transcript. It does not upload transcript contents.
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
-- Claude limits use the app's existing authenticated `claude.ai` web session. Usage Meter never starts Claude Code for automatic refreshes or automation; it invokes the CLI only after an explicit Sign In or Log Out action.
+- Claude limits use the OAuth access credential already saved by Claude Code in macOS Keychain. Usage Meter sends read-only profile and usage requests, never refreshes or rewrites that credential, and never starts Claude Code for automatic refreshes or automation. It invokes the CLI only after an explicit Sign In or Log Out action.
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
 
 Append validation detects truncation, replacement, source reclassification, and changes at the saved file tail. An in-place rewrite earlier in an already-indexed prefix cannot be detected without rereading the whole prefix, so **Usage History → Diagnostics → Rebuild index** provides an explicit full repair from current transcripts while preserving retained 90-day history for files the CLIs already cleaned up.

@@ -53,7 +53,6 @@ For a packaging change, additionally build the DMG, install it into `/Applicatio
 | `USAGE_METER_UPDATE_MANIFEST_URL` | Overrides the signed manifest URL; intended for local updater fixtures. |
 | `USAGE_METER_UPDATE_SIGNATURE_URL` | Overrides the matching manifest signature URL; intended for local updater fixtures. |
 | `USAGE_METER_SHELL_DOWNLOAD_URL` | Overrides the manual shell/DMG download URL. |
-| `CLAUDE_USAGE_URL` | Overrides the authenticated Claude web Usage URL. |
 | `RATE_LIMIT_TOOL_DEBUG=1` | Enables development diagnostics. |
 | `RATE_LIMIT_TOOL_KEEP_OPEN=1` | Keeps the History window open after blur while debugging. |
 | `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` | Opts into the Codex-only 5-hour reset automation; this can run a Codex CLI task and consume usage. Claude accounts are excluded. |

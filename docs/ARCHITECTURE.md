@@ -8,7 +8,7 @@ Usage Meter has two local surfaces: an Electron menu-bar app and a static market
 | --- | --- | --- |
 | Fixed Electron shell | `bootstrap.js`, `bootstrap-updater.js`, `core-updater.js`, `atomic-file.js`, `preload.js` | Single-instance admission, Core selection, signed update verification, rollback, durable private state writes, stable update IPC, and manual shell-download fallback. |
 | Versioned Core | `electron-main.js`, `server.js`, `usage-windows.js`, `usage-history/`, `public/`, `assets/` | Tray icon, popover/history windows, live refresh, local analytics, and app UI. |
-| Live limits | `electron-main.js`, `server.js`, `usage-windows.js` | Authenticated Claude web usage, Codex usage requests, identity/config storage, window normalization, caching, and merging. |
+| Live limits | `electron-main.js`, `server.js`, `usage-windows.js` | Read-only Claude and Codex usage requests, identity/config storage, window normalization, and caching. |
 | Usage History | `usage-history/` | Incremental transcript indexing, aggregation, pricing, diagnostics, subscription value, and model insights. Index work runs in a short-lived Electron utility process. |
 | App renderer | `public/` | Menu-bar popover and Usage History dashboard. |
 | Static site | `site/` | Marketing page and credential-free dashboard demo driven by `site/mock.js`. |
@@ -19,8 +19,8 @@ Usage Meter has two local surfaces: an Electron menu-bar app and a static market
 ## Runtime data flow
 
 ```text
-Existing Codex authentication + authenticated Claude web session
-  -> server.js refreshes Codex and electron-main.js refreshes Claude allowance windows
+Existing Codex authentication + Claude Code OAuth access credential in macOS Keychain
+  -> server.js refreshes Codex and Claude allowance windows
   -> electron-main.js caches and broadcasts a snapshot
   -> public/app.js renders the menu-bar popover
 
@@ -71,7 +71,7 @@ Transcript parsing is read-only. The cache stores aggregate buckets plus normali
 - A schema-version mismatch or corrupt canonical index rebuilds from transcripts instead of accepting potentially stale legacy cache data.
 - Diagnostics exposes an explicit full index rebuild for an in-place rewrite earlier in an already-indexed prefix, which append-only tail validation cannot detect without rereading the prefix on every refresh. The repair preserves retained 90-day aggregates for transcripts that are no longer present.
 - Private JSON state is written with unique temporary files, file and directory sync, restrictive permissions, and atomic rename. Incomplete trailing JSONL is left uncommitted until it becomes a complete valid record.
-- Claude allowance refresh is web-only and throttled to avoid repeatedly opening a renderer. Cached values remain visible in a grey `Cached` state when the web source is unavailable.
+- Claude allowance refresh reads Claude Code's saved OAuth access credential from macOS Keychain and calls the read-only profile and usage endpoints. Usage Meter never uses the refresh token or rewrites the credential; if access expires or is rejected, the user must explicitly sign in again. Cached values remain visible in a grey `Cached` state while the live source is unavailable.
 - Usage History is recomputed only while its window is open. In-memory history data is released when the window closes.
 - Aggregate-bearing file entries use device/inode identity, CLI tag, size, byte offset, parser continuation state, and a tail hash. Duplicate entries retain only identity and file metadata. Append-only growth is incremental; replacement/truncation rebuilds only that file.
 - Calendar ranges use local dates, not fixed 24-hour jumps, so daylight-saving transitions stay correct.
