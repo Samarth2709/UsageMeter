@@ -9,7 +9,7 @@ Prevent Usage Meter from participating in Claude Code OAuth refresh races while 
 - Usage Meter must not launch Claude Code in the background, on startup, on a timer, after sign-in, or during manual refresh.
 - The only permitted Claude Code process launches are explicit user actions: **Sign In** and **Log Out**.
 - Claude allowance refresh must use Claude Code's existing macOS Keychain access credential for read-only profile and usage requests.
-- Usage Meter must never read, use, or write Claude's refresh token; an expired or rejected access token requires an explicit Sign In action.
+- Usage Meter must discard Claude's refresh token after parsing the Keychain credential and never return, use, or write it; an expired or rejected access token requires an explicit Sign In action.
 - When a web refresh fails and cached allowance data exists, keep showing those values as stale.
 - Stale values must be grey and include a visible `Cached` label; color cannot be the only stale-state signal.
 - A stale authentication error must show cached values without claiming that the account is live or replacing them with a misleading sign-in-only state.
