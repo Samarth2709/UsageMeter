@@ -9,7 +9,7 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 ## What it does
 
 - Shows live Codex and Claude Code allowance windows, including dynamically reported weekly-only plans.
-- Refreshes limit data in the background and preserves the last successful value if a provider is temporarily unavailable.
+- Refreshes limit data in the background and shows the last successful value in grey with a `Cached` label if a provider is temporarily unavailable.
 - Opens with the menu-bar icon or `Control` + `Option` + `L`.
 - Enables macOS launch-at-login on the first packaged launch from `/Applications`; later changes in macOS Login Items are respected.
 - Reads local Claude Code and Codex transcripts to power a Usage History dashboard with daily trends, project grouping, model cost/cache analysis, subscription value, and diagnostics.
@@ -36,7 +36,7 @@ Usage Meter is designed around local CLI state:
 
 - Usage History indexes local `.jsonl` transcripts in a short-lived worker, reads only newly appended bytes after the first pass, and saves compact 90-day aggregates under `~/.rate-limit-tool/`. Indexed history stays available when a CLI cleans up an old transcript. It does not upload transcript contents.
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
-- Claude limits use the installed `claude` CLI's Usage screen and may supplement it with the existing authenticated `claude.ai` session.
+- Claude limits use the OAuth access credential already saved by Claude Code in macOS Keychain. Usage Meter sends read-only profile and usage requests, never refreshes or rewrites that credential, and never starts Claude Code for automatic refreshes or automation. It invokes the CLI only after an explicit Sign In or Log Out action.
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
 
 Append validation detects truncation, replacement, source reclassification, and changes at the saved file tail. An in-place rewrite earlier in an already-indexed prefix cannot be detected without rereading the whole prefix, so **Usage History → Diagnostics → Rebuild index** provides an explicit full repair from current transcripts while preserving retained 90-day history for files the CLIs already cleaned up.
@@ -63,9 +63,9 @@ npm run clean     # remove generated dist/ and build/ artifacts only
 
 Source-mode runs do not register a macOS login item.
 
-## Optional 5-hour automation
+## Optional Codex 5-hour automation
 
-The app normally only reads limits. Setting `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` opts into automation that starts a minimal CLI task when an eligible 5-hour allowance resets. It can consume usage, so it is disabled by default.
+The app normally only reads limits. Setting `RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1` opts into automation that starts a minimal **Codex** CLI task when an eligible 5-hour allowance resets. Claude accounts are always excluded. The task can consume usage, so it is disabled by default.
 
 ```bash
 RATE_LIMIT_TOOL_AUTOSTART_ENABLED=1 npm start

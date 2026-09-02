@@ -2,6 +2,11 @@
 
 This is a concise record of shipped milestones. It is not a substitute for Git history; use `git log` for the exact code-level change record.
 
+## Unreleased
+
+- Removed automatic Claude CLI usage capture and excluded Claude accounts from reset automation to avoid participating in cross-process OAuth refresh races.
+- Switched Claude allowance refresh to read-only requests using Claude Code's saved Keychain access credential, without refreshing or rewriting it, and kept unavailable values visible in a grey `Cached` state.
+
 ## 0.2.6 — 2026-08-30
 
 - Removed limit-exhaustion runway predictions, forecast notifications, and local prediction evaluation logging from the runtime and popover.

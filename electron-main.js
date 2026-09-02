@@ -19,15 +19,12 @@ const {
   saveConfig,
   expandHome,
   refreshAllAccounts,
-  saveUsageForAccount,
-  findIdentityForUsage,
   processAutoStartSnapshot,
   onClaudeLoginCompleted,
   openLoginForAccountById,
   logoutAccountById,
   removeAccountById
 } = require("./server");
-const { coerceResetAt, mergeUsageWindows } = require("./usage-windows");
 const { runIndexWorkerProcess } = require("./usage-history/index-worker-client");
 const { atomicWriteJson, atomicWriteJsonSync } = require("./atomic-file");
 
@@ -41,10 +38,6 @@ const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
 const launchAtLoginStateFile = "launch-at-login-enabled.json";
 const backgroundRefreshMs = 60000;
-const claudeUsageUrl = process.env.CLAUDE_USAGE_URL || "https://claude.ai/settings/usage";
-// The claude.ai web scrape recreates a full renderer each time, so keep it infrequent.
-const claudeWebRefreshMs = 300000;
-const claudeCliUsageRefreshMs = 300000;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = globalThis.__usageMeterSingleInstanceLockAcquired
   ?? app.requestSingleInstanceLock();
@@ -63,13 +56,6 @@ let refreshPromise = null;
 let accountMutationGeneration = 0;
 let backgroundRefreshTimer = null;
 let autoStartPromise = null;
-let claudeUsageWindow = null;
-let claudeWebRefreshTimer = null;
-let claudeWebRefreshPromise = null;
-let claudeCliUsageRefreshPromise = null;
-let lastClaudeWebScrapeAt = 0;
-let lastClaudeCliUsageRefreshAt = 0;
-let claudeWebIdentity = null;
 let stopClaudeLoginCompletionRefresh = null;
 // Pre-computed usage-history payloads (rangeDays -> payload), kept warm so the
 // "View usage history" window opens instantly instead of scanning transcripts on click.
@@ -82,12 +68,6 @@ const activeIndexWorkers = new Set();
 // User-configured extra transcript folders (absolute paths), mirrored from config so
 // the synchronous history path can read them without an async config load each time.
 let scanRoots = { claude: [], codex: [] };
-let claudeWebUsageCache = {
-  ok: false,
-  status: "starting",
-  error: "Claude web usage has not refreshed yet.",
-  fetchedAt: null
-};
 const refreshMetricWindowSize = 20;
 const refreshMetricSamplesByEvent = new Map();
 
@@ -449,540 +429,6 @@ function createTray() {
   });
 }
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function normalizeText(value) {
-  return String(value || "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function getLastTextMatch(text, regex) {
-  const matches = Array.from(text.matchAll(regex));
-  return matches.length ? matches.at(-1) : null;
-}
-
-function cleanResetText(value) {
-  const cleaned = String(value || "")
-    .replace(/\d+%\s*used.*/i, "")
-    .replace(/\s*used\s*$/i, "")
-    .replace(/\b([A-Z][a-z]{2})(\d{1,2})\b/g, "$1 $2")
-    .replace(/(\d)(?=\()/g, "$1 ")
-    .replace(/\b([A-Z][a-z]{2}\s+\d{1,2})\s+t\s+(\d)/g, "$1 at $2")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return cleaned || null;
-}
-
-async function getClaudeWebIdentity() {
-  if (claudeWebIdentity) return claudeWebIdentity;
-  claudeWebIdentity = await getClaudeIdentityFromWebSession();
-  return claudeWebIdentity;
-}
-
-function findClaudeOrgId(payload) {
-  const candidates = [
-    payload?.organization,
-    payload?.current_organization,
-    payload?.currentOrganization,
-    payload?.account?.organization,
-    ...(Array.isArray(payload?.organizations) ? payload.organizations : []),
-    ...(Array.isArray(payload?.account?.organizations) ? payload.account.organizations : [])
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    const id = candidate.uuid || candidate.id || candidate.organization_uuid || candidate.organizationId;
-    if (typeof id === "string" && id.trim()) {
-      return id.trim();
-    }
-  }
-
-  const serialized = JSON.stringify(payload || {});
-  const match = serialized.match(
-    /"(?:uuid|id|organization_id)"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i
-  );
-  if (match) {
-    return match[1];
-  }
-
-  return null;
-}
-
-function findClaudeEmail(payload) {
-  const candidates = [
-    payload,
-    payload?.account,
-    payload?.user,
-    payload?.current_user,
-    payload?.currentUser,
-    payload?.profile
-  ];
-  for (const candidate of candidates) {
-    const email = candidate?.email || candidate?.email_address || candidate?.emailAddress;
-    if (typeof email === "string" && email.trim()) return email.trim();
-  }
-  return null;
-}
-
-async function ensureClaudeOrigin() {
-  const window = getOrCreateClaudeUsageWindow();
-
-  if (!/^https:\/\/claude\.ai(?:\/|$)/i.test(window.webContents.getURL())) {
-    await window.loadURL("https://claude.ai/");
-  }
-
-  return window;
-}
-
-async function getClaudeIdentityFromWebSession() {
-  const window = await ensureClaudeOrigin();
-  const endpoints = [
-    "https://claude.ai/api/bootstrap",
-    "https://claude.ai/api/organizations"
-  ];
-
-  for (const endpoint of endpoints) {
-    const response = await window.webContents.executeJavaScript(
-      `fetch(${JSON.stringify(endpoint)}, {
-        credentials: "include",
-        headers: {
-          "Accept": "application/json"
-        }
-      }).then(async (response) => ({
-        ok: response.ok,
-        status: response.status,
-        body: await response.text()
-      }))`,
-      true
-    );
-
-    if (response.status === 401 || response.status === 403) {
-      throw new Error("Claude usage API needs a web login.");
-    }
-
-    if (!response.ok) {
-      continue;
-    }
-
-    let payload;
-    try {
-      payload = JSON.parse(response.body);
-    } catch {
-      throw new Error("Claude usage API needs a web login.");
-    }
-
-    const orgId = findClaudeOrgId(payload);
-    if (orgId) {
-      return { organization: orgId, email: findClaudeEmail(payload) };
-    }
-  }
-
-  throw new Error("Claude web session is logged in, but no organization id was found.");
-}
-
-function extractClaudeWebWindow(label, patterns, text) {
-  for (const pattern of patterns) {
-    const blockMatch = getLastTextMatch(text, pattern);
-
-    if (!blockMatch) {
-      continue;
-    }
-
-    const block = blockMatch[0];
-    const percentMatch = getLastTextMatch(block, /(\d{1,3})\s*%\s*used/gi);
-
-    if (!percentMatch) {
-      continue;
-    }
-
-    const usedPercent = Math.min(100, Math.max(0, Number(percentMatch[1])));
-    const resetMatch = getLastTextMatch(block, /Reset(?:s|ting)?(?:\s+at|\s+on|\s+in)?\s*([^\n]+)/gi);
-
-    return {
-      label,
-      usedPercent,
-      remainingPercent: Math.max(0, 100 - usedPercent),
-      resetText: resetMatch ? cleanResetText(resetMatch[1]) : null,
-      source: "claude_web_usage"
-    };
-  }
-
-  return null;
-}
-
-function parseClaudeUsageApiPayload(payload, { organization = null, email = null } = {}) {
-  const windows = [];
-  const fiveHour = payload?.five_hour;
-  const sevenDay = payload?.seven_day;
-
-  if (fiveHour) {
-    const usedPercent = Math.min(100, Math.max(0, Number(fiveHour.utilization || 0)));
-    windows.push({
-      label: "5-hour",
-      usedPercent,
-      remainingPercent: Math.max(0, 100 - usedPercent),
-      resetAt: coerceResetAt(fiveHour.resets_at),
-      source: "claude_usage_api"
-    });
-  }
-
-  if (sevenDay) {
-    const usedPercent = Math.min(100, Math.max(0, Number(sevenDay.utilization || 0)));
-    windows.push({
-      label: "weekly",
-      usedPercent,
-      remainingPercent: Math.max(0, 100 - usedPercent),
-      resetAt: coerceResetAt(sevenDay.resets_at),
-      source: "claude_usage_api"
-    });
-  }
-
-  if (!windows.length) {
-    return {
-      ok: false,
-      status: "unparsed",
-      error: "Claude usage API responded, but usage windows were not found.",
-      payloadKeys: Object.keys(payload || {}),
-      fetchedAt: new Date().toISOString()
-    };
-  }
-
-  return {
-    ok: true,
-    status: "ok",
-    data: {
-      service: "claude",
-      organization,
-      email,
-      windows,
-      extraUsage: payload?.extra_usage || null,
-      fetchedAt: new Date().toISOString()
-    },
-    fetchedAt: new Date().toISOString()
-  };
-}
-
-function parseClaudeWebUsagePage(payload) {
-  const text = normalizeText(payload.text);
-  const email = getLastTextMatch(text, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)?.[0] || null;
-  const loginNeeded = /\/(?:login|logout)(?:$|[/?#])/i.test(payload.url || "") ||
-    (
-      /(?:log in|sign in|continue with google|continue with email)/i.test(text) &&
-      !/(?:current session|current week|\d{1,3}\s*%\s*used)/i.test(text)
-    );
-
-  if (loginNeeded) {
-    return {
-      ok: false,
-      status: "login_required",
-      error: "Claude usage page needs a web login.",
-      url: payload.url,
-      title: payload.title,
-      fetchedAt: new Date().toISOString()
-    };
-  }
-
-  const sessionWindow = extractClaudeWebWindow(
-    "5-hour",
-    [
-      /Current\s*(?:session|usage|5[-\s]?hour)[\s\S]{0,420}?(?=Current\s*week|Weekly|$)/gi,
-      /5[-\s]?hour[\s\S]{0,420}?(?=Current\s*week|Weekly|$)/gi
-    ],
-    text
-  );
-  const weekWindow = extractClaudeWebWindow(
-    "weekly",
-    [
-      /Current\s*week(?:\s*\(all\s*models\))?[\s\S]{0,420}?(?=Approximate|Extra usage|$)/gi,
-      /Weekly[\s\S]{0,420}?(?=Approximate|Extra usage|$)/gi
-    ],
-    text
-  );
-  const windows = [sessionWindow, weekWindow].filter(Boolean);
-
-  if (!windows.length) {
-    return {
-      ok: false,
-      status: "unparsed",
-      error: "Claude usage page loaded, but usage numbers were not found.",
-      url: payload.url,
-      title: payload.title,
-      textSample: text.slice(0, 800),
-      fetchedAt: new Date().toISOString()
-    };
-  }
-
-  return {
-    ok: true,
-    status: "ok",
-    data: {
-      service: "claude",
-      source: "claude_web_usage",
-      email,
-      windows,
-      fetchedAt: new Date().toISOString(),
-      page: {
-        url: payload.url,
-        title: payload.title
-      }
-    },
-    fetchedAt: new Date().toISOString()
-  };
-}
-
-function getOrCreateClaudeUsageWindow() {
-  if (claudeUsageWindow && !claudeUsageWindow.isDestroyed()) {
-    return claudeUsageWindow;
-  }
-
-  claudeUsageWindow = new BrowserWindow({
-    width: 960,
-    height: 720,
-    show: false,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: true,
-      partition: "persist:claude-usage"
-    }
-  });
-
-  claudeUsageWindow.on("closed", () => {
-    claudeUsageWindow = null;
-  });
-
-  return claudeUsageWindow;
-}
-
-async function readClaudeUsagePage() {
-  const window = getOrCreateClaudeUsageWindow();
-  await window.loadURL(claudeUsageUrl);
-  await wait(2500);
-
-  return window.webContents.executeJavaScript(
-    `(() => ({
-      url: location.href,
-      title: document.title,
-      text: document.body ? document.body.innerText : ""
-    }))()`,
-    true
-  );
-}
-
-async function readClaudeUsageApi() {
-  const identity = await getClaudeWebIdentity();
-  const window = await ensureClaudeOrigin();
-  const usageUrl = `https://claude.ai/api/organizations/${identity.organization}/usage`;
-
-  return window.webContents.executeJavaScript(
-    `fetch(${JSON.stringify(usageUrl)}, {
-      credentials: "include",
-      headers: {
-        "Accept": "application/json"
-      }
-    }).then(async (response) => ({
-      ok: response.ok,
-      status: response.status,
-      url: response.url,
-      body: await response.text()
-    }))`,
-    true
-  );
-}
-
-async function refreshClaudeWebUsage({ force = false } = {}) {
-  if (claudeWebRefreshPromise) {
-    return claudeWebRefreshPromise;
-  }
-
-  // The scrape spins up a full claude.ai renderer, so throttle it: no matter how often
-  // callers ask (the 60s snapshot loop does), actually scrape at most once per
-  // claudeWebRefreshMs and otherwise return the cached result.
-  if (!force && Date.now() - lastClaudeWebScrapeAt < claudeWebRefreshMs) {
-    return claudeWebUsageCache;
-  }
-  lastClaudeWebScrapeAt = Date.now();
-
-  claudeWebRefreshPromise = (async () => {
-    try {
-      const response = await Promise.race([
-        readClaudeUsageApi(),
-        new Promise((resolve, reject) => setTimeout(
-          () => reject(new Error("Claude web usage refresh timed out.")),
-          15_000
-        ))
-      ]);
-
-      if (response.status === 401 || response.status === 403) {
-        claudeWebIdentity = null;
-        claudeWebUsageCache = {
-          ok: false,
-          status: "login_required",
-          error: "Claude usage API needs a web login.",
-          fetchedAt: new Date().toISOString()
-        };
-      } else if (!response.ok) {
-        throw new Error(`Claude usage API request failed with ${response.status}.`);
-      } else {
-        let payload;
-
-        try {
-          payload = JSON.parse(response.body);
-        } catch {
-          claudeWebUsageCache = {
-            ok: false,
-            status: "login_required",
-            error: "Claude usage API needs a web login.",
-            fetchedAt: new Date().toISOString()
-          };
-          return claudeWebUsageCache;
-        }
-
-        claudeWebUsageCache = parseClaudeUsageApiPayload(payload, claudeWebIdentity || {});
-      }
-    } catch (error) {
-      claudeWebUsageCache = {
-        ok: false,
-        status: "error",
-        error: error.message,
-        fetchedAt: new Date().toISOString()
-      };
-    }
-
-    return claudeWebUsageCache;
-  })();
-
-  try {
-    return await claudeWebRefreshPromise;
-  } finally {
-    claudeWebRefreshPromise = null;
-    // Don't keep a full claude.ai renderer resident between scrapes — it's the biggest
-    // idle memory holder and grows over time. Recreated on the next refresh.
-    if (claudeUsageWindow && !claudeUsageWindow.isDestroyed()) {
-      claudeUsageWindow.destroy();
-      claudeUsageWindow = null;
-    }
-  }
-}
-
-async function mergeClaudeWebUsage(snapshot) {
-  if (!claudeWebUsageCache.ok || !snapshot?.results?.length) {
-    return snapshot;
-  }
-
-  const state = await getState();
-  const claudeAccounts = state.config.accounts.filter((account) => account.type === "claude");
-  const targetAccount = findIdentityForUsage(
-    claudeAccounts,
-    "claude",
-    claudeWebUsageCache.data,
-    { requireStrong: true }
-  );
-
-  // The Claude API payload does not identify the signed-in user. Never fan one
-  // browser session's limits out to multiple configured identities.
-  if (!targetAccount) {
-    return snapshot;
-  }
-
-  const mergedSnapshot = {
-    ...snapshot,
-    results: snapshot.results.map((result) => {
-      if (result.accountId !== targetAccount.id) {
-        return result;
-      }
-
-      const existingData = result.data || {};
-      const webData = claudeWebUsageCache.data || {};
-
-      return {
-        ...result,
-        ok: true,
-        stale: false,
-        error: undefined,
-        data: {
-          ...existingData,
-          ...webData,
-          windows: mergeUsageWindows(existingData.windows, webData.windows),
-          source: "claude_web_usage"
-        }
-      };
-    })
-  };
-
-  await Promise.all(
-    mergedSnapshot.results
-      .filter((result) => result.ok && result.accountId === targetAccount.id && result.data)
-      .map((result) => saveUsageForAccount(result.accountId, result.data).catch(() => false))
-  );
-
-  return mergedSnapshot;
-}
-
-function hasClaudeFiveHourWindow(windows = []) {
-  return windows.some((window) => /5[-\s]?hour|5h|current\s*session/i.test(window?.label || ""));
-}
-
-async function shouldRefreshClaudeCliUsage(force = false) {
-  if (force) return true;
-  if (claudeWebUsageCache.ok && hasClaudeFiveHourWindow(claudeWebUsageCache.data?.windows || [])) {
-    const state = await getState();
-    const target = findIdentityForUsage(
-      state.config.accounts.filter((account) => account.type === "claude"),
-      "claude",
-      claudeWebUsageCache.data,
-      { requireStrong: true }
-    );
-    if (target) return false;
-  }
-
-  return Date.now() - lastClaudeCliUsageRefreshAt >= claudeCliUsageRefreshMs;
-}
-
-async function refreshClaudeCliUsage() {
-  if (claudeCliUsageRefreshPromise) {
-    return claudeCliUsageRefreshPromise;
-  }
-
-  lastClaudeCliUsageRefreshAt = Date.now();
-  claudeCliUsageRefreshPromise = refreshAllAccounts({
-    onlyAccountTypes: ["claude"]
-  });
-
-  try {
-    return await claudeCliUsageRefreshPromise;
-  } finally {
-    claudeCliUsageRefreshPromise = null;
-  }
-}
-
-function mergeAccountRefresh(snapshot, refreshedSnapshot) {
-  if (!refreshedSnapshot?.results?.length) {
-    return snapshot;
-  }
-
-  const refreshedByAccountId = new Map(
-    refreshedSnapshot.results.map((result) => [result.accountId, result])
-  );
-
-  const seen = new Set(snapshot.results.map((result) => result.accountId));
-  return {
-    ...snapshot,
-    config: refreshedSnapshot.config || snapshot.config,
-    results: [
-      ...snapshot.results.map((result) => refreshedByAccountId.get(result.accountId) || result),
-      ...refreshedSnapshot.results.filter((result) => !seen.has(result.accountId))
-    ]
-  };
-}
-
 // Flatten the live snapshot's per-account limit windows into the shape
 // computeWindowValues wants. One account per
 // service is the norm; take the first OK result per service to avoid double rows.
@@ -1186,52 +632,16 @@ function preserveRecentSuccessfulResults(snapshot, previousSnapshot) {
       return {
         ...previous,
         stale: true,
-        staleReason: result.error
+        error: result.error,
+        staleReason: result.error,
+        data: {
+          ...previous.data,
+          stale: true,
+          staleReason: result.error
+        }
       };
     })
   };
-}
-
-function preserveStoredClaudeUsage(snapshot) {
-  const storedUsageByAccountId = new Map(
-    (snapshot?.config?.accounts || [])
-      .filter((account) => account.type === "claude" && account.lastUsage)
-      .map((account) => [account.id, account.lastUsage])
-  );
-
-  return {
-    ...snapshot,
-    results: (snapshot?.results || []).map((result) => {
-      if (result.error !== "Skipped for fast refresh.") {
-        return result;
-      }
-
-      const data = storedUsageByAccountId.get(result.accountId);
-      if (!data) {
-        return result;
-      }
-
-      return {
-        accountId: result.accountId,
-        ok: true,
-        stale: true,
-        error: claudeWebUsageCache.error || "Waiting for Claude usage refresh.",
-        data
-      };
-    })
-  };
-}
-
-function startClaudeWebUsageRefresh() {
-  clearInterval(claudeWebRefreshTimer);
-  refreshClaudeWebUsage().catch(() => {});
-  claudeWebRefreshTimer = setInterval(() => {
-    if (claudeWebUsageCache.status === "login_required") {
-      return;
-    }
-
-    refreshClaudeWebUsage().catch(() => {});
-  }, claudeWebRefreshMs);
 }
 
 function broadcastSnapshot(snapshot, { refreshHistory = true } = {}) {
@@ -1347,10 +757,10 @@ function logRefreshMetric(fields) {
   console.log(`[refresh-metric] ${JSON.stringify(enrichedFields)}`);
 }
 
-async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
+async function refreshSnapshot({ forceClaudeUsage = false } = {}) {
   if (refreshPromise) {
-    if (!forceClaudeCliUsage) return refreshPromise;
-    return refreshPromise.then(() => refreshSnapshot({ forceClaudeCliUsage: true }));
+    if (!forceClaudeUsage) return refreshPromise;
+    return refreshPromise.then(() => refreshSnapshot({ forceClaudeUsage: true }));
   }
 
   refreshPromise = (async () => {
@@ -1359,28 +769,17 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
     let snapshot;
     const previousSnapshot = latestSnapshot;
 
-    const claudeStartedAt = nowMs();
-    const claudeRefresh = refreshClaudeWebUsage();
-
     const accountRefreshStartedAt = nowMs();
     try {
-      snapshot = await refreshAllAccounts({ skipAccountTypes: ["claude"] });
+      snapshot = await refreshAllAccounts();
     } catch (error) {
       snapshot = await buildFailureSnapshot(error);
     }
     const accountRefreshMs = nowMs() - accountRefreshStartedAt;
 
-    await claudeRefresh;
-    const claudeFetchMs = nowMs() - claudeStartedAt;
-    const claudeCliSnapshot = await shouldRefreshClaudeCliUsage(forceClaudeCliUsage)
-      ? await refreshClaudeCliUsage()
-      : null;
-
     const mergeStartedAt = nowMs();
     snapshot = preserveRecentSuccessfulResults(snapshot, previousSnapshot);
-    snapshot = mergeAccountRefresh(snapshot, claudeCliSnapshot);
-    snapshot = preserveStoredClaudeUsage(snapshot);
-    let nextSnapshot = await mergeClaudeWebUsage(snapshot);
+    let nextSnapshot = snapshot;
     if (refreshAccountGeneration !== accountMutationGeneration) {
       const currentState = await getState();
       nextSnapshot = reconcileSnapshotWithConfig(nextSnapshot, currentState.config);
@@ -1397,13 +796,6 @@ async function refreshSnapshot({ forceClaudeCliUsage = false } = {}) {
       mergeMs,
       resultCount: latestSnapshot?.results?.length || 0,
       okCount: latestSnapshot?.results?.filter((result) => result.ok).length || 0
-    });
-    logRefreshMetric({
-      event: "claude_web_refresh",
-      durationMs: claudeFetchMs,
-      status: claudeWebUsageCache.status,
-      ok: claudeWebUsageCache.ok,
-      error: claudeWebUsageCache.ok ? undefined : claudeWebUsageCache.error
     });
     return latestSnapshot;
   })();
@@ -1425,7 +817,7 @@ function startBackgroundRefresh() {
 function startClaudeLoginCompletionRefresh() {
   if (stopClaudeLoginCompletionRefresh) return;
   stopClaudeLoginCompletionRefresh = onClaudeLoginCompleted(() => {
-    refreshSnapshot({ forceClaudeCliUsage: true }).catch((error) => {
+    refreshSnapshot({ forceClaudeUsage: true }).catch((error) => {
       console.warn(`Could not refresh after Claude sign-in: ${error.message}`);
     });
   });
@@ -1490,7 +882,7 @@ function registerIpcHandlers() {
     broadcastSnapshot(latestSnapshot, { refreshHistory: false });
     return removed;
   });
-  ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeCliUsage: true }));
+  ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeUsage: true }));
   ipcMain.handle("rate-limit:toggle", togglePopover);
   ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount, contentHeight) => {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
@@ -1550,8 +942,7 @@ if (!gotSingleInstanceLock) {
     popover.once("ready-to-show", showPopover);
     setTimeout(showPopover, 800);
     startBackgroundRefresh();
-    startClaudeWebUsageRefresh();
-    refreshSnapshot({ forceClaudeCliUsage: true }).catch(() => {});
+    refreshSnapshot({ forceClaudeUsage: true }).catch(() => {});
     startUpdateChecks();
 
     const registered = globalShortcut.register(toggleShortcut, togglePopover);
@@ -1592,7 +983,6 @@ app.on("window-all-closed", (event) => {
 
 app.on("will-quit", () => {
   clearInterval(backgroundRefreshTimer);
-  clearInterval(claudeWebRefreshTimer);
   clearTimeout(popoverPositionSaveTimer);
   for (const child of activeIndexWorkers) child.kill();
   globalShortcut.unregisterAll();

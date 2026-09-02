@@ -94,7 +94,7 @@ function loadSnapshot() {
 }
 
 function isLoginNeededError(error) {
-  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|web login|login_required|claude auth status --json/i.test(error || "");
+  return /No auth\.json found|Run login|Re-run login|wrong Codex login|Duplicate Codex login|not logged in|auth was rejected|saved Claude Code login|Sign in to Claude|login_required|claude auth status --json/i.test(error || "");
 }
 
 function compactWindowLabel(label) {
@@ -357,6 +357,9 @@ function syncOverallStatus() {
   } else if (entries.some((entry) => entry.kind === "error" || entry.kind === "disconnected")) {
     headline = "Some accounts need attention";
     className = "status-error";
+  } else if (entries.some((entry) => entry.kind === "stale")) {
+    headline = "Showing cached data";
+    className = "status-stale";
   } else if (entries.every((entry) => entry.kind === "ok")) {
     headline = "";
     className = "status-ok";
@@ -403,6 +406,7 @@ function setLoading(accountId) {
     return;
   }
 
+  setStalePresentation(accountId, elements, false);
   showStatusSummary(elements, "Loading…", "pending");
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.actions.classList.add("hidden");
@@ -421,6 +425,7 @@ function setIdle(accountId) {
     return;
   }
 
+  setStalePresentation(accountId, elements, false);
   showStatusSummary(elements, "Waiting…", "pending");
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.actions.classList.add("hidden");
@@ -433,22 +438,28 @@ function setIdle(accountId) {
   });
 }
 
+function setStalePresentation(accountId, elements, stale, error = null) {
+  const type = getAccount(accountId)?.type === "claude" ? "Claude" : "Codex";
+  const detail = stale
+    ? ["Cached data", String(error || "").trim()].filter(Boolean).join(" · ")
+    : "";
+
+  elements.row.classList.toggle("is-stale", stale);
+  elements.row.title = detail;
+  elements.typeTag.textContent = stale ? `${type} · Cached` : type;
+  elements.typeTag.title = detail;
+  elements.limitGrid.setAttribute("aria-label", stale ? "Cached usage limits" : "Usage limits");
+}
+
 function renderConnected(accountId, data, metadata = {}) {
   const elements = accountElements.get(accountId);
   if (!elements) {
     return;
   }
 
-  if (metadata.stale) {
-    if (isLoginNeededError(metadata.error)) {
-      renderDisconnected(accountId);
-    } else {
-      renderError(accountId, metadata.error);
-    }
-    return;
-  }
-
+  const stale = metadata.stale === true;
   const summary = buildSummary(data);
+  setStalePresentation(accountId, elements, stale, metadata.error);
   renderLimitWindows(elements, data);
   elements.summary.textContent = "";
   elements.summary.title = buildResetTitle(data);
@@ -461,11 +472,11 @@ function renderConnected(accountId, data, metadata = {}) {
   elements.connectButton.title = "";
   elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
-    kind: "ok",
-    detail: summary,
+    kind: stale ? "stale" : "ok",
+    detail: stale ? "Cached data" : summary,
     data,
-    stale: false,
-    error: null
+    stale,
+    error: stale ? metadata.error || "Live refresh unavailable." : null
   });
 }
 
@@ -476,6 +487,7 @@ function renderDisconnected(accountId, error = null) {
   }
 
   const detail = error?.message || String(error || "");
+  setStalePresentation(accountId, elements, false);
   showStatusSummary(
     elements,
     detail ? `Could not open sign-in · ${detail}` : "",
@@ -507,6 +519,7 @@ function renderError(accountId, error) {
   }
 
   const detail = String(error || "Unavailable");
+  setStalePresentation(accountId, elements, false);
   showStatusSummary(elements, `Unavailable · ${detail}`, "error", detail);
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.actions.classList.remove("hidden");
@@ -528,7 +541,7 @@ function renderResult(result) {
   if (result.ok) {
     renderConnected(result.accountId, result.data, {
       stale: result.stale,
-      error: result.error
+      error: result.error || result.staleReason || result.data?.staleReason
     });
     return;
   }
@@ -586,6 +599,8 @@ function syncAccountsFromConfig(config) {
       existing.row.classList.toggle("account-row-claude", account.type === "claude");
       existing.row.classList.toggle("account-row-codex", account.type !== "claude");
       existing.name.textContent = buildAccountName(account, accountStates.get(account.id)?.data);
+      const existingState = accountStates.get(account.id);
+      setStalePresentation(account.id, existing, existingState?.stale === true, existingState?.error);
       continue;
     }
 
@@ -715,6 +730,7 @@ function createAccountRow(account) {
 
   accountElements.set(account.id, {
     row: node,
+    typeTag,
     name,
     limitGrid,
     summary,
