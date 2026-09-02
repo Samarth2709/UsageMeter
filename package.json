@@ -1,6 +1,6 @@
 {
   "name": "usage-meter",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
   "description": "Local Mac app for checking Codex and Claude usage limits.",
   "author": "Samarth Kumbla",
