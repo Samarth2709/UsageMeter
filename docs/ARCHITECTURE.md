@@ -62,6 +62,8 @@ Transcript parsing is read-only. The cache stores aggregate buckets plus normali
 ## Refresh and resilience
 
 - Main snapshots refresh every minute.
+- Reading Claude usage costs two requests (profile, then usage) and the endpoint rate-limits below that cadence, so a 429 is expected under a steady poll. One starts a backoff — `Retry-After` when the response carries it, otherwise 150 s — and the refresh serves the last reading until it lifts, which settles to a real read every three to four minutes and no wasted requests in between.
+- A failed poll is not stale data. A reading is presented as live until it passes `usageStaleAfterMs` (6 min); only then does the row turn grey and read "Cached". Rate limiting alone never greys a row.
 - History refreshes start a short-lived utility process for index work, then retain only compact dashboard results in the Electron main process.
 - Index updates perform a metadata inventory, read only bytes appended after each file's saved offset, and rebuild a truncated, replaced, reclassified, or indexed-tail-modified file.
 - Missing-file reconciliation runs hourly. It retains already-indexed daily aggregates for the 90-day dashboard when a CLI cleans up a transcript, then prunes them after they age out. Unchanged transcript contents are never reread during that pass.

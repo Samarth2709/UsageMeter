@@ -304,12 +304,33 @@ function setExpandedView(expanded, rowCount = currentRowCount, contentHeight = n
   }
 
   const bounds = popover.getBounds();
-  popover.setBounds({
+  popover.setBounds(clampPopoverBounds({
     x: bounds.x,
     y: bounds.y,
     width: windowWidth,
     height: currentWindowHeight
-  });
+  }));
+  queueSavePopoverPosition();
+}
+
+// The popover has no title bar and no free chrome to grab, so the renderer
+// drags it: it sends the cursor delta and the window follows, clamped to the
+// display the way every other move is.
+function movePopoverBy(dx, dy) {
+  if (!popover || popover.isDestroyed()) {
+    return;
+  }
+
+  const deltaX = Number(dx);
+  const deltaY = Number(dy);
+  const stepX = Number.isFinite(deltaX) ? Math.round(deltaX) : 0;
+  const stepY = Number.isFinite(deltaY) ? Math.round(deltaY) : 0;
+  if (!stepX && !stepY) {
+    return;
+  }
+
+  const bounds = popover.getBounds();
+  popover.setBounds(clampPopoverBounds({ x: bounds.x + stepX, y: bounds.y + stepY }));
   queueSavePopoverPosition();
 }
 
@@ -897,6 +918,10 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeUsage: true }));
   ipcMain.handle("rate-limit:toggle", togglePopover);
+  ipcMain.on("rate-limit:move-popover-by", (event, dx, dy) => {
+    movePopoverBy(dx, dy);
+  });
+
   ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount, contentHeight) => {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
   });

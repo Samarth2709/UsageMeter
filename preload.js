@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),
   toggle: () => ipcRenderer.invoke("rate-limit:toggle"),
   moveToTopRight: () => ipcRenderer.send("rate-limit:move-top-right"),
+  movePopoverBy: (dx, dy) => ipcRenderer.send("rate-limit:move-popover-by", dx, dy),
   openHistory: () => ipcRenderer.send("usage-history:open"),
   getUsageHistory: (options) => ipcRenderer.invoke("usage-history:get", options),
   repairUsageHistory: (options) => ipcRenderer.invoke("usage-history:repair", options),
