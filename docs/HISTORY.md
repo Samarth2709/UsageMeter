@@ -47,4 +47,8 @@ This is a concise record of shipped milestones. It is not a substitute for Git h
 
 ## Historical planning material
 
-The original design and execution plans are retained in [archive](archive/README.md) for provenance. They describe point-in-time requirements and may contain stale pricing, version, path, or implementation details. Current behavior is documented in the README and the active documents in this directory.
+Original design, execution-plan, and review material is retained in
+[archive](archive/README.md) for provenance. It describes point-in-time
+requirements and may contain stale pricing, versions, paths, or implementation
+details. Current behavior is documented in the README and the active documents
+in this directory.

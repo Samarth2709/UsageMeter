@@ -80,4 +80,4 @@ Use `RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN=1` to inspect eligible actions without ru
 - [Releasing](docs/RELEASING.md) — build, release, website deployment, and verification.
 - [Project history](docs/HISTORY.md) — shipped milestones and historical references.
 
-Historical plans live under [docs/archive](docs/archive/README.md). They are retained for context and are not current operating instructions.
+Historical plans and review material live under [docs/archive](docs/archive/README.md). They are retained for context and are not current operating instructions.
