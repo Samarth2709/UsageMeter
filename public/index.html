@@ -9,34 +9,38 @@
     />
     <title>Usage Meter</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=20260618b" />
+    <link rel="stylesheet" href="styles.css?v=20260902k" />
   </head>
   <body>
     <main class="widget-shell">
-      <header class="widget-header">
-        <div class="title-group">
-          <h1>Limits</h1>
-          <div class="status-anchor">
-            <span
-              id="overall-status"
-              class="header-status status-pending"
-              aria-label="Waiting for refresh"
-              title="Waiting for refresh"
-            ></span>
-            <span id="overall-status-text" class="status-text">Waiting</span>
-          </div>
+      <section id="accounts" class="account-list" aria-live="polite"></section>
+      <footer class="widget-header widget-bar">
+        <div class="status-anchor">
+          <span
+            id="overall-status"
+            class="header-status status-pending"
+            aria-label="Waiting for refresh"
+            title="Waiting for refresh"
+          ></span>
+          <span id="overall-status-text" class="status-text">Waiting</span>
         </div>
         <div class="header-actions">
           <button id="update-pill" class="update-pill hidden" aria-live="polite" title="Update">
             Update
           </button>
           <button id="refresh-button" class="icon-button" aria-label="Refresh" title="Refresh">
-            ↻
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+              <path d="M11.9 1.1v3h-3" />
+            </svg>
+          </button>
+          <button id="history-button" class="icon-button" aria-label="Usage History" title="Usage History">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 13.5V9M8 13.5V3.5M13 13.5V6.5" />
+            </svg>
           </button>
         </div>
-      </header>
-      <section id="accounts" class="account-list" aria-live="polite"></section>
-      <button id="history-button" class="history-button">View usage history →</button>
+      </footer>
     </main>
 
     <template id="account-template">
@@ -70,6 +74,6 @@
     </template>
 
     <script src="update-state.js?v=20260718a"></script>
-    <script src="app.js?v=20260718a" type="module"></script>
+    <script src="app.js?v=20260902j" type="module"></script>
   </body>
 </html>

@@ -8,18 +8,23 @@
     />
     <title>Usage History</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=20260701a" />
+    <link rel="stylesheet" href="styles.css?v=20260901a" />
   </head>
   <body class="history-body">
     <header class="history-header">
       <h1>Usage History</h1>
       <div class="header-controls">
-        <div class="range-toggle" role="group" aria-label="Date range">
-          <button data-range="7">7d</button>
-          <button data-range="30" class="active">30d</button>
-          <button data-range="90">90d</button>
+        <div class="range-toggle segmented" role="group" aria-label="Date range">
+          <button data-range="7">7 days</button>
+          <button data-range="30" class="active">30 days</button>
+          <button data-range="90">90 days</button>
         </div>
-        <button id="diag-toggle" class="mini-toggle" title="Diagnostics" aria-label="Toggle diagnostics" aria-expanded="false">⚙</button>
+        <button id="diag-toggle" class="toolbar-button" title="Diagnostics" aria-label="Toggle diagnostics" aria-expanded="false">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.2" />
+            <path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M3.5 12.5l1.3-1.3M11.2 4.8l1.3-1.3" />
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -27,78 +32,80 @@
       <!-- empty state -->
       <div id="ov-empty"></div>
 
-      <!-- summary cards -->
+      <!-- summary tiles -->
       <div id="sum-cards" class="history-summary"></div>
 
-      <!-- subscription value (live) -->
-      <section class="value-section" aria-labelledby="subscription-value-title">
-        <div class="value-section-head">
-          <div>
-            <span class="section-eyebrow">Live allowances</span>
-            <h2 id="subscription-value-title">Subscription value</h2>
-          </div>
-          <span class="live-label">live now · not range-scoped</span>
+      <!-- live allowances -->
+      <section class="panel value-section" aria-labelledby="subscription-value-title">
+        <div class="panel-head">
+          <h2 id="subscription-value-title">Live allowances</h2>
+          <span class="panel-meta">Live now, not range-scoped</span>
         </div>
         <div id="ec-value" class="window-value-grid"></div>
         <p id="ec-value-note" class="history-note">Value used is exact for this allowance window. Projected value estimates the unused portion at your recent average token mix, so it can move as that mix changes. Local Claude Code and Codex CLI sessions only.</p>
       </section>
 
       <!-- daily usage -->
-      <div class="chart-head">
-        <h2>Daily usage</h2>
-        <div class="mini-toggle" id="ov-metric" role="group" aria-label="Daily chart metric">
-          <button data-metric="tokens" class="active" aria-pressed="true">Tokens</button>
-          <button data-metric="cost" aria-pressed="false">Cost</button>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Daily usage</h2>
+          <div class="segmented" id="ov-metric" role="group" aria-label="Daily chart metric">
+            <button data-metric="tokens" class="active" aria-pressed="true">Tokens</button>
+            <button data-metric="cost" aria-pressed="false">Cost</button>
+          </div>
         </div>
-      </div>
-      <div id="ov-chart" class="history-chart"></div>
-      <details class="data-table-details">
-        <summary>Daily data table</summary>
-        <div id="daily-table"></div>
-      </details>
+        <div id="ov-chart" class="history-chart"></div>
+        <details class="data-table-details">
+          <summary>Daily data table</summary>
+          <div id="daily-table"></div>
+        </details>
+      </section>
 
       <div class="two-col">
-        <div>
-          <h2>Top models</h2>
+        <section class="panel">
+          <div class="panel-head"><h2>Top models</h2></div>
           <div id="top-models"></div>
-        </div>
-        <div>
-          <h2>Top projects</h2>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>Top projects</h2></div>
           <div id="top-projects"></div>
-        </div>
+        </section>
       </div>
 
       <!-- cumulative spend -->
-      <h2>Cumulative spend</h2>
-      <div id="ot-cumulative" class="history-chart"></div>
+      <section class="panel">
+        <div class="panel-head"><h2>Cumulative spend</h2></div>
+        <div id="ot-cumulative" class="history-chart"></div>
+      </section>
 
-      <!-- spend detail -->
       <div class="two-col">
-        <div>
-          <h2>Daily cost calendar</h2>
+        <section class="panel">
+          <div class="panel-head"><h2>Daily cost calendar</h2></div>
           <div id="ot-heatmap"></div>
-        </div>
-        <div>
-          <h2>Most expensive days</h2>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>Most expensive days</h2></div>
           <div id="ec-top-days"></div>
-        </div>
+        </section>
       </div>
 
       <!-- diagnostics (toggled by the gear button) -->
-      <section id="diag-panel" class="hidden">
-        <div class="chart-head">
+      <section id="diag-panel" class="panel hidden">
+        <div class="panel-head">
           <h2>Diagnostics</h2>
-          <span style="display:flex;gap:6px">
-            <button id="diag-help" class="mini-toggle" title="What do I need to do?">? Help</button>
+          <span class="diag-actions">
+            <button id="diag-help" class="mini-toggle" title="What do I need to do?">Help</button>
             <button id="diag-repair" class="mini-toggle" title="Rebuild the local usage index from current transcripts">Rebuild index</button>
             <button id="diag-copy" class="mini-toggle">Copy diagnostics</button>
           </span>
         </div>
         <div id="diag-help-panel" class="hidden"></div>
         <div id="diag-body"></div>
-        <h2>Session folders</h2>
-        <div id="diag-folders"></div>
-        <p class="history-note">Usage history is built only from local Claude Code and Codex CLI transcripts — API/SDK and IDE usage isn't counted. Add a folder above if your sessions live somewhere non-standard. Rebuild index performs a full repair from current transcripts while preserving retained 90-day history for cleaned-up files.</p>
+        <div class="diag-section">
+          <h2>Session folders</h2>
+          <div id="diag-folders"></div>
+        </div>
+        <p class="history-note">Usage history is built only from local Claude Code and Codex CLI transcripts. API, SDK, and IDE usage isn't counted. Add a folder above if your sessions live somewhere non-standard. Rebuild index performs a full repair from current transcripts while preserving retained 90-day history for cleaned-up files.</p>
       </section>
     </main>
 
@@ -107,7 +114,8 @@
       <p id="history-note" class="history-note"></p>
     </footer>
 
+    <script src="ring.js?v=20260901a"></script>
     <script src="help.js?v=20260701a"></script>
-    <script src="history.js?v=20260701a" type="module"></script>
+    <script src="history.js?v=20260901a" type="module"></script>
   </body>
 </html>

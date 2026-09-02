@@ -22,6 +22,7 @@ npm test
 | `npm run build:core` | Assemble the versioned Core and its production dependencies in `build/core/`. |
 | `npm run dist:mac` | Build unsigned macOS DMG and ZIP artifacts in `dist/`. |
 | `npm run clean` | Remove only generated `dist/` and `build/` artifacts. |
+| `node scripts/generate-waves.js` | Regenerate the popover meter's sea-surface keyframes in `public/styles.css` from the wave components in the script. |
 
 Use `npm ci` for a deterministic dependency install. Do not commit `node_modules/` or `dist/`.
 
@@ -72,7 +73,7 @@ The packaged app enables macOS launch-at-login independently of `RATE_LIMIT_TOOL
 | Subscription value, project, or model insights | `usage-history/windows.js`, `model-insights.js` |
 | Electron lifecycle or IPC | `electron-main.js`, `preload.js` |
 | Core download, activation, or rollback | `core-updater.js`, `bootstrap-updater.js`, `bootstrap.js` |
-| Popover/dashboard UI | `public/` and its `site/` counterpart |
+| Popover/dashboard UI | `public/` and its `site/` counterpart; visual language in [Design](DESIGN.md) |
 
 ## Generated and local-only files
 

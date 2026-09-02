@@ -9,6 +9,7 @@ const {
   globalShortcut,
   ipcMain,
   nativeImage,
+  nativeTheme,
   screen,
   dialog,
   utilityProcess
@@ -125,6 +126,14 @@ function createPopover() {
     y: initialBounds.y,
     show: false,
     frame: false,
+    // The renderer paints a rounded material card; the window itself is
+    // transparent so the card edge, not the window edge, is what shows.
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: true,
+    vibrancy: "popover",
+    // Keep the material lit: the popover is shown inactive and never focused.
+    visualEffectState: "active",
     resizable: false,
     fullscreenable: false,
     movable: true,
@@ -325,7 +334,11 @@ function openHistoryWindow() {
   historyWindow = new BrowserWindow({
     width: 880,
     height: 660,
+    minWidth: 720,
+    minHeight: 480,
     title: "Usage History",
+    titleBarStyle: "hiddenInset",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#1e1e1e" : "#f5f5f7",
     show: true,
     webPreferences: {
       preload: globalThis.__usageMeterBootstrapPreloadPath || path.join(__dirname, "preload.js"),
