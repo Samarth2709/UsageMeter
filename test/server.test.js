@@ -1583,3 +1583,89 @@ test("Claude reset time accepts single-component UTC timezone", () => {
     "2026-07-27T18:00:00.000Z"
   );
 });
+
+test("a rate-limited Claude read backs off instead of asking again next tick", async () => {
+  _test.resetClaudeUsageBackoff();
+  const urls = [];
+  const options = {
+    now: new Date("2026-09-02T12:00:00.000Z"),
+    readCredentials: async () => ({ accessToken: "token", subscriptionType: "team" }),
+    requestJson: async (url) => {
+      urls.push(url);
+      return { response: { ok: false, status: 429, headers: { get: () => null } }, payload: null };
+    }
+  };
+
+  await assert.rejects(_test.fetchClaudeUsage({ type: "claude" }, options), /429/);
+  assert.equal(urls.length, 1, "the 429 should stop the read before the second request");
+  assert.ok(_test.claudeUsageBackoffRemainingMs() > 0, "a 429 must start a backoff");
+
+  // The next refresh tick must not spend another request on a limit we know is
+  // still in force.
+  await assert.rejects(
+    _test.fetchClaudeUsage({ type: "claude" }, options),
+    /rate limiting usage requests/i
+  );
+  assert.equal(urls.length, 1, "no further requests while backing off");
+  _test.resetClaudeUsageBackoff();
+});
+
+test("Claude honors Retry-After when it backs off", async () => {
+  _test.resetClaudeUsageBackoff();
+  await assert.rejects(
+    _test.fetchClaudeUsage({ type: "claude" }, {
+      readCredentials: async () => ({ accessToken: "token" }),
+      requestJson: async () => ({
+        response: { ok: false, status: 429, headers: { get: (name) => (name === "retry-after" ? "600" : null) } },
+        payload: null
+      })
+    }),
+    /429/
+  );
+
+  const remaining = _test.claudeUsageBackoffRemainingMs();
+  assert.ok(
+    remaining > 9 * 60 * 1000 && remaining <= 10 * 60 * 1000,
+    `Retry-After: 600 should hold off ten minutes, got ${remaining}ms`
+  );
+  _test.resetClaudeUsageBackoff();
+});
+
+test("Claude parses HTTP-date Retry-After values and caps excessive waits", () => {
+  const now = Date.parse("2026-09-02T12:00:00.000Z");
+  assert.equal(
+    _test.claudeUsageRetryAfterMs("Wed, 02 Sep 2026 12:10:00 GMT", now),
+    10 * 60 * 1000
+  );
+  assert.equal(
+    _test.claudeUsageRetryAfterMs("Wed, 02 Sep 2026 13:00:00 GMT", now),
+    _test.claudeUsageBackoffMaxMs
+  );
+  assert.equal(_test.claudeUsageRetryAfterMs("not a date", now), _test.claudeUsageBackoffMs);
+});
+
+test("a failed poll keeps a recent reading live and only ages into cached", () => {
+  const now = Date.parse("2026-09-02T12:00:00.000Z");
+  const identity = { id: "claude-1", lastUsage: { windows: [], fetchedAt: "2026-09-02T11:59:00.000Z" } };
+
+  // One minute old: rate limiting is routine, the numbers are still the truth.
+  const fresh = _test.unavailableIdentityResult(identity, "Claude usage request failed with 429.", now);
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.stale, undefined, "a one-minute-old reading is not cached data");
+  assert.equal(fresh.data.stale, undefined);
+
+  // Past the staleness window: say so.
+  const old = _test.unavailableIdentityResult(
+    { ...identity, lastUsage: { ...identity.lastUsage, fetchedAt: "2026-09-02T11:50:00.000Z" } },
+    "Claude usage request failed with 429.",
+    now
+  );
+  assert.equal(old.stale, true);
+  assert.equal(old.data.stale, true);
+  assert.match(old.data.staleReason, /429/);
+
+  // Nothing to fall back on is still a plain failure.
+  const empty = _test.unavailableIdentityResult({ id: "claude-1" }, "boom", now);
+  assert.equal(empty.ok, false);
+  assert.equal(empty.error, "boom");
+});

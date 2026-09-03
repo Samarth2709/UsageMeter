@@ -123,14 +123,16 @@ test("stale usage stays visible in a grey cached state", async () => {
   };
   let accountType = "claude";
   let renderedWindows = 0;
+  let latestRenderOptions = null;
   let latestState = null;
   const context = {
     accountElements: new Map([["claude-1", elements]]),
     rowsExpanded: true,
     getAccount: () => ({ type: accountType }),
     buildSummary: () => "5h 100%",
-    renderLimitWindows(target) {
+    renderLimitWindows(target, data, options) {
       renderedWindows += 1;
+      latestRenderOptions = options;
       target.limitGrid.classList.remove("hidden");
       target.limitGrid.replaceChildren({ textContent: "100%" });
     },
@@ -164,6 +166,7 @@ test("stale usage stays visible in a grey cached state", async () => {
   assert.equal(elements.typeTag.textContent, "Claude");
   assert.equal(elements.row.classList.values.has("is-stale"), false);
   assert.equal(latestState.data, freshUsage);
+  assert.equal(latestRenderOptions.animate, true);
 
   context.renderConnected("claude-1", freshUsage, {
     stale: true,
@@ -184,6 +187,7 @@ test("stale usage stays visible in a grey cached state", async () => {
   assert.equal(latestState.data, freshUsage);
   assert.equal(latestState.kind, "stale");
   assert.equal(latestState.stale, true);
+  assert.equal(latestRenderOptions.animate, false);
 
   context.renderConnected("claude-1", freshUsage, {
     stale: true,
@@ -239,6 +243,15 @@ test("stale account values use a neutral grey treatment", async () => {
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-window/);
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-value/);
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-countdown[\s\S]*?animation:\s*none;/);
+  assert.match(
+    styles,
+    /\.account-row\.is-stale\.low-1,\s*\.account-row\.is-stale\.low-2\s*\{\s*--tone:\s*var\(--stale\);/
+  );
+  assert.match(
+    styles,
+    /\.account-row\.is-stale\s+\.row-liquid\s*\{[\s\S]*?animation:\s*none;[\s\S]*?opacity:\s*1;/
+  );
+  assert.match(styles, /\.widget-shell:focus-within\s+\.widget-bar/);
   assert.match(styles, /\.status-stale\s*\{/);
 });
 
@@ -332,6 +345,7 @@ test("account login click returns to the minimal account actions", async () => {
       accountElements: new Map(),
       accountStates: new Map([[`${type}-1`, { kind: "disconnected" }]]),
       buildAccountName: () => "Account",
+      mountLiquid: () => null,
       showStatusSummary: () => {},
       refreshAll: async () => {},
       openAccountLogin: async (accountId) => {
@@ -426,6 +440,7 @@ test("account delete confirms, removes the account, and syncs the returned confi
     accountElements: new Map(),
     accountStates: new Map(),
     buildAccountName: () => "samarth@example.com",
+    mountLiquid: () => null,
     showStatusSummary: () => {},
     refreshAll: async () => {},
     openAccountLogin: async () => {},
@@ -513,6 +528,7 @@ test("right-click account menu routes logout, login removal, and row deletion", 
       accountStates: new Map(),
       nativeApi: { showAccountMenu: async () => action },
       buildAccountName: () => "samarth@example.com",
+      mountLiquid: () => null,
       showStatusSummary: () => {},
       refreshAll: async () => {},
       openAccountLogin: async () => {},
@@ -570,5 +586,8 @@ test("Electron exposes the native three-action account context menu", async () =
   assert.match(main, /ipcMain\.handle\("rate-limit:logout-account"/);
   assert.match(preload, /showAccountMenu:.*rate-limit:show-account-menu/);
   assert.match(preload, /logoutAccount:.*rate-limit:logout-account/);
-  assert.match(styles, /\.account-row\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
+  // The rows have to receive mouse events for the right-click menu, so the
+  // shell that holds them must not be a native drag region (the property
+  // inherits, so this covers every row). Dragging is driven from app.js.
+  assert.match(styles, /\.widget-shell\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
 });

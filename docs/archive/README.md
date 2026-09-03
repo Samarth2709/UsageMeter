@@ -19,9 +19,11 @@ Archived planning material:
 - `2026-06-25-28-scan-roots-and-diagnostics-plan.md` — completed scan-root and Diagnostics plan.
 - `2026-08-27-incremental-usage-index-plan.md` — completed incremental-index implementation plan.
 - `2026-09-01-prevent-claude-auth-race-plan.md` — read-only Claude allowance and cached-state implementation plan.
+- `2026-09-02-liquid-frontend-integration-plan.md` — liquid-meter frontend and Claude backoff integration plan.
 
 Archived review material:
 
+- `2026-09-02-liquid-frontend-review-prompt.md` — combined liquid frontend, stale-state, Claude backoff, and drag review brief.
 - `2026-08-17-token-counting-review-request.md` — token-counting and migration review brief.
 - `2026-08-27-incremental-usage-index-review-request.md` — incremental-index review and re-review brief.
 - `2026-08-30-full-application-review-plan.md` — whole-application review and installation plan.

@@ -1,3 +1,5 @@
+import { mountLiquid, unmountLiquid } from "./liquid.js?v=20260902b";
+
 const accountsRoot = document.querySelector("#accounts");
 const accountTemplate = document.querySelector("#account-template");
 const limitWindowTemplate = document.querySelector("#limit-window-template");
@@ -301,7 +303,8 @@ function buildResetTitle(data) {
     .join("\n");
 }
 
-function renderLimitWindows(elements, data) {
+function renderLimitWindows(elements, data, options = {}) {
+  const animate = options.animate !== false;
   const displayWindows = usageWindows(data).slice().sort((a, b) => windowOrder(a) - windowOrder(b));
   const previous = new Map(
     [...elements.limitGrid.querySelectorAll?.(".limit-window") ?? []].map((node) => [node.dataset.label, Number(node.dataset.remaining)])
@@ -316,7 +319,9 @@ function renderLimitWindows(elements, data) {
     root.dataset.label = label;
     root.dataset.remaining = remaining.toFixed(1);
     root.querySelector(".limit-label").textContent = label;
-    animatePercent(root.querySelector(".limit-value"), before, remaining);
+    const value = root.querySelector(".limit-value");
+    if (animate) animatePercent(value, before, remaining);
+    else value.textContent = `${Math.round(remaining)}%`;
     root.classList.toggle("low", isLowRemaining(window));
     const reset = root.querySelector(".limit-reset");
     reset.textContent = resetDetail(window);
@@ -529,7 +534,7 @@ function renderConnected(accountId, data, metadata = {}) {
   const stale = metadata.stale === true;
   const summary = buildSummary(data);
   setStalePresentation(accountId, elements, stale, metadata.error);
-  renderLimitWindows(elements, data);
+  renderLimitWindows(elements, data, { animate: !stale });
   elements.summary.textContent = "";
   elements.summary.title = buildResetTitle(data);
   elements.summary.className = "account-summary hidden";
@@ -655,6 +660,7 @@ function syncAccountsFromConfig(config) {
 
   for (const [accountId, elements] of accountElements) {
     if (!nextIds.has(accountId)) {
+      unmountLiquid(elements.row);
       elements.row.remove();
       accountElements.delete(accountId);
       accountStates.delete(accountId);
@@ -692,6 +698,9 @@ function createAccountRow(account) {
   const deleteButton = node.querySelector(".delete-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
+  // The row's meter is drawn on a canvas; it picks up size, share and tone
+  // changes on its own from here on.
+  mountLiquid(node);
   typeTag.textContent = account.type === "claude" ? "Claude" : "Codex";
   name.textContent = buildAccountName(account);
   showStatusSummary(
@@ -831,13 +840,14 @@ function updateCountdowns() {
 }
 
 function measureContentHeight() {
-  const shell = document.querySelector(".widget-shell");
-  if (!shell) {
+  if (!accountsRoot) {
     return null;
   }
 
-  // +1 guards against a sub-pixel rounding scrollbar.
-  return Math.ceil(shell.getBoundingClientRect().height) + 1;
+  // The rows are the content: the shell stretches to whatever the window is,
+  // and the bottom bar is an overlay, so neither can be measured here without
+  // feeding the window's own height back in.
+  return Math.ceil(accountsRoot.getBoundingClientRect().height);
 }
 
 function syncViewSize(expanded = rowsExpanded) {
@@ -848,8 +858,25 @@ function syncViewSize(expanded = rowsExpanded) {
   );
 }
 
+// Rows change height whenever an account changes state — connected, refreshing,
+// cached, signed out — and each of those has to move the window with it. Left to
+// explicit calls the two drift apart, and a window shorter than its rows scrolls
+// the top of the meter out of sight.
+let viewSizeFrame = 0;
+
+function queueViewSizeSync() {
+  if (viewSizeFrame) return;
+  viewSizeFrame = requestAnimationFrame(() => {
+    viewSizeFrame = 0;
+    syncViewSize();
+  });
+}
+
+new ResizeObserver(queueViewSizeSync).observe(accountsRoot);
+
 async function loadState() {
   state = await loadAppState();
+  for (const elements of accountElements.values()) unmountLiquid(elements.row);
   accountElements = new Map();
   accountStates = new Map();
   accountsRoot.innerHTML = "";
@@ -903,6 +930,57 @@ document.querySelector("#history-button")?.addEventListener("click", () => {
   nativeApi?.openHistory?.();
 });
 
+// The bottom bar stays down until the pointer comes near the bottom edge, so
+// the popover is only the meters at rest.
+const widgetShell = document.querySelector(".widget-shell");
+const barZone = 30;
+
+widgetShell?.addEventListener("mousemove", (event) => {
+  widgetShell.classList.toggle("bar-open", event.clientY >= widgetShell.offsetHeight - barZone);
+});
+
+widgetShell?.addEventListener("mouseleave", () => {
+  widgetShell.classList.remove("bar-open");
+});
+
+// The meter fills the window, so the window is dragged from anywhere on it.
+// Done here rather than with a `-webkit-app-region: drag` region because a drag
+// region swallows mouse events, which would cost the rows their hover, their
+// right-click menu, the bar's proximity reveal and its buttons.
+let dragFrom = null;
+let dragging = false;
+
+widgetShell?.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || event.target.closest("button")) return;
+  dragFrom = { x: event.screenX, y: event.screenY };
+  dragging = false;
+  // Capture so the window keeps following once the cursor outruns it.
+  widgetShell.setPointerCapture(event.pointerId);
+});
+
+widgetShell?.addEventListener("pointermove", (event) => {
+  if (!dragFrom) return;
+  const dx = event.screenX - dragFrom.x;
+  const dy = event.screenY - dragFrom.y;
+  // A few pixels of slack, so a click or a double-click never nudges the window.
+  if (!dragging && Math.abs(dx) + Math.abs(dy) < 3) return;
+  dragging = true;
+  dragFrom = { x: event.screenX, y: event.screenY };
+  nativeApi?.movePopoverBy?.(dx, dy);
+});
+
+function endPopoverDrag(event) {
+  if (!dragFrom) return;
+  dragFrom = null;
+  dragging = false;
+  if (widgetShell.hasPointerCapture(event.pointerId)) {
+    widgetShell.releasePointerCapture(event.pointerId);
+  }
+}
+
+widgetShell?.addEventListener("pointerup", endPopoverDrag);
+widgetShell?.addEventListener("pointercancel", endPopoverDrag);
+
 document.querySelector(".widget-header")?.addEventListener("dblclick", (event) => {
   // Ignore double-clicks on the header controls themselves.
   if (event.target.closest("#refresh-button") || event.target.closest("#update-pill")) {
@@ -951,6 +1029,10 @@ statusHeartbeat = window.setInterval(syncOverallStatus, 15000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     syncOverallStatus();
+    // Re-assert the fit on show. Content changes move the window on their own;
+    // this catches a window that is out of step for any other reason, so the
+    // popover is never revealed at the wrong height.
+    queueViewSizeSync();
   }
 });
 
