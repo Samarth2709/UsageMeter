@@ -9,10 +9,20 @@
     />
     <title>Usage Meter</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=20260902r" />
+    <link rel="stylesheet" href="styles.css?v=20260902s" />
+    <link rel="stylesheet" href="sculpture.css?v=20260904a" />
+    <link rel="stylesheet" href="spatial.css?v=20260904g" />
   </head>
   <body>
-    <main class="widget-shell">
+    <div class="spatial-stage dock-enabled is-docked" tabindex="0" role="region" aria-label="3D usage meter" aria-description="Drag to turn, flick to spin, double-click or press Escape to face forward. Arrow keys rotate when this region is focused.">
+      <div class="spatial-chassis">
+        <div class="chassis-back" aria-hidden="true"><span>Usage Meter</span></div>
+        <div class="chassis-volume" aria-hidden="true"></div>
+        <main class="widget-shell">
+      <header class="sculpture-header" title="Drag to rotate">
+        <h1>Usage Meter</h1>
+        <span>Remaining</span>
+      </header>
       <section id="accounts" class="account-list" aria-live="polite"></section>
       <footer class="widget-header widget-bar">
         <div class="status-anchor">
@@ -41,10 +51,22 @@
           </button>
         </div>
       </footer>
-    </main>
+        </main>
+      </div>
+      <span class="resize-edge" data-resize-edge="n" aria-hidden="true"></span>
+      <span class="resize-edge" data-resize-edge="s" aria-hidden="true"></span>
+      <span class="resize-edge" data-resize-edge="e" aria-hidden="true"></span>
+      <span class="resize-edge" data-resize-edge="w" aria-hidden="true"></span>
+      <span class="resize-edge" data-resize-edge="ne" aria-hidden="true"></span>
+      <span class="resize-edge" data-resize-edge="nw" aria-hidden="true"></span>
+      <span class="resize-edge" data-resize-edge="sw" aria-hidden="true"></span>
+      <button class="resize-edge resize-grip" data-resize-edge="se" aria-label="Resize window" title="Drag to resize. Arrow keys resize when focused.">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><path d="m5 12 7-7M9 12l3-3"/></svg>
+      </button>
+    </div>
 
     <template id="account-template">
-      <article class="account-row">
+      <article class="account-row" tabindex="0">
         <div class="account-meta">
           <span class="account-type"></span>
           <p class="account-name"></p>
@@ -66,6 +88,7 @@
           <span class="limit-label"></span>
           <span class="limit-value"></span>
         </div>
+        <div class="allowance-track" aria-hidden="true"><div class="allowance-fill"></div></div>
         <p class="limit-reset">
           <span class="limit-countdown"></span>
           <span class="limit-time"></span>
@@ -74,6 +97,7 @@
     </template>
 
     <script src="update-state.js?v=20260718a"></script>
-    <script src="app.js?v=20260902p" type="module"></script>
+    <script src="spatial.js?v=20260904g" type="module"></script>
+    <script src="app.js?v=20260904c" type="module"></script>
   </body>
 </html>

@@ -1,61 +1,61 @@
 # Design
 
-Usage Meter follows the macOS design language: system type, system materials, hairline separators, grouped inset surfaces, and one signature element per surface. It follows the system light or dark appearance automatically.
+Usage Meter is a compact 3D instrument. The frame, account panels, tracks, and controls have physical depth. Every visible element identifies an account, communicates allowance, explains state, or performs an action. Standalone sculptures and the decorative slash have been removed.
 
-## Principles
+## Purpose and hierarchy
 
-- Native first. System font (SF Pro via `-apple-system`), rounded numerals (`ui-rounded`) for the figures that matter, semantic system colors, 10–14 px continuous corners.
-- One accent, used for state. Service tints identify Claude and Codex. System red appears only when an allowance is nearly exhausted or something failed. Nothing else is colored.
-- Quiet chrome. No eyebrow labels, no pulsing text, no decoration that is not data. Separators are hairlines; surfaces are translucent materials or low-alpha fills.
-- Structure encodes meaning. A filled band is an allowance. A row is an account. A card is a data set. Nothing is decorated for its own sake.
+| Element | Purpose and treatment |
+| --- | --- |
+| Account panel | One raised surface groups one account. Connected rows are 76 px tall for compact scanning. |
+| Provider and identity | The first line answers which account. The service is prominent; identity is smaller, with ellipsis and a full tooltip. |
+| Window label | Placed beside its percentage so 5-hour and weekly values cannot be confused. |
+| Percentage | The largest type (20 px) gives the exact remaining allowance. Tabular numerals keep updates steady. |
+| Recessed track | Its filled width is the exact remaining share, providing a quick comparison independently of the number. A weekly-only allowance spans its row. |
+| Reset details | Appear beside the relevant data on hover or keyboard focus, with the full reset time in a tooltip. |
+| Refresh and History | Raised controls stay visible in the footer. Their depth indicates a pressable action. |
+| Status and updates | Appear only when useful. Cached and failure states remain explicit. |
+| Chassis and lighting | A back plane, bevels, shallow perspective, and shared light make the entire interface a physical object. They add no content or extra controls. |
+| Resize grip | The lower-right grip and edge cursors expose manual resizing; the grip also accepts arrow keys in 8 px steps. |
 
-## Signature: the row is the meter
+The default outer width is **276 px**. Two accounts use **236 px** of height; three use **318 px**. The user can drag any edge or corner, between **236–520 px** wide and **160–620 px** tall, constrained to the screen. A selected size persists across refresh, hide/show and restart. Additional content scrolls inside it. Narrow transparent margins expose the edge; native vibrancy and native shadow are disabled so no flat window surrounds the object. The History window keeps its established dimensions and information layout.
 
-The popover is nothing but the meters: the rows fill it corner to corner, with no inset above the first or below the last. Each account row's background is one body of liquid, filled to the remaining share of each allowance window: the 5-hour band on top at half height (20 px) with a smaller percent, the weekly band below at full height (40 px). A weekly-only row keeps the full height. The unfilled remainder is the popover material. The liquid is drawn on a canvas by `public/liquid.js`, not in CSS, and the two bands of a row are one mass rather than two bars: a single surface runs the height of the row, both levels are displaced by the same wave field at the same height, the tint runs across the whole row so a given x is the same colour in either band, and the step between the levels is a rounded elbow over a gently waving ledge. The surface is evaluated at up to 30 frames per second from five sine components with unrelated periods travelling in both directions, each swelling on its own slow cycle — about two pixels of amplitude in total, because at this size a calm surface reads as water and a big one as a blob. Its backing resolution is capped at 1.5x; text remains native-resolution DOM content. Nothing is keyframed, so the motion never steps and never repeats. Inside the body the shading is deliberately shallow — wide, faint veils of light and shade drifting at their own pace, one broad specular band crossing the row every 11 s, a little weight gathering just behind the edge, and the meniscus as a bright hairline. Anything narrower or stronger stops reading as light in water and starts reading as a seam in the paint. Levels are sprung rather than tweened, so a changed allowance arrives with a little overshoot and the surface leans while it travels. A cached row holds still. At 15 % or less remaining the liquid turns system red and breathes — one body means one colour, so a low window recolours the whole row.
+## Screen-edge reveal
 
-By default a row shows only the service name (in its brand face) and the remaining percent of each band. The name rides the weekly band — the taller of the two, and the one that names the account's week. Identity, window labels and reset times are hidden until the pointer rests on the row, when they slide in between the name and the number. There is no title and no chrome. The bottom bar — status text (only when something needs attention), the update pill (only when an update exists), and two faint icons for refresh and Usage History — is not part of the meter: it rides over the foot of the last row and stays down until the pointer comes within 30 px of the bottom edge. Nothing else raises it — a status or a waiting update is read there when you go looking, not pushed at you. As it rises the last row lifts its text clear, so the bar covers liquid and never a number. Double-clicking it re-docks the popover.
+The meter lives flush against the right edge of the tray's display, 12 px below the top of its work area. Its right-side outer padding is removed, while the header text stays inset from the rounded corners with an explicit line height. It starts tucked away. Reaching the rightmost 3 px of the screen, from the top through the meter's height, slides it into view. The surface translates for 320 ms inside fixed transparent native bounds; its 3D orientation and selected size do not change. No additional visible launcher is needed.
 
-Motion: levels are real widths (`--r1`, `--r2` on the row), so they pour in from zero on first data and slosh between values on later refreshes. The percent counts up in step. Rows fade up in a short stagger when the popover opens, and hovering a row darkens its fill slightly so the revealed text stays readable. All of it respects reduced motion.
+Moving away starts a 350 ms dismissal delay; returning during it or during the slide reverses the retreat. The reveal has a short grace period to cross from the edge into the card. Rotation/resizing, native context menus and keyboard navigation keep it open. The menu-bar icon and Control+Option+L remain manual reveal controls. Reduced motion makes the transition immediate.
 
-The Usage History dashboard marks each live allowance with a small ring (`public/ring.js`) showing the same remaining share.
+The native process polls actual cursor coordinates every 80 ms, including while the window is hidden. Retraction passes clicks through immediately and then hides the native window, stopping renderer animation. Resizing grows inward while keeping the same top-right attachment; selected dimensions survive hiding and restart. Display changes re-anchor the meter, and revealing never activates another Space.
 
-## Tokens (`public/styles.css`)
+## Color
 
-| Token | Light | Dark | Role |
-| --- | --- | --- | --- |
-| `--label` | `#1d1d1f` | `#f5f5f7` | Primary text |
-| `--secondary` | `rgba(60,60,67,.6)` | `rgba(235,235,245,.6)` | Secondary text |
-| `--tertiary` | `rgba(60,60,67,.3)` | `rgba(235,235,245,.3)` | Tertiary text, ring tracks |
-| `--separator` | `rgba(60,60,67,.14)` | `rgba(255,255,255,.1)` | Hairlines |
-| `--fill` | `rgba(120,120,128,.08)` | `rgba(120,120,128,.18)` | Grouped surfaces |
-| `--material` | `rgba(246,246,246,.84)` | `rgba(36,36,38,.76)` | Popover material over vibrancy |
-| `--window-bg` | `#f5f5f7` | `#1e1e1e` | Dashboard window background |
-| `--tint-claude` | `#d9734c` | `#e8895f` | Claude |
-| `--tint-codex` | `#1f8f4c` | `#1f9d57` | Codex |
-| `--blue` | `#007aff` | `#0a84ff` | Update pill, links, focus ring |
-| `--red` | `#ff3b30` | `#ff453a` | Low allowance, errors |
+Neutral graphite surfaces keep attention on the readings. Copper (`#e8ad83`) identifies Claude tracks; jade (`#83d9b8`) identifies Codex tracks. Remaining percentages stay neutral unless 15% or less remains, when the affected number and track turn coral (`#ff8271`). Cached readings use grey and retain the `Cached` label; cached state takes precedence over low-allowance coloring. Text brightness separates primary values from labels and account metadata.
 
-## Type scale
+## Depth and motion
 
-| Role | Size / weight | Face |
-| --- | --- | --- |
-| Popover title, account name, section title | 13 px / 600 | system |
-| Service names over meters | Claude 15 px / 500, Codex 13.5 px / 600 | `--font-claude` (Copernicus → New York), `--font-codex` (OpenAI Sans → SF) |
-| Text over a meter fill | as above | `--on-meter` / `--on-meter-2`, with a hairline shadow in dark |
-| Window label, body | 12 px / 400 | system |
-| Secondary, reset times, notes | 11 px / 400 | system |
-| Allowance percent, stat value | 13 px and 22 px / 600 | `ui-rounded`, tabular |
+`public/spatial.css` places the popover in CSS perspective. The closed chassis is 14 px deep, with four straight side planes, eight facets per rounded corner and an outward-facing back. Account panels sit above an inset base; labels, percentages, and controls occupy shallow raised layers; the allowance tracks are recessed channels. Side lighting follows the actual orientation. Back-facing data and controls are hidden and removed from keyboard interaction.
 
-## Surfaces
+`public/spatial.js` adds symmetric hover tilt around the selected orientation. Dragging the body turns pitch and yaw freely through 360 degrees; Shift-drag spins around the face axis. The header also rotates the object; the native window stays attached to its corner. Double-clicking the body or pressing Escape resets to the front. The bottom-left rotation icon has been removed. The stage remains keyboard focusable from every orientation: arrows turn it, Shift-arrows spin it, and Home/Enter/Space reset it.
 
-**Popover** (`public/index.html`): frameless, transparent Electron window with `vibrancy: "popover"` and an always-active visual effect state so the material stays lit while the window is shown inactive. The window is dragged from anywhere on it, by pointer events in `public/app.js` rather than a `-webkit-app-region` drag region: a native drag region swallows mouse events, and the rows need them for hover, the bar's proximity reveal, the right-click menu and the bar's own buttons. A press has three pixels of slack before it counts as a drag, so a click never nudges the window. Content sits on `--material` with a 14 px radius that clips the rows. There is no padding: rows abut each other and the popover edges, and the window height is the sum of the rows. The 20 px bottom bar is an overlay and costs no height. Body: one meter row per account, banded per allowance window. Bottom bar: status (hidden when healthy), update pill (hidden when none), refresh and history icons.
+A quick release uses recent drag velocity to continue spinning, with continuously decreasing speed and a final stop exactly facing forward. Slow drags and gestures held still before release keep the selected angle. A new press catches a moving object; using a control or resizing also interrupts it. Slow-drag and caught angles are remembered locally under `usage-meter-orientation-v1`; completing a fling or reopening mid-flight returns to the front.
 
-**Usage History** (`public/history.html`): standard window with a hidden-inset title bar. The header doubles as the toolbar and drag region and carries the range segmented control and the diagnostics toggle. Content is a single column of grouped cards on `--window-bg`: four stat tiles, live allowances, daily usage, top models and projects, cumulative spend, cost calendar and most expensive days, and the diagnostics panel when open.
+The complete volume is projected before each pose is painted, scaling its presentation only as needed to fit the existing native window. Rotation never changes the user's saved dimensions. The animation loop stops when settled. Hiding the window finishes a coast at the front and stops its frame loop. CSS animates liquid highlights inside live allowance fills without changing their exact widths. Cached bars remain still and hidden windows pause the animation. Reduced motion disables hover, flow, momentum and easing, while keeping deliberate drag and keyboard rotation available. There is no decorative canvas or WebGL dependency.
 
-## Charts
+Automatic native sizing uses layout heights, gaps, and padding, never transformed bounds. Only an explicit resize handle changes manual dimensions; perspective movement cannot resize the window. Handles sit outside the transformed chassis and use screen-coordinate deltas. `electron-main.js` persists manual dimensions alongside position in `window-state.json`; older position-only files retain automatic fitting. Context menus, account actions, refresh, history access, and update behavior remain available.
 
-Bars have rounded tops and no gridlines; the two service tints are the only chart colors. The cumulative line is a 1.5 px stroke over a soft tint fill. The calendar uses five alpha steps of the accent blue. Tooltips are small material cards.
+## Usage History
+
+The dashboard shares the graphite material and controls. Raised summary tiles and panels group related data; charts sit in recessed surfaces; tracks and calendar cells use depth to retain their shape against the background. Hovered panels tilt subtly without changing layout. Typography and chart colors keep their existing information roles. The header remains a native drag region with date-range and diagnostics controls.
+
+## Files
+
+- `public/index.html`, `public/app.js` — popover structure, real allowance state, actions, and native sizing.
+- `public/sculpture.css` — base popover layout retained from the first redesign.
+- `public/spatial.css`, `public/spatial.js` — shared whole-interface depth, lighting, and input handling.
+- `public/history.html`, `public/history.js`, `public/ring.js` — History structure, unchanged analytics interactions, and allowance rings.
+- `public/styles.css` — shared foundational styles, with the physical surface layer applied afterward.
+- `public/liquid.js` — earlier liquid-row renderer, retained from existing work but not imported.
 
 ## Site parity
 
-`site/history.js` is a credential-free mirror of the dashboard behavior and keeps its own stylesheet. The app redesign is not mirrored to the site; port the tokens above when the site is next touched.
+The 3D surface layer is local to the two desktop windows. The marketing site and its History demo are unchanged. Their analytics and interaction code remain intentionally aligned with the app.

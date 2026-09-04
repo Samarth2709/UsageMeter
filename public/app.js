@@ -1,5 +1,3 @@
-import { mountLiquid, unmountLiquid } from "./liquid.js?v=20260902b";
-
 const accountsRoot = document.querySelector("#accounts");
 const accountTemplate = document.querySelector("#account-template");
 const limitWindowTemplate = document.querySelector("#limit-window-template");
@@ -159,21 +157,11 @@ function animatePercent(node, from, to) {
   requestAnimationFrame(step);
 }
 
-// The row paints one full-width band per window (at most two) as its own
-// pseudo-elements, so the fills run beneath the account identity. Their shares
-// are CSS variables on the row; a changed value glides there instead of jumping.
+// Retain the window count for the account layout; tracks use each window's own value.
 function paintRowMeter(elements, windows) {
   const row = elements?.row;
-  if (!row?.style) return;
+  if (!row?.dataset) return;
   row.dataset.bands = String(Math.min(2, windows.length));
-  // The 5-hour band is drawn at half height; a weekly-only row keeps full height.
-  row.dataset.thinTop = /5-hour/i.test(windows[0]?.label || "") ? "1" : "0";
-  [0, 1].forEach((index) => {
-    const window = windows[index];
-    const remaining = window ? Math.min(100, Math.max(0, Number(window.remainingPercent) || 0)) : 0;
-    row.style.setProperty(`--r${index + 1}`, `${remaining.toFixed(1)}%`);
-    row.classList.toggle(`low-${index + 1}`, Boolean(window) && isLowRemaining(window));
-  });
 }
 
 function buildCompactSummary(data) {
@@ -318,6 +306,7 @@ function renderLimitWindows(elements, data, options = {}) {
     const before = previous.has(label) ? previous.get(label) : 0;
     root.dataset.label = label;
     root.dataset.remaining = remaining.toFixed(1);
+    root.style?.setProperty("--remaining", `${remaining}%`);
     root.querySelector(".limit-label").textContent = label;
     const value = root.querySelector(".limit-value");
     if (animate) animatePercent(value, before, remaining);
@@ -660,7 +649,6 @@ function syncAccountsFromConfig(config) {
 
   for (const [accountId, elements] of accountElements) {
     if (!nextIds.has(accountId)) {
-      unmountLiquid(elements.row);
       elements.row.remove();
       accountElements.delete(accountId);
       accountStates.delete(accountId);
@@ -698,9 +686,6 @@ function createAccountRow(account) {
   const deleteButton = node.querySelector(".delete-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
-  // The row's meter is drawn on a canvas; it picks up size, share and tone
-  // changes on its own from here on.
-  mountLiquid(node);
   typeTag.textContent = account.type === "claude" ? "Claude" : "Codex";
   name.textContent = buildAccountName(account);
   showStatusSummary(
@@ -844,10 +829,22 @@ function measureContentHeight() {
     return null;
   }
 
-  // The rows are the content: the shell stretches to whatever the window is,
-  // and the bottom bar is an overlay, so neither can be measured here without
-  // feeding the window's own height back in.
-  return Math.ceil(accountsRoot.getBoundingClientRect().height);
+  // Use layout dimensions, not transformed bounds: the 3D pose must never
+  // feed back into native window sizing. Include gaps and the transparent stage.
+  const header = document.querySelector(".sculpture-header");
+  const footer = document.querySelector(".widget-bar");
+  const stage = document.querySelector(".spatial-stage");
+  const listStyle = getComputedStyle(accountsRoot);
+  const stageStyle = stage ? getComputedStyle(stage) : null;
+  const paddingY = (style) => style
+    ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+    : 0;
+  const rowsHeight = [...accountsRoot.children].reduce(
+    (height, row) => height + row.offsetHeight, 0
+  );
+  const gaps = Math.max(0, accountsRoot.children.length - 1) * (parseFloat(listStyle.rowGap) || 0);
+  return Math.ceil(rowsHeight + gaps + paddingY(listStyle) + paddingY(stageStyle) +
+    (header?.offsetHeight || 0) + (footer?.offsetHeight || 0));
 }
 
 function syncViewSize(expanded = rowsExpanded) {
@@ -876,7 +873,6 @@ new ResizeObserver(queueViewSizeSync).observe(accountsRoot);
 
 async function loadState() {
   state = await loadAppState();
-  for (const elements of accountElements.values()) unmountLiquid(elements.row);
   accountElements = new Map();
   accountStates = new Map();
   accountsRoot.innerHTML = "";
@@ -931,63 +927,48 @@ document.querySelector("#history-button")?.addEventListener("click", () => {
 });
 
 // The bottom bar stays down until the pointer comes near the bottom edge, so
-// the popover is only the meters at rest.
+// the popover is only the meters at rest. While open, confirm the real macOS
+// cursor position: if the frameless window resizes beneath a stationary cursor,
+// no new mousemove arrives to clear the old position.
 const widgetShell = document.querySelector(".widget-shell");
 const barZone = 30;
+let barCursorTimer = null;
+let barCursorCheckInFlight = false;
 
-widgetShell?.addEventListener("mousemove", (event) => {
-  widgetShell.classList.toggle("bar-open", event.clientY >= widgetShell.offsetHeight - barZone);
-});
+function setBottomBarOpen(open) {
+  widgetShell?.classList.toggle("bar-open", open);
 
-widgetShell?.addEventListener("mouseleave", () => {
-  widgetShell.classList.remove("bar-open");
-});
+  if (!open && barCursorTimer) {
+    clearInterval(barCursorTimer);
+    barCursorTimer = null;
+  }
 
-// The meter fills the window, so the window is dragged from anywhere on it.
-// Done here rather than with a `-webkit-app-region: drag` region because a drag
-// region swallows mouse events, which would cost the rows their hover, their
-// right-click menu, the bar's proximity reveal and its buttons.
-let dragFrom = null;
-let dragging = false;
-
-widgetShell?.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || event.target.closest("button")) return;
-  dragFrom = { x: event.screenX, y: event.screenY };
-  dragging = false;
-  // Capture so the window keeps following once the cursor outruns it.
-  widgetShell.setPointerCapture(event.pointerId);
-});
-
-widgetShell?.addEventListener("pointermove", (event) => {
-  if (!dragFrom) return;
-  const dx = event.screenX - dragFrom.x;
-  const dy = event.screenY - dragFrom.y;
-  // A few pixels of slack, so a click or a double-click never nudges the window.
-  if (!dragging && Math.abs(dx) + Math.abs(dy) < 3) return;
-  dragging = true;
-  dragFrom = { x: event.screenX, y: event.screenY };
-  nativeApi?.movePopoverBy?.(dx, dy);
-});
-
-function endPopoverDrag(event) {
-  if (!dragFrom) return;
-  dragFrom = null;
-  dragging = false;
-  if (widgetShell.hasPointerCapture(event.pointerId)) {
-    widgetShell.releasePointerCapture(event.pointerId);
+  if (open && nativeApi?.isCursorNearBottom && !barCursorTimer) {
+    barCursorTimer = window.setInterval(reconcileBottomBarWithCursor, 100);
   }
 }
 
-widgetShell?.addEventListener("pointerup", endPopoverDrag);
-widgetShell?.addEventListener("pointercancel", endPopoverDrag);
+async function reconcileBottomBarWithCursor() {
+  if (!widgetShell?.classList.contains("bar-open") || barCursorCheckInFlight) return;
+  barCursorCheckInFlight = true;
 
-document.querySelector(".widget-header")?.addEventListener("dblclick", (event) => {
-  // Ignore double-clicks on the header controls themselves.
-  if (event.target.closest("#refresh-button") || event.target.closest("#update-pill")) {
-    return;
+  try {
+    if (!await nativeApi.isCursorNearBottom(barZone)) {
+      setBottomBarOpen(false);
+    }
+  } catch {
+    setBottomBarOpen(false);
+  } finally {
+    barCursorCheckInFlight = false;
   }
+}
 
-  nativeApi?.moveToTopRight?.();
+widgetShell?.addEventListener("mousemove", (event) => {
+  setBottomBarOpen(event.clientY >= widgetShell.offsetHeight - barZone);
+});
+
+widgetShell?.addEventListener("mouseleave", () => {
+  setBottomBarOpen(false);
 });
 
 const updatePill = document.querySelector("#update-pill");

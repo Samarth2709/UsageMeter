@@ -22,6 +22,7 @@ npm test
 | `npm run build:core` | Assemble the versioned Core and its production dependencies in `build/core/`. |
 | `npm run dist:mac` | Build unsigned macOS DMG and ZIP artifacts in `dist/`. |
 | `npm run clean` | Remove only generated `dist/` and `build/` artifacts. |
+
 Use `npm ci` for a deterministic dependency install. Do not commit `node_modules/` or `dist/`.
 
 ## Verification checklist

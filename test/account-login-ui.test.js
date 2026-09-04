@@ -13,7 +13,8 @@ function classList() {
     toggle(name, force) {
       if (force) values.add(name);
       else values.delete(name);
-    }
+    },
+    contains: (name) => values.has(name)
   };
 }
 
@@ -123,16 +124,14 @@ test("stale usage stays visible in a grey cached state", async () => {
   };
   let accountType = "claude";
   let renderedWindows = 0;
-  let latestRenderOptions = null;
   let latestState = null;
   const context = {
     accountElements: new Map([["claude-1", elements]]),
     rowsExpanded: true,
     getAccount: () => ({ type: accountType }),
     buildSummary: () => "5h 100%",
-    renderLimitWindows(target, data, options) {
+    renderLimitWindows(target) {
       renderedWindows += 1;
-      latestRenderOptions = options;
       target.limitGrid.classList.remove("hidden");
       target.limitGrid.replaceChildren({ textContent: "100%" });
     },
@@ -166,7 +165,6 @@ test("stale usage stays visible in a grey cached state", async () => {
   assert.equal(elements.typeTag.textContent, "Claude");
   assert.equal(elements.row.classList.values.has("is-stale"), false);
   assert.equal(latestState.data, freshUsage);
-  assert.equal(latestRenderOptions.animate, true);
 
   context.renderConnected("claude-1", freshUsage, {
     stale: true,
@@ -187,7 +185,6 @@ test("stale usage stays visible in a grey cached state", async () => {
   assert.equal(latestState.data, freshUsage);
   assert.equal(latestState.kind, "stale");
   assert.equal(latestState.stale, true);
-  assert.equal(latestRenderOptions.animate, false);
 
   context.renderConnected("claude-1", freshUsage, {
     stale: true,
@@ -243,15 +240,6 @@ test("stale account values use a neutral grey treatment", async () => {
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-window/);
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-value/);
   assert.match(styles, /\.account-row\.is-stale\s+\.limit-countdown[\s\S]*?animation:\s*none;/);
-  assert.match(
-    styles,
-    /\.account-row\.is-stale\.low-1,\s*\.account-row\.is-stale\.low-2\s*\{\s*--tone:\s*var\(--stale\);/
-  );
-  assert.match(
-    styles,
-    /\.account-row\.is-stale\s+\.row-liquid\s*\{[\s\S]*?animation:\s*none;[\s\S]*?opacity:\s*1;/
-  );
-  assert.match(styles, /\.widget-shell:focus-within\s+\.widget-bar/);
   assert.match(styles, /\.status-stale\s*\{/);
 });
 
@@ -590,4 +578,58 @@ test("Electron exposes the native three-action account context menu", async () =
   // shell that holds them must not be a native drag region (the property
   // inherits, so this covers every row). Dragging is driven from app.js.
   assert.match(styles, /\.widget-shell\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
+});
+
+test("bottom bar rechecks the real cursor and ignores retained button focus", async () => {
+  const [app, styles] = await Promise.all([
+    fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8"),
+    fs.readFile(path.join(__dirname, "..", "public", "styles.css"), "utf8")
+  ]);
+
+  const start = app.indexOf('const widgetShell = document.querySelector(".widget-shell")');
+  const end = app.indexOf("const updatePill", start);
+  assert.ok(start >= 0 && end > start, "bottom bar lifecycle block must be present");
+  const listeners = new Map();
+  const shell = {
+    offsetHeight: 100,
+    classList: classList(),
+    addEventListener: (name, handler) => listeners.set(name, handler)
+  };
+  let cursorNearBottom = true;
+  let cursorChecks = 0;
+  let cursorTimer = null;
+  const context = {
+    document: { querySelector: () => shell },
+    nativeApi: {
+      isCursorNearBottom: async () => {
+        cursorChecks += 1;
+        return cursorNearBottom;
+      }
+    },
+    window: {
+      setInterval: (handler) => {
+        cursorTimer = handler;
+        return 1;
+      }
+    },
+    clearInterval: () => {}
+  };
+
+  vm.runInNewContext(`const nativeApi = globalThis.nativeApi;\n${app.slice(start, end)}`, context);
+
+  listeners.get("mousemove")({ clientY: 95 });
+  assert.equal(shell.classList.contains("bar-open"), true);
+  assert.equal(typeof cursorTimer, "function");
+
+  cursorNearBottom = false;
+  await cursorTimer();
+  assert.equal(cursorChecks, 1);
+  assert.equal(shell.classList.contains("bar-open"), false);
+
+  listeners.get("mousemove")({ clientY: 95 });
+  listeners.get("mouseleave")();
+  assert.equal(shell.classList.contains("bar-open"), false);
+
+  assert.match(styles, /\.widget-shell\.bar-open\s+\.widget-bar/);
+  assert.doesNotMatch(styles, /\.widget-shell:focus-within\s+\.widget-bar/);
 });

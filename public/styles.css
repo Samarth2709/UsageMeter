@@ -209,8 +209,7 @@ svg {
   -webkit-app-region: no-drag;
 }
 
-.widget-shell.bar-open .widget-bar,
-.widget-shell:focus-within .widget-bar {
+.widget-shell.bar-open .widget-bar {
   opacity: 1;
   transform: none;
   pointer-events: auto;
@@ -450,18 +449,6 @@ h1 {
 .account-row.low-1 .row-liquid,
 .account-row.low-2 .row-liquid {
   animation: breathe 2.4s ease-in-out infinite;
-}
-
-/* Cached state is authoritative: even a cached low reading stays neutral and
-   motionless so it cannot look like a current warning. */
-.account-row.is-stale.low-1,
-.account-row.is-stale.low-2 {
-  --tone: var(--stale);
-}
-
-.account-row.is-stale .row-liquid {
-  animation: none;
-  opacity: 1;
 }
 
 @keyframes breathe {

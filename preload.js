@@ -10,8 +10,15 @@ contextBridge.exposeInMainWorld("rateLimitAPI", {
   removeAccount: (accountId) => ipcRenderer.invoke("rate-limit:remove-account", accountId),
   refresh: () => ipcRenderer.invoke("rate-limit:refresh"),
   toggle: () => ipcRenderer.invoke("rate-limit:toggle"),
-  moveToTopRight: () => ipcRenderer.send("rate-limit:move-top-right"),
-  movePopoverBy: (dx, dy) => ipcRenderer.send("rate-limit:move-popover-by", dx, dy),
+  getDockState: () => ipcRenderer.invoke("rate-limit:get-dock-state"),
+  setDockInteraction: (interaction) => ipcRenderer.send("rate-limit:dock-interaction", interaction),
+  onDockState: (callback) => {
+    const listener = (event, expanded) => callback(expanded);
+    ipcRenderer.on("rate-limit:dock-state", listener);
+    return () => ipcRenderer.removeListener("rate-limit:dock-state", listener);
+  },
+  resizePopover: (width, height, edge) => ipcRenderer.send("rate-limit:resize-popover", width, height, edge),
+  isCursorNearBottom: (zoneHeight) => ipcRenderer.invoke("rate-limit:is-cursor-near-bottom", zoneHeight),
   openHistory: () => ipcRenderer.send("usage-history:open"),
   getUsageHistory: (options) => ipcRenderer.invoke("usage-history:get", options),
   repairUsageHistory: (options) => ipcRenderer.invoke("usage-history:repair", options),

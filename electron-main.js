@@ -30,7 +30,10 @@ const { runIndexWorkerProcess } = require("./usage-history/index-worker-client")
 const { atomicWriteJson, atomicWriteJsonSync } = require("./atomic-file");
 
 const toggleShortcut = "Control+Option+L";
-const windowWidth = 344;
+const windowWidth = 276;
+const minWindowWidth = 236;
+const maxWindowWidth = 520;
+const minCustomWindowHeight = 160;
 const compactWindowHeight = 170;
 const expandedWindowHeight = 220;
 const minWindowHeight = 70;
@@ -48,10 +51,16 @@ let popover = null;
 let historyWindow = null;
 let historyDialogOpen = false;
 let currentWindowHeight = expandedWindowHeight;
+let currentWindowWidth = windowWidth;
+let popoverSize = null;
 let currentRowCount = 3;
 let popoverPosition = null;
 let popoverPositionSaveTimer = null;
 let isQuitting = false;
+const popoverDock = {
+  open: false, pointer: false, menu: false, keyboard: false, cursor: null, atEdge: false,
+  graceUntil: 0, outsideSince: null, timer: null, hideTimer: null, retreating: false
+};
 let latestSnapshot = null;
 let refreshPromise = null;
 let accountMutationGeneration = 0;
@@ -120,20 +129,20 @@ async function enableLaunchAtLoginByDefault() {
 function createPopover() {
   const initialBounds = getPopoverBounds();
   const window = new BrowserWindow({
-    width: windowWidth,
-    height: currentWindowHeight,
+    width: initialBounds.width,
+    height: initialBounds.height,
     x: initialBounds.x,
     y: initialBounds.y,
     show: false,
+    paintWhenInitiallyHidden: false,
     frame: false,
     // The renderer paints a rounded material card; the window itself is
     // transparent so the card edge, not the window edge, is what shows.
     transparent: true,
     backgroundColor: "#00000000",
-    hasShadow: true,
-    vibrancy: "popover",
-    // Keep the material lit: the popover is shown inactive and never focused.
-    visualEffectState: "active",
+    hasShadow: false,
+    // Native vibrancy paints a flat rectangle behind the 3D object. Keep only
+    // its CSS surface; custom edge grips resize this transparent window.
     resizable: false,
     fullscreenable: false,
     movable: true,
@@ -163,13 +172,16 @@ function createPopover() {
     if (popover === window) {
       popover = null;
     }
+    clearTimeout(popoverDock.hideTimer);
+    popoverDock.open = popoverDock.pointer = popoverDock.keyboard = false;
+    popoverDock.atEdge = false;
+    popoverDock.retreating = false;
     globalThis.__usageMeterUnregisterCoreWebContents?.(popoverWebContents);
   });
-
-  // Intentionally NOT hiding on blur: combined with setVisibleOnAllWorkspaces,
-  // this keeps the popover pinned to the top-right and visible on every Space /
-  // desktop (it would otherwise auto-hide when a Space switch steals focus).
-  // Use the menu-bar icon or Control+Option+L to hide/show it manually.
+  window.on("blur", () => {
+    popoverDock.pointer = popoverDock.keyboard = false;
+  });
+  // Cursor-based docking, rather than blur, keeps behavior stable across Spaces.
 }
 
 function ensurePopover() {
@@ -189,6 +201,11 @@ async function loadPopoverPosition() {
         y: Math.round(raw.y)
       };
     }
+    if (Number.isFinite(raw?.width) && Number.isFinite(raw?.height)) {
+      currentWindowWidth = Math.min(maxWindowWidth, Math.max(minWindowWidth, Math.round(raw.width)));
+      currentWindowHeight = Math.min(maxWindowHeight, Math.max(minCustomWindowHeight, Math.round(raw.height)));
+      popoverSize = { width: currentWindowWidth, height: currentWindowHeight };
+    }
   } catch (error) {
     if (error.code !== "ENOENT") {
       console.warn(`Could not load window position: ${error.message}`);
@@ -201,6 +218,7 @@ async function savePopoverPosition(position) {
     await atomicWriteJson(windowStatePath, {
       x: Math.round(position.x),
       y: Math.round(position.y),
+      ...popoverSize,
       savedAt: new Date().toISOString()
     });
   } catch (error) {
@@ -240,44 +258,19 @@ function getPreferredDisplay() {
   return screen.getPrimaryDisplay();
 }
 
-function getDefaultPopoverBounds() {
-  const display = getPreferredDisplay();
-  const x = Math.round(display.workArea.x + display.workArea.width - windowWidth - 12);
+function getDefaultPopoverBounds(display = getPreferredDisplay()) {
+  // A smaller display constrains the presentation, not the remembered size.
+  const screenBounds = display.bounds || display.workArea;
+  const width = Math.min(currentWindowWidth, Math.max(1, screenBounds.width - 12));
+  const height = Math.min(currentWindowHeight, Math.max(1, display.workArea.height - 24));
+  const x = Math.round(screenBounds.x + screenBounds.width - width);
   const y = Math.round(display.workArea.y + 12);
 
-  return { x, y, width: windowWidth, height: currentWindowHeight };
-}
-
-function clampPopoverBounds(bounds) {
-  const display = screen.getDisplayMatching({
-    x: bounds.x,
-    y: bounds.y,
-    width: windowWidth,
-    height: currentWindowHeight
-  });
-  const area = display.workArea;
-  const maxX = area.x + area.width - windowWidth;
-  const maxY = area.y + area.height - currentWindowHeight;
-
-  return {
-    x: Math.min(Math.max(Math.round(bounds.x), area.x), Math.max(area.x, maxX)),
-    y: Math.min(Math.max(Math.round(bounds.y), area.y), Math.max(area.y, maxY)),
-    width: windowWidth,
-    height: currentWindowHeight
-  };
+  return { x, y, width, height };
 }
 
 function getPopoverBounds() {
-  if (!popoverPosition) {
-    return getDefaultPopoverBounds();
-  }
-
-  return clampPopoverBounds({
-    x: popoverPosition.x,
-    y: popoverPosition.y,
-    width: windowWidth,
-    height: currentWindowHeight
-  });
+  return getDefaultPopoverBounds();
 }
 
 function getWindowHeight(expanded, rowCount = currentRowCount, contentHeight = null) {
@@ -297,52 +290,45 @@ function getWindowHeight(expanded, rowCount = currentRowCount, contentHeight = n
 
 function setExpandedView(expanded, rowCount = currentRowCount, contentHeight = null) {
   currentRowCount = Math.max(1, Number(rowCount) || 1);
+  // A chosen size belongs to the user. New data scrolls inside it instead of
+  // undoing the resize on refresh, renderer initialization, or hide/show.
+  if (popoverSize) return;
   currentWindowHeight = getWindowHeight(expanded, currentRowCount, contentHeight);
 
   if (!popover || popover.isDestroyed()) {
     return;
   }
 
-  const bounds = popover.getBounds();
-  popover.setBounds(clampPopoverBounds({
-    x: bounds.x,
-    y: bounds.y,
-    width: windowWidth,
-    height: currentWindowHeight
-  }));
+  popover.setBounds(getPopoverBounds());
   queueSavePopoverPosition();
 }
 
-// The popover has no title bar and no free chrome to grab, so the renderer
-// drags it: it sends the cursor delta and the window follows, clamped to the
-// display the way every other move is.
-function movePopoverBy(dx, dy) {
-  if (!popover || popover.isDestroyed()) {
-    return;
-  }
-
-  const deltaX = Number(dx);
-  const deltaY = Number(dy);
-  const stepX = Number.isFinite(deltaX) ? Math.round(deltaX) : 0;
-  const stepY = Number.isFinite(deltaY) ? Math.round(deltaY) : 0;
-  if (!stepX && !stepY) {
-    return;
-  }
-
-  const bounds = popover.getBounds();
-  popover.setBounds(clampPopoverBounds({ x: bounds.x + stepX, y: bounds.y + stepY }));
+function resizePopover(width, height, edge = "se") {
+  if (!popover || popover.isDestroyed() || !Number.isFinite(width) || !Number.isFinite(height)) return;
+  if (!["n", "s", "e", "w", "ne", "nw", "se", "sw"].includes(edge)) return;
+  const display = getPreferredDisplay();
+  const area = display.workArea;
+  currentWindowWidth = Math.round(Math.min(maxWindowWidth, (display.bounds || area).width - 12, Math.max(minWindowWidth, width)));
+  currentWindowHeight = Math.round(Math.min(maxWindowHeight, area.height - 24, Math.max(minCustomWindowHeight, height)));
+  popoverSize = { width: currentWindowWidth, height: currentWindowHeight };
+  // Resize inward from the corner without changing its screen attachment.
+  popover.setBounds(getPopoverBounds());
   queueSavePopoverPosition();
 }
 
-function moveToTopRight() {
+function isCursorNearPopoverBottom(zoneHeight = 30) {
   if (!popover || popover.isDestroyed()) {
-    return;
+    return false;
   }
 
-  const bounds = getDefaultPopoverBounds();
-  popover.setBounds(bounds);
-  popoverPosition = { x: bounds.x, y: bounds.y };
-  queueSavePopoverPosition();
+  const bounds = popover.getBounds();
+  const point = screen.getCursorScreenPoint();
+  const requestedZone = Number(zoneHeight);
+  const zone = Number.isFinite(requestedZone) ? Math.max(0, requestedZone) : 30;
+  return point.x >= bounds.x
+    && point.x < bounds.x + bounds.width
+    && point.y >= bounds.y + bounds.height - zone
+    && point.y < bounds.y + bounds.height;
 }
 
 function openHistoryWindow() {
@@ -390,37 +376,81 @@ function openHistoryWindow() {
   });
 }
 
-function showPopover() {
+function showPopover({ fromEdge = false } = {}) {
   const window = ensurePopover();
-  const bounds = getPopoverBounds();
-  // Re-assert all-Spaces membership, then show WITHOUT activating the app.
-  // Calling show()/focus() activates the window, which makes macOS jump to
-  // whichever Space the window was last shown on. showInactive() simply orders
-  // it onto the desktop you're currently looking at — the behavior we want for a
-  // pinned top-right widget.
+  clearTimeout(popoverDock.hideTimer);
+  popoverDock.open = true;
+  popoverDock.retreating = false;
+  popoverDock.outsideSince = null;
+  popoverDock.graceUntil = Date.now() + (fromEdge ? 500 : 2000);
   window.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true
   });
   window.setAlwaysOnTop(true, "floating");
-  window.setBounds(bounds);
+  window.setBounds(getPopoverBounds());
+  window.setIgnoreMouseEvents(false);
+  // Do not activate the app or switch Spaces when the cursor reaches the edge.
   window.showInactive();
+  window.webContents.send("rate-limit:dock-state", true);
   queueSavePopoverPosition();
-  if (process.env.RATE_LIMIT_TOOL_DEBUG) {
-    console.log("Popover visible:", window.isVisible(), window.getBounds());
-  }
+}
+
+function hidePopover({ automatic = false } = {}) {
+  if (!popover || popover.isDestroyed() || !popoverDock.open) return;
+  popoverDock.open = false;
+  popoverDock.retreating = automatic;
+  popoverDock.pointer = popoverDock.keyboard = false;
+  popoverDock.outsideSince = null;
+  popover.webContents.send("rate-limit:dock-state", false);
+  // The disappearing surface must not block the app underneath it.
+  popover.setIgnoreMouseEvents(true, { forward: true });
+  clearTimeout(popoverDock.hideTimer);
+  popoverDock.hideTimer = setTimeout(() => {
+    popoverDock.retreating = false;
+    if (!popoverDock.open && popover && !popover.isDestroyed()) popover.hide();
+  }, 360);
 }
 
 function togglePopover() {
-  const window = ensurePopover();
+  if (popoverDock.open) hidePopover();
+  else showPopover();
+}
 
-  if (window.isVisible()) {
-    queueSavePopoverPosition();
-    window.hide();
-    return;
+function updatePopoverDock() {
+  if (isQuitting) return;
+  const point = screen.getCursorScreenPoint();
+  const display = getPreferredDisplay();
+  const bounds = getDefaultPopoverBounds(display);
+  const screenBounds = display.bounds || display.workArea;
+  const right = screenBounds.x + screenBounds.width;
+  const atEdge = point.x >= right - 3 && point.x < right
+    && point.y >= screenBounds.y && point.y < bounds.y + bounds.height;
+  // Include the transparent gap to the edge so moving toward the card is safe.
+  const inside = point.x >= bounds.x - 8 && point.x < right
+    && point.y >= screenBounds.y && point.y < bounds.y + bounds.height + 8;
+  if (popoverDock.cursor && (point.x !== popoverDock.cursor.x || point.y !== popoverDock.cursor.y)) {
+    popoverDock.keyboard = false;
   }
+  popoverDock.cursor = point;
+  if (!popoverDock.open && ((atEdge && !popoverDock.atEdge) || (popoverDock.retreating && inside))) {
+    showPopover({ fromEdge: true });
+  }
+  popoverDock.atEdge = atEdge;
+  if (!popoverDock.open) return;
+  if (inside || popoverDock.pointer || popoverDock.menu || popoverDock.keyboard || Date.now() < popoverDock.graceUntil) {
+    popoverDock.outsideSince = null;
+  } else if (popoverDock.outsideSince === null) {
+    popoverDock.outsideSince = Date.now();
+  } else if (Date.now() - popoverDock.outsideSince >= 350) {
+    hidePopover({ automatic: true });
+  }
+}
 
-  showPopover();
+function startPopoverDock() {
+  if (popoverDock.timer) return;
+  popoverDock.timer = setInterval(updatePopoverDock, 80);
+  updatePopoverDock();
 }
 
 async function openClaudeLoginInChrome() {
@@ -858,11 +888,14 @@ function startClaudeLoginCompletionRefresh() {
 }
 
 function showAccountContextMenu() {
+  popoverDock.menu = true;
   return new Promise((resolve) => {
     let settled = false;
     const finish = (action = null) => {
       if (settled) return;
       settled = true;
+      popoverDock.menu = popoverDock.pointer = false;
+      popoverDock.graceUntil = Date.now() + 500;
       resolve(action);
     };
     const menu = Menu.buildFromTemplate([
@@ -918,14 +951,28 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("rate-limit:refresh", () => refreshSnapshot({ forceClaudeUsage: true }));
   ipcMain.handle("rate-limit:toggle", togglePopover);
-  ipcMain.on("rate-limit:move-popover-by", (event, dx, dy) => {
-    movePopoverBy(dx, dy);
+  ipcMain.handle("rate-limit:get-dock-state", () => popoverDock.open);
+  ipcMain.on("rate-limit:dock-interaction", (event, interaction) => {
+    if (!popover || popover.isDestroyed() || event.sender !== popover.webContents) return;
+    if (interaction === "pointer-start") popoverDock.pointer = true;
+    if (interaction === "pointer-end") popoverDock.pointer = false;
+    if (interaction === "keyboard") {
+      popoverDock.keyboard = true;
+      popoverDock.cursor = screen.getCursorScreenPoint();
+    }
+    if (interaction === "blur") popoverDock.pointer = popoverDock.keyboard = false;
   });
-
+  ipcMain.on("rate-limit:resize-popover", (event, width, height, edge) => {
+    if (popover && !popover.isDestroyed() && event.sender === popover.webContents) {
+      resizePopover(width, height, edge);
+    }
+  });
+  ipcMain.handle("rate-limit:is-cursor-near-bottom", (event, zoneHeight) => (
+    isCursorNearPopoverBottom(zoneHeight)
+  ));
   ipcMain.on("rate-limit:set-expanded-view", (event, expanded, rowCount, contentHeight) => {
     setExpandedView(Boolean(expanded), rowCount, contentHeight);
   });
-  ipcMain.on("rate-limit:move-top-right", moveToTopRight);
   ipcMain.handle("usage-history:get", async (event, options = {}) => {
     const rangeDays = [7, 30, 90].includes(Number(options.rangeDays)) ? Number(options.rangeDays) : 30;
     return getHistoryPayload(rangeDays);
@@ -977,8 +1024,15 @@ if (!gotSingleInstanceLock) {
     registerIpcHandlers();
     createPopover();
     createTray();
-    popover.once("ready-to-show", showPopover);
-    setTimeout(showPopover, 800);
+    popover.webContents.once("did-finish-load", startPopoverDock);
+    for (const event of ["display-metrics-changed", "display-removed", "display-added"]) {
+      screen.on(event, () => {
+        if (popover && !popover.isDestroyed()) {
+          popover.setBounds(getPopoverBounds());
+          queueSavePopoverPosition();
+        }
+      });
+    }
     startBackgroundRefresh();
     refreshSnapshot({ forceClaudeUsage: true }).catch(() => {});
     startUpdateChecks();
@@ -999,6 +1053,8 @@ if (!gotSingleInstanceLock) {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  clearInterval(popoverDock.timer);
+  clearTimeout(popoverDock.hideTimer);
   stopClaudeLoginCompletionRefresh?.();
   stopClaudeLoginCompletionRefresh = null;
   clearTimeout(popoverPositionSaveTimer);
@@ -1007,6 +1063,7 @@ app.on("before-quit", () => {
       atomicWriteJsonSync(windowStatePath, {
         x: Math.round(popoverPosition.x),
         y: Math.round(popoverPosition.y),
+        ...popoverSize,
         savedAt: new Date().toISOString()
       });
     } catch (error) {
