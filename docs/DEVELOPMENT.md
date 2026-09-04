@@ -22,7 +22,6 @@ npm test
 | `npm run build:core` | Assemble the versioned Core and its production dependencies in `build/core/`. |
 | `npm run dist:mac` | Build unsigned macOS DMG and ZIP artifacts in `dist/`. |
 | `npm run clean` | Remove only generated `dist/` and `build/` artifacts. |
-| `node scripts/generate-waves.js` | Regenerate the popover meter's sea-surface keyframes in `public/styles.css` from the wave components in the script. |
 
 Use `npm ci` for a deterministic dependency install. Do not commit `node_modules/` or `dist/`.
 

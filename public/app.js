@@ -157,21 +157,11 @@ function animatePercent(node, from, to) {
   requestAnimationFrame(step);
 }
 
-// The row paints one full-width band per window (at most two) as its own
-// pseudo-elements, so the fills run beneath the account identity. Their shares
-// are CSS variables on the row; a changed value glides there instead of jumping.
+// Retain the window count for the account layout; tracks use each window's own value.
 function paintRowMeter(elements, windows) {
   const row = elements?.row;
-  if (!row?.style) return;
+  if (!row?.dataset) return;
   row.dataset.bands = String(Math.min(2, windows.length));
-  // The 5-hour band is drawn at half height; a weekly-only row keeps full height.
-  row.dataset.thinTop = /5-hour/i.test(windows[0]?.label || "") ? "1" : "0";
-  [0, 1].forEach((index) => {
-    const window = windows[index];
-    const remaining = window ? Math.min(100, Math.max(0, Number(window.remainingPercent) || 0)) : 0;
-    row.style.setProperty(`--r${index + 1}`, `${remaining.toFixed(1)}%`);
-    row.classList.toggle(`low-${index + 1}`, Boolean(window) && isLowRemaining(window));
-  });
 }
 
 function buildCompactSummary(data) {
@@ -301,7 +291,8 @@ function buildResetTitle(data) {
     .join("\n");
 }
 
-function renderLimitWindows(elements, data) {
+function renderLimitWindows(elements, data, options = {}) {
+  const animate = options.animate !== false;
   const displayWindows = usageWindows(data).slice().sort((a, b) => windowOrder(a) - windowOrder(b));
   const previous = new Map(
     [...elements.limitGrid.querySelectorAll?.(".limit-window") ?? []].map((node) => [node.dataset.label, Number(node.dataset.remaining)])
@@ -315,8 +306,11 @@ function renderLimitWindows(elements, data) {
     const before = previous.has(label) ? previous.get(label) : 0;
     root.dataset.label = label;
     root.dataset.remaining = remaining.toFixed(1);
+    root.style?.setProperty("--remaining", `${remaining}%`);
     root.querySelector(".limit-label").textContent = label;
-    animatePercent(root.querySelector(".limit-value"), before, remaining);
+    const value = root.querySelector(".limit-value");
+    if (animate) animatePercent(value, before, remaining);
+    else value.textContent = `${Math.round(remaining)}%`;
     root.classList.toggle("low", isLowRemaining(window));
     const reset = root.querySelector(".limit-reset");
     reset.textContent = resetDetail(window);
@@ -529,7 +523,7 @@ function renderConnected(accountId, data, metadata = {}) {
   const stale = metadata.stale === true;
   const summary = buildSummary(data);
   setStalePresentation(accountId, elements, stale, metadata.error);
-  renderLimitWindows(elements, data);
+  renderLimitWindows(elements, data, { animate: !stale });
   elements.summary.textContent = "";
   elements.summary.title = buildResetTitle(data);
   elements.summary.className = "account-summary hidden";
@@ -831,13 +825,26 @@ function updateCountdowns() {
 }
 
 function measureContentHeight() {
-  const shell = document.querySelector(".widget-shell");
-  if (!shell) {
+  if (!accountsRoot) {
     return null;
   }
 
-  // +1 guards against a sub-pixel rounding scrollbar.
-  return Math.ceil(shell.getBoundingClientRect().height) + 1;
+  // Use layout dimensions, not transformed bounds: the 3D pose must never
+  // feed back into native window sizing. Include gaps and the transparent stage.
+  const header = document.querySelector(".sculpture-header");
+  const footer = document.querySelector(".widget-bar");
+  const stage = document.querySelector(".spatial-stage");
+  const listStyle = getComputedStyle(accountsRoot);
+  const stageStyle = stage ? getComputedStyle(stage) : null;
+  const paddingY = (style) => style
+    ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+    : 0;
+  const rowsHeight = [...accountsRoot.children].reduce(
+    (height, row) => height + row.offsetHeight, 0
+  );
+  const gaps = Math.max(0, accountsRoot.children.length - 1) * (parseFloat(listStyle.rowGap) || 0);
+  return Math.ceil(rowsHeight + gaps + paddingY(listStyle) + paddingY(stageStyle) +
+    (header?.offsetHeight || 0) + (footer?.offsetHeight || 0));
 }
 
 function syncViewSize(expanded = rowsExpanded) {
@@ -847,6 +854,22 @@ function syncViewSize(expanded = rowsExpanded) {
     measureContentHeight()
   );
 }
+
+// Rows change height whenever an account changes state — connected, refreshing,
+// cached, signed out — and each of those has to move the window with it. Left to
+// explicit calls the two drift apart, and a window shorter than its rows scrolls
+// the top of the meter out of sight.
+let viewSizeFrame = 0;
+
+function queueViewSizeSync() {
+  if (viewSizeFrame) return;
+  viewSizeFrame = requestAnimationFrame(() => {
+    viewSizeFrame = 0;
+    syncViewSize();
+  });
+}
+
+new ResizeObserver(queueViewSizeSync).observe(accountsRoot);
 
 async function loadState() {
   state = await loadAppState();
@@ -903,13 +926,49 @@ document.querySelector("#history-button")?.addEventListener("click", () => {
   nativeApi?.openHistory?.();
 });
 
-document.querySelector(".widget-header")?.addEventListener("dblclick", (event) => {
-  // Ignore double-clicks on the header controls themselves.
-  if (event.target.closest("#refresh-button") || event.target.closest("#update-pill")) {
-    return;
+// The bottom bar stays down until the pointer comes near the bottom edge, so
+// the popover is only the meters at rest. While open, confirm the real macOS
+// cursor position: if the frameless window resizes beneath a stationary cursor,
+// no new mousemove arrives to clear the old position.
+const widgetShell = document.querySelector(".widget-shell");
+const barZone = 30;
+let barCursorTimer = null;
+let barCursorCheckInFlight = false;
+
+function setBottomBarOpen(open) {
+  widgetShell?.classList.toggle("bar-open", open);
+
+  if (!open && barCursorTimer) {
+    clearInterval(barCursorTimer);
+    barCursorTimer = null;
   }
 
-  nativeApi?.moveToTopRight?.();
+  if (open && nativeApi?.isCursorNearBottom && !barCursorTimer) {
+    barCursorTimer = window.setInterval(reconcileBottomBarWithCursor, 100);
+  }
+}
+
+async function reconcileBottomBarWithCursor() {
+  if (!widgetShell?.classList.contains("bar-open") || barCursorCheckInFlight) return;
+  barCursorCheckInFlight = true;
+
+  try {
+    if (!await nativeApi.isCursorNearBottom(barZone)) {
+      setBottomBarOpen(false);
+    }
+  } catch {
+    setBottomBarOpen(false);
+  } finally {
+    barCursorCheckInFlight = false;
+  }
+}
+
+widgetShell?.addEventListener("mousemove", (event) => {
+  setBottomBarOpen(event.clientY >= widgetShell.offsetHeight - barZone);
+});
+
+widgetShell?.addEventListener("mouseleave", () => {
+  setBottomBarOpen(false);
 });
 
 const updatePill = document.querySelector("#update-pill");
@@ -951,6 +1010,10 @@ statusHeartbeat = window.setInterval(syncOverallStatus, 15000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     syncOverallStatus();
+    // Re-assert the fit on show. Content changes move the window on their own;
+    // this catches a window that is out of step for any other reason, so the
+    // popover is never revealed at the wrong height.
+    queueViewSizeSync();
   }
 });
 

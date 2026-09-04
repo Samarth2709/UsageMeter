@@ -10,7 +10,8 @@ Usage Meter has two local surfaces: an Electron menu-bar app and a static market
 | Versioned Core | `electron-main.js`, `server.js`, `usage-windows.js`, `usage-history/`, `public/`, `assets/` | Tray icon, popover/history windows, live refresh, local analytics, and app UI. |
 | Live limits | `electron-main.js`, `server.js`, `usage-windows.js` | Read-only Claude and Codex usage requests, identity/config storage, window normalization, and caching. |
 | Usage History | `usage-history/` | Incremental transcript indexing, aggregation, pricing, diagnostics, subscription value, and model insights. Index work runs in a short-lived Electron utility process. |
-| App renderer | `public/` | Menu-bar popover and Usage History dashboard. |
+| Corner dock | `electron-main.js`, `preload.js`, `public/spatial.js` | Native screen-edge detection, delayed reveal/retraction, interaction holds, click-through hiding and anchored resizing; the renderer slides the existing 3D stage. |
+| App renderer | `public/` | Compact menu-bar popover and Usage History; both windows share the CSS 3D material and input layer (`spatial.css`, `spatial.js`), with no decorative WebGL renderer. |
 | Static site | `site/` | Marketing page and credential-free dashboard demo driven by `site/mock.js`. |
 | Tests | `test/` | Node tests for parsing, cache behavior, limits, UI lifecycle helpers, and analytics. |
 
@@ -52,7 +53,7 @@ The app's local state is under `~/.rate-limit-tool/`:
 | `usage-index.json` | Canonical version-4 index: file identity/offset/parser state, globally owned Claude message events, retained 90-day CLI/model/project aggregates, and recent minute buckets. Written atomically. |
 | `usage-history.json` | Legacy per-file History cache. Imported into `usage-index.json` when compatible; retained for rollback compatibility. |
 | `window-points.json` | Legacy recent-point cache. Imported into `usage-index.json` when compatible; retained for rollback compatibility. |
-| `window-state.json` | Saved popover position. |
+| `window-state.json` | Current corner position and optional user-selected width/height. The corner is re-anchored on launch/display changes; position-only state keeps automatic content sizing. |
 | `automation-state.json` | Optional Codex-only 5-hour automation deduplication state. |
 | `cores/current.json` | Atomically written pointer to the active, previous, and pending verified Core. |
 | `cores/<version>/` | Verified Core files plus the signed manifest and signature used to activate them. |
@@ -62,6 +63,8 @@ Transcript parsing is read-only. The cache stores aggregate buckets plus normali
 ## Refresh and resilience
 
 - Main snapshots refresh every minute.
+- Reading Claude usage costs two requests (profile, then usage) and the endpoint rate-limits below that cadence, so a 429 is expected under a steady poll. One starts a backoff — `Retry-After` when the response carries it, otherwise 150 s — and the refresh serves the last reading until it lifts, which settles to a real read every three to four minutes and no wasted requests in between.
+- A failed poll is not stale data. A reading is presented as live until it passes `usageStaleAfterMs` (6 min); only then does the row turn grey and read "Cached". Rate limiting alone never greys a row.
 - History refreshes start a short-lived utility process for index work, then retain only compact dashboard results in the Electron main process.
 - Index updates perform a metadata inventory, read only bytes appended after each file's saved offset, and rebuild a truncated, replaced, reclassified, or indexed-tail-modified file.
 - Missing-file reconciliation runs hourly. It retains already-indexed daily aggregates for the 90-day dashboard when a CLI cleans up a transcript, then prunes them after they age out. Unchanged transcript contents are never reread during that pass.

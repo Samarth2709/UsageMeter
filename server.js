@@ -68,7 +68,18 @@ const claudeOAuthProfileEndpoint = "https://api.anthropic.com/api/oauth/profile"
 const claudeOAuthUsageEndpoint = "https://api.anthropic.com/api/oauth/usage";
 const claudeOAuthBeta = "oauth-2025-04-20";
 const claudeUsageRequestTimeoutMs = 10000;
+// Reading Claude usage costs two requests (profile, then usage), and the
+// endpoint rate-limits below the popover's one-minute refresh — a steady poll
+// earns a 429 roughly every other time. Back off when one arrives instead of
+// asking again on the next tick.
+const claudeUsageBackoffMs = 150000;
+const claudeUsageBackoffMaxMs = 15 * 60 * 1000;
+// A failed poll does not make the numbers already on screen wrong. Claude's
+// windows move slowly and rate limiting is routine, so keep showing the last
+// reading as live until it genuinely ages out.
+const usageStaleAfterMs = 6 * 60 * 1000;
 const claudeFiveHourResetMaxMs = (5 * 60 * 60 * 1000) + (60 * 1000);
+let claudeUsageRetryAt = 0;
 
 app.use(express.json());
 
@@ -938,6 +949,24 @@ async function readClaudeOAuthCredentials(
   };
 }
 
+function claudeUsageBackoffRemainingMs() {
+  return Math.max(0, claudeUsageRetryAt - Date.now());
+}
+
+// `Retry-After` is in seconds when the server sends one; fall back to a fixed
+// wait, and never hold off longer than the cap.
+function noteClaudeUsageRateLimited(retryAfter) {
+  const seconds = Number(retryAfter);
+  const waitMs = Number.isFinite(seconds) && seconds > 0
+    ? Math.min(seconds * 1000, claudeUsageBackoffMaxMs)
+    : claudeUsageBackoffMs;
+  claudeUsageRetryAt = Date.now() + waitMs;
+}
+
+function resetClaudeUsageBackoff() {
+  claudeUsageRetryAt = 0;
+}
+
 async function requestClaudeOAuthJson(
   url,
   accessToken,
@@ -958,6 +987,10 @@ async function requestClaudeOAuthJson(
 
   if (requested.response.status === 401 || requested.response.status === 403) {
     throw new Error("The saved Claude Code login was rejected. Sign in to Claude again.");
+  }
+
+  if (requested.response.status === 429) {
+    noteClaudeUsageRateLimited(requested.response.headers?.get?.("retry-after"));
   }
 
   if (!requested.response.ok) {
@@ -1024,6 +1057,12 @@ async function fetchClaudeUsage(account, options = {}) {
   const readCredentials = options.readCredentials || readClaudeOAuthCredentials;
   const requestJson = options.requestJson || fetchJsonWithTimeout;
   const now = options.now || new Date();
+
+  const backoffMs = claudeUsageBackoffRemainingMs();
+  if (backoffMs > 0) {
+    throw new Error(`Claude is rate limiting usage requests. Retrying in ${Math.ceil(backoffMs / 1000)}s.`);
+  }
+
   const credentials = await readCredentials();
   const profile = await requestClaudeOAuthJson(
     claudeOAuthProfileEndpoint,
@@ -1036,6 +1075,7 @@ async function fetchClaudeUsage(account, options = {}) {
     requestJson
   );
 
+  resetClaudeUsageBackoff();
   return parseClaudeOAuthUsage(profile, usage, credentials, now);
 }
 
@@ -1853,8 +1893,21 @@ async function discoverCurrentClaudeIdentity(config, fetchUsage = fetchClaudeUsa
   }
 }
 
-function unavailableIdentityResult(identity, error) {
+function unavailableIdentityResult(identity, error, now = Date.now()) {
   if (identity.lastUsage) {
+    const fetchedAt = Date.parse(identity.lastUsage.fetchedAt || "");
+    const aged = !Number.isFinite(fetchedAt) || now - fetchedAt > usageStaleAfterMs;
+
+    // Still current: present it as the live reading it is, rather than greying
+    // the row out because one poll was rate limited.
+    if (!aged) {
+      return {
+        accountId: identity.id,
+        ok: true,
+        data: identity.lastUsage
+      };
+    }
+
     return {
       accountId: identity.id,
       ok: true,
@@ -2243,6 +2296,8 @@ function onClaudeLoginCompleted(listener) {
 }
 
 function notifyClaudeLoginCompleted() {
+  // A new login has to be read now, not after a backoff the old one earned.
+  resetClaudeUsageBackoff();
   for (const listener of claudeLoginCompletionListeners) {
     try { listener(); } catch {}
   }
@@ -2692,6 +2747,10 @@ module.exports = {
     parseClaudeOAuthUsage,
     fetchClaudeUsage,
     claudeUsageRequestTimeoutMs,
+    claudeUsageBackoffMs,
+    claudeUsageBackoffRemainingMs,
+    resetClaudeUsageBackoff,
+    usageStaleAfterMs,
     normalizeCodexRateWindows,
     parseClaudeResetAt,
     parseClaudeUsageScreen

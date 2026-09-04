@@ -13,7 +13,8 @@ function classList() {
     toggle(name, force) {
       if (force) values.add(name);
       else values.delete(name);
-    }
+    },
+    contains: (name) => values.has(name)
   };
 }
 
@@ -332,6 +333,7 @@ test("account login click returns to the minimal account actions", async () => {
       accountElements: new Map(),
       accountStates: new Map([[`${type}-1`, { kind: "disconnected" }]]),
       buildAccountName: () => "Account",
+      mountLiquid: () => null,
       showStatusSummary: () => {},
       refreshAll: async () => {},
       openAccountLogin: async (accountId) => {
@@ -426,6 +428,7 @@ test("account delete confirms, removes the account, and syncs the returned confi
     accountElements: new Map(),
     accountStates: new Map(),
     buildAccountName: () => "samarth@example.com",
+    mountLiquid: () => null,
     showStatusSummary: () => {},
     refreshAll: async () => {},
     openAccountLogin: async () => {},
@@ -513,6 +516,7 @@ test("right-click account menu routes logout, login removal, and row deletion", 
       accountStates: new Map(),
       nativeApi: { showAccountMenu: async () => action },
       buildAccountName: () => "samarth@example.com",
+      mountLiquid: () => null,
       showStatusSummary: () => {},
       refreshAll: async () => {},
       openAccountLogin: async () => {},
@@ -570,5 +574,62 @@ test("Electron exposes the native three-action account context menu", async () =
   assert.match(main, /ipcMain\.handle\("rate-limit:logout-account"/);
   assert.match(preload, /showAccountMenu:.*rate-limit:show-account-menu/);
   assert.match(preload, /logoutAccount:.*rate-limit:logout-account/);
-  assert.match(styles, /\.account-row\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
+  // The rows have to receive mouse events for the right-click menu, so the
+  // shell that holds them must not be a native drag region (the property
+  // inherits, so this covers every row). Dragging is driven from app.js.
+  assert.match(styles, /\.widget-shell\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
+});
+
+test("bottom bar rechecks the real cursor and ignores retained button focus", async () => {
+  const [app, styles] = await Promise.all([
+    fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8"),
+    fs.readFile(path.join(__dirname, "..", "public", "styles.css"), "utf8")
+  ]);
+
+  const start = app.indexOf('const widgetShell = document.querySelector(".widget-shell")');
+  const end = app.indexOf("const updatePill", start);
+  assert.ok(start >= 0 && end > start, "bottom bar lifecycle block must be present");
+  const listeners = new Map();
+  const shell = {
+    offsetHeight: 100,
+    classList: classList(),
+    addEventListener: (name, handler) => listeners.set(name, handler)
+  };
+  let cursorNearBottom = true;
+  let cursorChecks = 0;
+  let cursorTimer = null;
+  const context = {
+    document: { querySelector: () => shell },
+    nativeApi: {
+      isCursorNearBottom: async () => {
+        cursorChecks += 1;
+        return cursorNearBottom;
+      }
+    },
+    window: {
+      setInterval: (handler) => {
+        cursorTimer = handler;
+        return 1;
+      }
+    },
+    clearInterval: () => {}
+  };
+
+  vm.runInNewContext(`const nativeApi = globalThis.nativeApi;\n${app.slice(start, end)}`, context);
+
+  listeners.get("mousemove")({ clientY: 95 });
+  assert.equal(shell.classList.contains("bar-open"), true);
+  assert.equal(typeof cursorTimer, "function");
+
+  cursorNearBottom = false;
+  await cursorTimer();
+  assert.equal(cursorChecks, 1);
+  assert.equal(shell.classList.contains("bar-open"), false);
+
+  listeners.get("mousemove")({ clientY: 95 });
+  listeners.get("mouseleave")();
+  assert.equal(shell.classList.contains("bar-open"), false);
+
+  assert.match(styles, /\.widget-shell\.bar-open\s+\.widget-bar/);
+  assert.doesNotMatch(styles, /\.widget-shell:focus-within\s+\.widget-bar/);
 });

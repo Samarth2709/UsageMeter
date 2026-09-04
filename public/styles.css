@@ -33,6 +33,8 @@
   --on-meter-shadow: none;
   /* Cached (stale) values: a neutral grey fill. */
   --stale: rgba(142, 142, 147, 1);
+  /* Behind the bottom bar when it rides over the meter. */
+  --bar-scrim: rgba(250, 250, 252, 0.9);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -60,6 +62,7 @@
     --on-meter-2: rgba(255, 255, 255, 0.92);
     --on-meter-shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
     --stale: rgba(120, 120, 126, 1);
+    --bar-scrim: rgba(28, 28, 30, 0.86);
   }
 }
 
@@ -70,6 +73,16 @@
 html,
 body {
   background: transparent;
+}
+
+/* The popover document is exactly its window: it must never scroll, so a window
+   briefly out of step with its rows clips at the foot instead of sliding the top
+   of the meter out of sight. The history window is an ordinary scrolling
+   document and keeps its own overflow. */
+html:has(.widget-shell),
+html:has(.widget-shell) body {
+  height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -152,23 +165,65 @@ svg {
 }
 
 /* ===== Menu-bar popover ===== */
+/* The popover is the meters and nothing else: the rows fill it corner to
+   corner, with no inset above the first or below the last. */
 .widget-shell {
-  padding: 12px 14px 4px;
+  position: relative;
+  --bar-h: 20px;
+  min-height: 100%;
+  overflow: hidden;
   border-radius: 14px;
   background: var(--material);
   box-shadow: inset 0 0 0 0.5px var(--edge);
-  -webkit-app-region: drag;
+  /* The popover is dragged from app.js, not by a native drag region: a drag
+     region would swallow the mouse events the rows need for hover, the bar's
+     proximity reveal, right-click and buttons. This overrides the drag region
+     `body` sets up for the history window. */
+  -webkit-app-region: no-drag;
 }
 
 /* Bottom bar: status (only when something needs attention), update pill, and
-   two faint icons for refresh and history. Double-click re-docks the popover. */
+   two faint icons for refresh and history. It is not part of the meter — it
+   rides over the foot of the last row and stays out of the way until the
+   pointer comes near the bottom edge, or until the status or an update has
+   something to say. Dragging it moves the popover; double-click re-docks. */
 .widget-bar {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  height: 24px;
-  margin-top: 4px;
+  height: var(--bar-h);
+  padding: 0 10px;
+  background: var(--bar-scrim);
+  backdrop-filter: blur(18px);
+  box-shadow: inset 0 0.5px 0 var(--edge);
+  opacity: 0;
+  transform: translateY(100%);
+  transition: opacity 0.18s ease, transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* While it is down it must not take hover or clicks from the row beneath. */
+  pointer-events: none;
   -webkit-app-region: no-drag;
+}
+
+.widget-shell.bar-open .widget-bar {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* The bar rises over liquid, never over a number: the last row lifts its text
+   out of the way as the bar comes up. */
+.account-row:last-child .account-meta,
+.account-row:last-child .limit-window {
+  transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.widget-shell.bar-open .account-row:last-child :is(.account-meta, .limit-window) {
+  transform: translateY(calc(var(--bar-h) / -2));
 }
 
 .title-group {
@@ -258,8 +313,8 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
   color: var(--tertiary);
   transition: color 0.2s ease;
 }
@@ -270,8 +325,8 @@ h1 {
 }
 
 .icon-button svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 
 .icon-button:disabled {
@@ -286,40 +341,27 @@ h1 {
   margin: 0;
 }
 
-/* The account row is the meter. It paints one full-width band per allowance
-   window (5-hour on top, weekly beneath): the service tint up to the remaining
-   share, ending in a softly rounded, gently undulating edge like the surface of
-   a liquid. The unfilled remainder is the popover material. Content is laid
-   over the bands, one line per band. No lines, no tracks. */
+/* The account row is the meter. Its background is one body of liquid, filled
+   to the remaining share of each allowance window: the 5-hour band on top, the
+   weekly band beneath. The liquid is painted on a canvas by public/liquid.js —
+   a single surface running the height of the row, so a row with two windows is
+   one connected mass with a step in its level rather than two bars. The row
+   owns only the geometry and the tone; every shade is mixed from `--tone`
+   there, which is why nothing here mixes colours. Content is laid over the
+   liquid, one line per band. No lines, no tracks. */
 .account-row {
   --band: 40px;
   /* The top band is half height when it is the 5-hour allowance. */
   --band-1: var(--band);
   --tone: var(--tint, var(--blue));
-  --fill-1a: color-mix(in srgb, var(--tone) 58%, var(--material));
-  --fill-1b: color-mix(in srgb, var(--tone) 96%, var(--material));
-  --fill-2a: color-mix(in srgb, var(--tone) 46%, var(--material));
-  --fill-2b: color-mix(in srgb, var(--tone) 80%, var(--material));
-  --shimmer: linear-gradient(
-    105deg,
-    transparent 30%,
-    rgba(255, 255, 255, 0.14) 45%,
-    rgba(255, 255, 255, 0.26) 50%,
-    rgba(255, 255, 255, 0.14) 55%,
-    transparent 70%
-  );
-  --volume: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 45%, rgba(0, 0, 0, 0.06));
-  --meniscus: radial-gradient(70% 90% at 100% 50%, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 62%);
   position: relative;
   isolation: isolate;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  margin: 0 -14px;
   padding: 0 14px;
   transition: filter 0.3s ease;
   animation: rowIn 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
-  -webkit-app-region: no-drag;
 }
 
 .account-row:nth-child(2) {
@@ -350,9 +392,6 @@ h1 {
   --band-1: calc(var(--band) / 2);
 }
 
-.account-row[data-thin-top="1"] .account-type {
-  font-size: 13px;
-}
 
 .account-row[data-thin-top="1"] .limit-window:first-child .limit-value {
   font-size: 12px;
@@ -372,12 +411,6 @@ h1 {
   --tone: var(--stale);
 }
 
-.account-row.is-stale::before,
-.account-row.is-stale::after {
-  animation: none;
-  clip-path: polygon(0 0, calc(100% - 3px) 0, calc(100% - 3px) 100%, 0 100%);
-}
-
 .account-row.is-stale .limit-window,
 .account-row.is-stale .account-type,
 .account-row.is-stale .limit-label,
@@ -395,498 +428,33 @@ h1 {
   animation: none;
 }
 
-/* The two band fills. Only the leading (right) end is rounded; its radii drift
-   between three shapes so the edge appears to sway like water. */
-.account-row::before,
-.account-row::after {
-  content: "";
+/* The canvas the liquid is drawn on. It runs the full width of the row and
+   sits behind the row's content. */
+.row-liquid {
   position: absolute;
   z-index: -1;
-  left: 0;
-  background-size: 260% 100%, 22% 220%, 100% 100%, 100% 100%;
-  background-repeat: no-repeat;
-  transition: width 1.2s cubic-bezier(0.2, 0.8, 0.2, 1);
-  /* Leading edge: a sea surface. Several small sine waves with their own
-     wavelength travel in opposite directions and pass through each other; the
-     keyframes are sampled densely in time so the motion stays fluid. Amplitude
-     is a few pixels at most. The two bands run different seas. */
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
-  animation: liquid 12s ease-in-out infinite, waves-a 18s linear infinite;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
-.account-row::before {
-  top: 0;
-  width: var(--r1, 0%);
-  height: var(--band-1);
-  background-image: var(--shimmer), var(--meniscus), var(--volume), linear-gradient(90deg, var(--fill-1a), var(--fill-1b));
-}
-
-.account-row::after {
-  bottom: 0;
-  width: var(--r2, 0%);
-  height: var(--band);
-  background-image: var(--shimmer), var(--meniscus), var(--volume), linear-gradient(90deg, var(--fill-2a), var(--fill-2b));
-  animation: liquid 12s ease-in-out infinite, waves-b 23s linear infinite;
-  animation-delay: -5s, -9s;
-}
-
-.account-row[data-bands="0"]::before,
-.account-row[data-bands="0"]::after,
-.account-row[data-bands="1"]::after {
-  display: none;
-}
-
-.account-row.low-1 {
-  --fill-1a: color-mix(in srgb, var(--red) 62%, var(--material));
-  --fill-1b: color-mix(in srgb, var(--red) 96%, var(--material));
-}
-
+/* At 15 % or less remaining the liquid turns system red and breathes. One body
+   means one colour, so a low window recolours the whole row. */
+.account-row.low-1,
 .account-row.low-2 {
-  --fill-2a: color-mix(in srgb, var(--red) 50%, var(--material));
-  --fill-2b: color-mix(in srgb, var(--red) 82%, var(--material));
+  --tone: var(--red);
 }
 
-.account-row.low-1::before {
-  animation: liquid 12s ease-in-out infinite, waves-a 18s linear infinite, breathe 2.4s ease-in-out infinite;
-}
-
-.account-row.low-2::after {
-  animation: liquid 12s ease-in-out infinite, waves-b 23s linear infinite, breathe 2.4s ease-in-out infinite;
-}
-
-@keyframes waves-a {
-  0.00% {
-    clip-path: polygon(0 0, calc(100% - 4.01px) 0.00%, calc(100% - 3.98px) 3.13%, calc(100% - 3.94px) 6.25%, calc(100% - 3.90px) 9.38%, calc(100% - 3.86px) 12.50%, calc(100% - 3.83px) 15.63%, calc(100% - 3.80px) 18.75%, calc(100% - 3.78px) 21.88%, calc(100% - 3.77px) 25.00%, calc(100% - 3.76px) 28.13%, calc(100% - 3.76px) 31.25%, calc(100% - 3.76px) 34.38%, calc(100% - 3.75px) 37.50%, calc(100% - 3.74px) 40.63%, calc(100% - 3.73px) 43.75%, calc(100% - 3.71px) 46.88%, calc(100% - 3.68px) 50.00%, calc(100% - 3.64px) 53.13%, calc(100% - 3.60px) 56.25%, calc(100% - 3.55px) 59.38%, calc(100% - 3.50px) 62.50%, calc(100% - 3.45px) 65.63%, calc(100% - 3.41px) 68.75%, calc(100% - 3.37px) 71.88%, calc(100% - 3.34px) 75.00%, calc(100% - 3.32px) 78.13%, calc(100% - 3.30px) 81.25%, calc(100% - 3.30px) 84.38%, calc(100% - 3.30px) 87.50%, calc(100% - 3.31px) 90.63%, calc(100% - 3.32px) 93.75%, calc(100% - 3.32px) 96.88%, calc(100% - 3.32px) 100.00%, 0 100%);
-  }
-
-  2.08% {
-    clip-path: polygon(0 0, calc(100% - 4.10px) 0.00%, calc(100% - 4.18px) 3.13%, calc(100% - 4.24px) 6.25%, calc(100% - 4.30px) 9.38%, calc(100% - 4.35px) 12.50%, calc(100% - 4.38px) 15.63%, calc(100% - 4.40px) 18.75%, calc(100% - 4.40px) 21.88%, calc(100% - 4.38px) 25.00%, calc(100% - 4.33px) 28.13%, calc(100% - 4.26px) 31.25%, calc(100% - 4.16px) 34.38%, calc(100% - 4.05px) 37.50%, calc(100% - 3.91px) 40.63%, calc(100% - 3.75px) 43.75%, calc(100% - 3.59px) 46.88%, calc(100% - 3.41px) 50.00%, calc(100% - 3.24px) 53.13%, calc(100% - 3.08px) 56.25%, calc(100% - 2.94px) 59.38%, calc(100% - 2.82px) 62.50%, calc(100% - 2.73px) 65.63%, calc(100% - 2.67px) 68.75%, calc(100% - 2.64px) 71.88%, calc(100% - 2.65px) 75.00%, calc(100% - 2.69px) 78.13%, calc(100% - 2.77px) 81.25%, calc(100% - 2.87px) 84.38%, calc(100% - 2.99px) 87.50%, calc(100% - 3.12px) 90.63%, calc(100% - 3.25px) 93.75%, calc(100% - 3.37px) 96.88%, calc(100% - 3.47px) 100.00%, 0 100%);
-  }
-
-  4.17% {
-    clip-path: polygon(0 0, calc(100% - 4.21px) 0.00%, calc(100% - 4.42px) 3.13%, calc(100% - 4.61px) 6.25%, calc(100% - 4.77px) 9.38%, calc(100% - 4.90px) 12.50%, calc(100% - 4.99px) 15.63%, calc(100% - 5.04px) 18.75%, calc(100% - 5.04px) 21.88%, calc(100% - 4.99px) 25.00%, calc(100% - 4.88px) 28.13%, calc(100% - 4.73px) 31.25%, calc(100% - 4.53px) 34.38%, calc(100% - 4.29px) 37.50%, calc(100% - 4.03px) 40.63%, calc(100% - 3.74px) 43.75%, calc(100% - 3.45px) 46.88%, calc(100% - 3.16px) 50.00%, calc(100% - 2.88px) 53.13%, calc(100% - 2.64px) 56.25%, calc(100% - 2.43px) 59.38%, calc(100% - 2.27px) 62.50%, calc(100% - 2.16px) 65.63%, calc(100% - 2.10px) 68.75%, calc(100% - 2.10px) 71.88%, calc(100% - 2.15px) 75.00%, calc(100% - 2.25px) 78.13%, calc(100% - 2.40px) 81.25%, calc(100% - 2.57px) 84.38%, calc(100% - 2.76px) 87.50%, calc(100% - 2.96px) 90.63%, calc(100% - 3.15px) 93.75%, calc(100% - 3.33px) 96.88%, calc(100% - 3.48px) 100.00%, 0 100%);
-  }
-
-  6.25% {
-    clip-path: polygon(0 0, calc(100% - 4.37px) 0.00%, calc(100% - 4.68px) 3.13%, calc(100% - 4.96px) 6.25%, calc(100% - 5.19px) 9.38%, calc(100% - 5.37px) 12.50%, calc(100% - 5.48px) 15.63%, calc(100% - 5.53px) 18.75%, calc(100% - 5.50px) 21.88%, calc(100% - 5.40px) 25.00%, calc(100% - 5.23px) 28.13%, calc(100% - 5.00px) 31.25%, calc(100% - 4.72px) 34.38%, calc(100% - 4.40px) 37.50%, calc(100% - 4.04px) 40.63%, calc(100% - 3.68px) 43.75%, calc(100% - 3.32px) 46.88%, calc(100% - 2.97px) 50.00%, calc(100% - 2.66px) 53.13%, calc(100% - 2.39px) 56.25%, calc(100% - 2.17px) 59.38%, calc(100% - 2.01px) 62.50%, calc(100% - 1.91px) 65.63%, calc(100% - 1.87px) 68.75%, calc(100% - 1.89px) 71.88%, calc(100% - 1.96px) 75.00%, calc(100% - 2.08px) 78.13%, calc(100% - 2.24px) 81.25%, calc(100% - 2.41px) 84.38%, calc(100% - 2.60px) 87.50%, calc(100% - 2.79px) 90.63%, calc(100% - 2.97px) 93.75%, calc(100% - 3.12px) 96.88%, calc(100% - 3.25px) 100.00%, 0 100%);
-  }
-
-  8.33% {
-    clip-path: polygon(0 0, calc(100% - 4.53px) 0.00%, calc(100% - 4.87px) 3.13%, calc(100% - 5.17px) 6.25%, calc(100% - 5.41px) 9.38%, calc(100% - 5.58px) 12.50%, calc(100% - 5.67px) 15.63%, calc(100% - 5.68px) 18.75%, calc(100% - 5.61px) 21.88%, calc(100% - 5.47px) 25.00%, calc(100% - 5.26px) 28.13%, calc(100% - 4.99px) 31.25%, calc(100% - 4.68px) 34.38%, calc(100% - 4.34px) 37.50%, calc(100% - 3.98px) 40.63%, calc(100% - 3.62px) 43.75%, calc(100% - 3.28px) 46.88%, calc(100% - 2.97px) 50.00%, calc(100% - 2.69px) 53.13%, calc(100% - 2.45px) 56.25%, calc(100% - 2.27px) 59.38%, calc(100% - 2.13px) 62.50%, calc(100% - 2.05px) 65.63%, calc(100% - 2.02px) 68.75%, calc(100% - 2.03px) 71.88%, calc(100% - 2.08px) 75.00%, calc(100% - 2.15px) 78.13%, calc(100% - 2.24px) 81.25%, calc(100% - 2.34px) 84.38%, calc(100% - 2.44px) 87.50%, calc(100% - 2.54px) 90.63%, calc(100% - 2.62px) 93.75%, calc(100% - 2.69px) 96.88%, calc(100% - 2.73px) 100.00%, 0 100%);
-  }
-
-  10.42% {
-    clip-path: polygon(0 0, calc(100% - 4.58px) 0.00%, calc(100% - 4.88px) 3.13%, calc(100% - 5.11px) 6.25%, calc(100% - 5.29px) 9.38%, calc(100% - 5.39px) 12.50%, calc(100% - 5.43px) 15.63%, calc(100% - 5.40px) 18.75%, calc(100% - 5.30px) 21.88%, calc(100% - 5.15px) 25.00%, calc(100% - 4.95px) 28.13%, calc(100% - 4.72px) 31.25%, calc(100% - 4.46px) 34.38%, calc(100% - 4.19px) 37.50%, calc(100% - 3.92px) 40.63%, calc(100% - 3.66px) 43.75%, calc(100% - 3.42px) 46.88%, calc(100% - 3.20px) 50.00%, calc(100% - 3.01px) 53.13%, calc(100% - 2.85px) 56.25%, calc(100% - 2.71px) 59.38%, calc(100% - 2.61px) 62.50%, calc(100% - 2.52px) 65.63%, calc(100% - 2.46px) 68.75%, calc(100% - 2.41px) 71.88%, calc(100% - 2.36px) 75.00%, calc(100% - 2.32px) 78.13%, calc(100% - 2.28px) 81.25%, calc(100% - 2.23px) 84.38%, calc(100% - 2.19px) 87.50%, calc(100% - 2.14px) 90.63%, calc(100% - 2.09px) 93.75%, calc(100% - 2.04px) 96.88%, calc(100% - 2.00px) 100.00%, 0 100%);
-  }
-
-  12.50% {
-    clip-path: polygon(0 0, calc(100% - 4.43px) 0.00%, calc(100% - 4.60px) 3.13%, calc(100% - 4.72px) 6.25%, calc(100% - 4.80px) 9.38%, calc(100% - 4.82px) 12.50%, calc(100% - 4.81px) 15.63%, calc(100% - 4.76px) 18.75%, calc(100% - 4.68px) 21.88%, calc(100% - 4.58px) 25.00%, calc(100% - 4.46px) 28.13%, calc(100% - 4.33px) 31.25%, calc(100% - 4.20px) 34.38%, calc(100% - 4.08px) 37.50%, calc(100% - 3.96px) 40.63%, calc(100% - 3.85px) 43.75%, calc(100% - 3.74px) 46.88%, calc(100% - 3.64px) 50.00%, calc(100% - 3.55px) 53.13%, calc(100% - 3.45px) 56.25%, calc(100% - 3.35px) 59.38%, calc(100% - 3.24px) 62.50%, calc(100% - 3.11px) 65.63%, calc(100% - 2.96px) 68.75%, calc(100% - 2.80px) 71.88%, calc(100% - 2.62px) 75.00%, calc(100% - 2.42px) 78.13%, calc(100% - 2.22px) 81.25%, calc(100% - 2.01px) 84.38%, calc(100% - 1.81px) 87.50%, calc(100% - 1.62px) 90.63%, calc(100% - 1.46px) 93.75%, calc(100% - 1.33px) 96.88%, calc(100% - 1.24px) 100.00%, 0 100%);
-  }
-
-  14.58% {
-    clip-path: polygon(0 0, calc(100% - 4.05px) 0.00%, calc(100% - 4.07px) 3.13%, calc(100% - 4.07px) 6.25%, calc(100% - 4.05px) 9.38%, calc(100% - 4.03px) 12.50%, calc(100% - 4.00px) 15.63%, calc(100% - 3.98px) 18.75%, calc(100% - 3.96px) 21.88%, calc(100% - 3.96px) 25.00%, calc(100% - 3.97px) 28.13%, calc(100% - 3.99px) 31.25%, calc(100% - 4.02px) 34.38%, calc(100% - 4.06px) 37.50%, calc(100% - 4.10px) 40.63%, calc(100% - 4.13px) 43.75%, calc(100% - 4.15px) 46.88%, calc(100% - 4.14px) 50.00%, calc(100% - 4.10px) 53.13%, calc(100% - 4.03px) 56.25%, calc(100% - 3.91px) 59.38%, calc(100% - 3.75px) 62.50%, calc(100% - 3.54px) 65.63%, calc(100% - 3.29px) 68.75%, calc(100% - 3.00px) 71.88%, calc(100% - 2.69px) 75.00%, calc(100% - 2.36px) 78.13%, calc(100% - 2.02px) 81.25%, calc(100% - 1.69px) 84.38%, calc(100% - 1.39px) 87.50%, calc(100% - 1.13px) 90.63%, calc(100% - 0.92px) 93.75%, calc(100% - 0.77px) 96.88%, calc(100% - 0.70px) 100.00%, 0 100%);
-  }
-
-  16.67% {
-    clip-path: polygon(0 0, calc(100% - 3.57px) 0.00%, calc(100% - 3.46px) 3.13%, calc(100% - 3.37px) 6.25%, calc(100% - 3.31px) 9.38%, calc(100% - 3.28px) 12.50%, calc(100% - 3.28px) 15.63%, calc(100% - 3.32px) 18.75%, calc(100% - 3.39px) 21.88%, calc(100% - 3.50px) 25.00%, calc(100% - 3.64px) 28.13%, calc(100% - 3.79px) 31.25%, calc(100% - 3.95px) 34.38%, calc(100% - 4.11px) 37.50%, calc(100% - 4.25px) 40.63%, calc(100% - 4.37px) 43.75%, calc(100% - 4.44px) 46.88%, calc(100% - 4.46px) 50.00%, calc(100% - 4.42px) 53.13%, calc(100% - 4.32px) 56.25%, calc(100% - 4.15px) 59.38%, calc(100% - 3.92px) 62.50%, calc(100% - 3.63px) 65.63%, calc(100% - 3.30px) 68.75%, calc(100% - 2.93px) 71.88%, calc(100% - 2.54px) 75.00%, calc(100% - 2.14px) 78.13%, calc(100% - 1.76px) 81.25%, calc(100% - 1.40px) 84.38%, calc(100% - 1.10px) 87.50%, calc(100% - 0.85px) 90.63%, calc(100% - 0.67px) 93.75%, calc(100% - 0.57px) 96.88%, calc(100% - 0.56px) 100.00%, 0 100%);
-  }
-
-  18.75% {
-    clip-path: polygon(0 0, calc(100% - 3.17px) 0.00%, calc(100% - 3.01px) 3.13%, calc(100% - 2.89px) 6.25%, calc(100% - 2.82px) 9.38%, calc(100% - 2.82px) 12.50%, calc(100% - 2.86px) 15.63%, calc(100% - 2.96px) 18.75%, calc(100% - 3.11px) 21.88%, calc(100% - 3.29px) 25.00%, calc(100% - 3.49px) 28.13%, calc(100% - 3.70px) 31.25%, calc(100% - 3.91px) 34.38%, calc(100% - 4.10px) 37.50%, calc(100% - 4.25px) 40.63%, calc(100% - 4.36px) 43.75%, calc(100% - 4.41px) 46.88%, calc(100% - 4.39px) 50.00%, calc(100% - 4.31px) 53.13%, calc(100% - 4.16px) 56.25%, calc(100% - 3.94px) 59.38%, calc(100% - 3.67px) 62.50%, calc(100% - 3.35px) 65.63%, calc(100% - 3.00px) 68.75%, calc(100% - 2.63px) 71.88%, calc(100% - 2.26px) 75.00%, calc(100% - 1.91px) 78.13%, calc(100% - 1.58px) 81.25%, calc(100% - 1.30px) 84.38%, calc(100% - 1.08px) 87.50%, calc(100% - 0.92px) 90.63%, calc(100% - 0.84px) 93.75%, calc(100% - 0.83px) 96.88%, calc(100% - 0.89px) 100.00%, 0 100%);
-  }
-
-  20.83% {
-    clip-path: polygon(0 0, calc(100% - 3.08px) 0.00%, calc(100% - 2.91px) 3.13%, calc(100% - 2.80px) 6.25%, calc(100% - 2.76px) 9.38%, calc(100% - 2.77px) 12.50%, calc(100% - 2.83px) 15.63%, calc(100% - 2.94px) 18.75%, calc(100% - 3.09px) 21.88%, calc(100% - 3.26px) 25.00%, calc(100% - 3.43px) 28.13%, calc(100% - 3.61px) 31.25%, calc(100% - 3.76px) 34.38%, calc(100% - 3.88px) 37.50%, calc(100% - 3.96px) 40.63%, calc(100% - 3.99px) 43.75%, calc(100% - 3.96px) 46.88%, calc(100% - 3.88px) 50.00%, calc(100% - 3.75px) 53.13%, calc(100% - 3.57px) 56.25%, calc(100% - 3.35px) 59.38%, calc(100% - 3.09px) 62.50%, calc(100% - 2.82px) 65.63%, calc(100% - 2.54px) 68.75%, calc(100% - 2.27px) 71.88%, calc(100% - 2.02px) 75.00%, calc(100% - 1.80px) 78.13%, calc(100% - 1.61px) 81.25%, calc(100% - 1.48px) 84.38%, calc(100% - 1.39px) 87.50%, calc(100% - 1.36px) 90.63%, calc(100% - 1.38px) 93.75%, calc(100% - 1.44px) 96.88%, calc(100% - 1.55px) 100.00%, 0 100%);
-  }
-
-  22.92% {
-    clip-path: polygon(0 0, calc(100% - 3.36px) 0.00%, calc(100% - 3.23px) 3.13%, calc(100% - 3.13px) 6.25%, calc(100% - 3.09px) 9.38%, calc(100% - 3.08px) 12.50%, calc(100% - 3.10px) 15.63%, calc(100% - 3.15px) 18.75%, calc(100% - 3.21px) 21.88%, calc(100% - 3.28px) 25.00%, calc(100% - 3.33px) 28.13%, calc(100% - 3.38px) 31.25%, calc(100% - 3.39px) 34.38%, calc(100% - 3.39px) 37.50%, calc(100% - 3.34px) 40.63%, calc(100% - 3.27px) 43.75%, calc(100% - 3.17px) 46.88%, calc(100% - 3.04px) 50.00%, calc(100% - 2.89px) 53.13%, calc(100% - 2.73px) 56.25%, calc(100% - 2.56px) 59.38%, calc(100% - 2.40px) 62.50%, calc(100% - 2.25px) 65.63%, calc(100% - 2.11px) 68.75%, calc(100% - 2.01px) 71.88%, calc(100% - 1.93px) 75.00%, calc(100% - 1.89px) 78.13%, calc(100% - 1.88px) 81.25%, calc(100% - 1.90px) 84.38%, calc(100% - 1.95px) 87.50%, calc(100% - 2.02px) 90.63%, calc(100% - 2.10px) 93.75%, calc(100% - 2.20px) 96.88%, calc(100% - 2.30px) 100.00%, 0 100%);
-  }
-
-  25.00% {
-    clip-path: polygon(0 0, calc(100% - 3.96px) 0.00%, calc(100% - 3.84px) 3.13%, calc(100% - 3.73px) 6.25%, calc(100% - 3.64px) 9.38%, calc(100% - 3.56px) 12.50%, calc(100% - 3.48px) 15.63%, calc(100% - 3.40px) 18.75%, calc(100% - 3.31px) 21.88%, calc(100% - 3.21px) 25.00%, calc(100% - 3.10px) 28.13%, calc(100% - 2.97px) 31.25%, calc(100% - 2.83px) 34.38%, calc(100% - 2.69px) 37.50%, calc(100% - 2.53px) 40.63%, calc(100% - 2.38px) 43.75%, calc(100% - 2.23px) 46.88%, calc(100% - 2.10px) 50.00%, calc(100% - 1.98px) 53.13%, calc(100% - 1.89px) 56.25%, calc(100% - 1.83px) 59.38%, calc(100% - 1.80px) 62.50%, calc(100% - 1.81px) 65.63%, calc(100% - 1.85px) 68.75%, calc(100% - 1.92px) 71.88%, calc(100% - 2.01px) 75.00%, calc(100% - 2.13px) 78.13%, calc(100% - 2.26px) 81.25%, calc(100% - 2.40px) 84.38%, calc(100% - 2.54px) 87.50%, calc(100% - 2.66px) 90.63%, calc(100% - 2.77px) 93.75%, calc(100% - 2.86px) 96.88%, calc(100% - 2.92px) 100.00%, 0 100%);
-  }
-
-  27.08% {
-    clip-path: polygon(0 0, calc(100% - 4.66px) 0.00%, calc(100% - 4.52px) 3.13%, calc(100% - 4.37px) 6.25%, calc(100% - 4.19px) 9.38%, calc(100% - 3.99px) 12.50%, calc(100% - 3.77px) 15.63%, calc(100% - 3.54px) 18.75%, calc(100% - 3.28px) 21.88%, calc(100% - 3.02px) 25.00%, calc(100% - 2.74px) 28.13%, calc(100% - 2.47px) 31.25%, calc(100% - 2.21px) 34.38%, calc(100% - 1.96px) 37.50%, calc(100% - 1.74px) 40.63%, calc(100% - 1.56px) 43.75%, calc(100% - 1.41px) 46.88%, calc(100% - 1.31px) 50.00%, calc(100% - 1.27px) 53.13%, calc(100% - 1.27px) 56.25%, calc(100% - 1.33px) 59.38%, calc(100% - 1.43px) 62.50%, calc(100% - 1.57px) 65.63%, calc(100% - 1.75px) 68.75%, calc(100% - 1.95px) 71.88%, calc(100% - 2.17px) 75.00%, calc(100% - 2.39px) 78.13%, calc(100% - 2.60px) 81.25%, calc(100% - 2.80px) 84.38%, calc(100% - 2.96px) 87.50%, calc(100% - 3.10px) 90.63%, calc(100% - 3.19px) 93.75%, calc(100% - 3.24px) 96.88%, calc(100% - 3.26px) 100.00%, 0 100%);
-  }
-
-  29.17% {
-    clip-path: polygon(0 0, calc(100% - 5.23px) 0.00%, calc(100% - 5.05px) 3.13%, calc(100% - 4.82px) 6.25%, calc(100% - 4.55px) 9.38%, calc(100% - 4.24px) 12.50%, calc(100% - 3.90px) 15.63%, calc(100% - 3.53px) 18.75%, calc(100% - 3.15px) 21.88%, calc(100% - 2.76px) 25.00%, calc(100% - 2.38px) 28.13%, calc(100% - 2.03px) 31.25%, calc(100% - 1.70px) 34.38%, calc(100% - 1.41px) 37.50%, calc(100% - 1.18px) 40.63%, calc(100% - 1.01px) 43.75%, calc(100% - 0.90px) 46.88%, calc(100% - 0.85px) 50.00%, calc(100% - 0.87px) 53.13%, calc(100% - 0.95px) 56.25%, calc(100% - 1.09px) 59.38%, calc(100% - 1.27px) 62.50%, calc(100% - 1.49px) 65.63%, calc(100% - 1.74px) 68.75%, calc(100% - 2.00px) 71.88%, calc(100% - 2.26px) 75.00%, calc(100% - 2.51px) 78.13%, calc(100% - 2.74px) 81.25%, calc(100% - 2.94px) 84.38%, calc(100% - 3.10px) 87.50%, calc(100% - 3.22px) 90.63%, calc(100% - 3.30px) 93.75%, calc(100% - 3.34px) 96.88%, calc(100% - 3.34px) 100.00%, 0 100%);
-  }
-
-  31.25% {
-    clip-path: polygon(0 0, calc(100% - 5.51px) 0.00%, calc(100% - 5.28px) 3.13%, calc(100% - 4.99px) 6.25%, calc(100% - 4.65px) 9.38%, calc(100% - 4.27px) 12.50%, calc(100% - 3.86px) 15.63%, calc(100% - 3.43px) 18.75%, calc(100% - 2.99px) 21.88%, calc(100% - 2.56px) 25.00%, calc(100% - 2.15px) 28.13%, calc(100% - 1.78px) 31.25%, calc(100% - 1.45px) 34.38%, calc(100% - 1.18px) 37.50%, calc(100% - 0.97px) 40.63%, calc(100% - 0.82px) 43.75%, calc(100% - 0.75px) 46.88%, calc(100% - 0.74px) 50.00%, calc(100% - 0.79px) 53.13%, calc(100% - 0.90px) 56.25%, calc(100% - 1.06px) 59.38%, calc(100% - 1.25px) 62.50%, calc(100% - 1.47px) 65.63%, calc(100% - 1.71px) 68.75%, calc(100% - 1.96px) 71.88%, calc(100% - 2.20px) 75.00%, calc(100% - 2.42px) 78.13%, calc(100% - 2.63px) 81.25%, calc(100% - 2.80px) 84.38%, calc(100% - 2.95px) 87.50%, calc(100% - 3.07px) 90.63%, calc(100% - 3.16px) 93.75%, calc(100% - 3.22px) 96.88%, calc(100% - 3.26px) 100.00%, 0 100%);
-  }
-
-  33.33% {
-    clip-path: polygon(0 0, calc(100% - 5.44px) 0.00%, calc(100% - 5.19px) 3.13%, calc(100% - 4.89px) 6.25%, calc(100% - 4.53px) 9.38%, calc(100% - 4.15px) 12.50%, calc(100% - 3.74px) 15.63%, calc(100% - 3.32px) 18.75%, calc(100% - 2.91px) 21.88%, calc(100% - 2.51px) 25.00%, calc(100% - 2.13px) 28.13%, calc(100% - 1.80px) 31.25%, calc(100% - 1.51px) 34.38%, calc(100% - 1.27px) 37.50%, calc(100% - 1.09px) 40.63%, calc(100% - 0.97px) 43.75%, calc(100% - 0.90px) 46.88%, calc(100% - 0.89px) 50.00%, calc(100% - 0.93px) 53.13%, calc(100% - 1.01px) 56.25%, calc(100% - 1.13px) 59.38%, calc(100% - 1.27px) 62.50%, calc(100% - 1.44px) 65.63%, calc(100% - 1.61px) 68.75%, calc(100% - 1.80px) 71.88%, calc(100% - 1.98px) 75.00%, calc(100% - 2.16px) 78.13%, calc(100% - 2.33px) 81.25%, calc(100% - 2.48px) 84.38%, calc(100% - 2.63px) 87.50%, calc(100% - 2.77px) 90.63%, calc(100% - 2.90px) 93.75%, calc(100% - 3.03px) 96.88%, calc(100% - 3.15px) 100.00%, 0 100%);
-  }
-
-  35.42% {
-    clip-path: polygon(0 0, calc(100% - 5.10px) 0.00%, calc(100% - 4.87px) 3.13%, calc(100% - 4.60px) 6.25%, calc(100% - 4.29px) 9.38%, calc(100% - 3.96px) 12.50%, calc(100% - 3.62px) 15.63%, calc(100% - 3.28px) 18.75%, calc(100% - 2.94px) 21.88%, calc(100% - 2.62px) 25.00%, calc(100% - 2.32px) 28.13%, calc(100% - 2.05px) 31.25%, calc(100% - 1.81px) 34.38%, calc(100% - 1.61px) 37.50%, calc(100% - 1.45px) 40.63%, calc(100% - 1.33px) 43.75%, calc(100% - 1.25px) 46.88%, calc(100% - 1.20px) 50.00%, calc(100% - 1.18px) 53.13%, calc(100% - 1.19px) 56.25%, calc(100% - 1.23px) 59.38%, calc(100% - 1.29px) 62.50%, calc(100% - 1.36px) 65.63%, calc(100% - 1.46px) 68.75%, calc(100% - 1.56px) 71.88%, calc(100% - 1.69px) 75.00%, calc(100% - 1.82px) 78.13%, calc(100% - 1.96px) 81.25%, calc(100% - 2.12px) 84.38%, calc(100% - 2.29px) 87.50%, calc(100% - 2.47px) 90.63%, calc(100% - 2.66px) 93.75%, calc(100% - 2.87px) 96.88%, calc(100% - 3.08px) 100.00%, 0 100%);
-  }
-
-  37.50% {
-    clip-path: polygon(0 0, calc(100% - 4.59px) 0.00%, calc(100% - 4.42px) 3.13%, calc(100% - 4.22px) 6.25%, calc(100% - 4.01px) 9.38%, calc(100% - 3.78px) 12.50%, calc(100% - 3.54px) 15.63%, calc(100% - 3.31px) 18.75%, calc(100% - 3.07px) 21.88%, calc(100% - 2.85px) 25.00%, calc(100% - 2.63px) 28.13%, calc(100% - 2.43px) 31.25%, calc(100% - 2.24px) 34.38%, calc(100% - 2.07px) 37.50%, calc(100% - 1.92px) 40.63%, calc(100% - 1.78px) 43.75%, calc(100% - 1.65px) 46.88%, calc(100% - 1.55px) 50.00%, calc(100% - 1.46px) 53.13%, calc(100% - 1.39px) 56.25%, calc(100% - 1.34px) 59.38%, calc(100% - 1.31px) 62.50%, calc(100% - 1.30px) 65.63%, calc(100% - 1.32px) 68.75%, calc(100% - 1.36px) 71.88%, calc(100% - 1.43px) 75.00%, calc(100% - 1.54px) 78.13%, calc(100% - 1.67px) 81.25%, calc(100% - 1.84px) 84.38%, calc(100% - 2.03px) 87.50%, calc(100% - 2.26px) 90.63%, calc(100% - 2.51px) 93.75%, calc(100% - 2.78px) 96.88%, calc(100% - 3.07px) 100.00%, 0 100%);
-  }
-
-  39.58% {
-    clip-path: polygon(0 0, calc(100% - 4.03px) 0.00%, calc(100% - 3.94px) 3.13%, calc(100% - 3.84px) 6.25%, calc(100% - 3.73px) 9.38%, calc(100% - 3.62px) 12.50%, calc(100% - 3.50px) 15.63%, calc(100% - 3.37px) 18.75%, calc(100% - 3.25px) 21.88%, calc(100% - 3.11px) 25.00%, calc(100% - 2.97px) 28.13%, calc(100% - 2.83px) 31.25%, calc(100% - 2.68px) 34.38%, calc(100% - 2.53px) 37.50%, calc(100% - 2.37px) 40.63%, calc(100% - 2.21px) 43.75%, calc(100% - 2.05px) 46.88%, calc(100% - 1.89px) 50.00%, calc(100% - 1.74px) 53.13%, calc(100% - 1.60px) 56.25%, calc(100% - 1.48px) 59.38%, calc(100% - 1.38px) 62.50%, calc(100% - 1.31px) 65.63%, calc(100% - 1.27px) 68.75%, calc(100% - 1.27px) 71.88%, calc(100% - 1.32px) 75.00%, calc(100% - 1.40px) 78.13%, calc(100% - 1.53px) 81.25%, calc(100% - 1.71px) 84.38%, calc(100% - 1.93px) 87.50%, calc(100% - 2.18px) 90.63%, calc(100% - 2.47px) 93.75%, calc(100% - 2.78px) 96.88%, calc(100% - 3.10px) 100.00%, 0 100%);
-  }
-
-  41.67% {
-    clip-path: polygon(0 0, calc(100% - 3.49px) 0.00%, calc(100% - 3.48px) 3.13%, calc(100% - 3.48px) 6.25%, calc(100% - 3.47px) 9.38%, calc(100% - 3.46px) 12.50%, calc(100% - 3.45px) 15.63%, calc(100% - 3.42px) 18.75%, calc(100% - 3.39px) 21.88%, calc(100% - 3.33px) 25.00%, calc(100% - 3.25px) 28.13%, calc(100% - 3.16px) 31.25%, calc(100% - 3.04px) 34.38%, calc(100% - 2.90px) 37.50%, calc(100% - 2.74px) 40.63%, calc(100% - 2.56px) 43.75%, calc(100% - 2.38px) 46.88%, calc(100% - 2.19px) 50.00%, calc(100% - 2.00px) 53.13%, calc(100% - 1.83px) 56.25%, calc(100% - 1.67px) 59.38%, calc(100% - 1.54px) 62.50%, calc(100% - 1.44px) 65.63%, calc(100% - 1.38px) 68.75%, calc(100% - 1.36px) 71.88%, calc(100% - 1.39px) 75.00%, calc(100% - 1.47px) 78.13%, calc(100% - 1.60px) 81.25%, calc(100% - 1.78px) 84.38%, calc(100% - 1.99px) 87.50%, calc(100% - 2.25px) 90.63%, calc(100% - 2.53px) 93.75%, calc(100% - 2.84px) 96.88%, calc(100% - 3.16px) 100.00%, 0 100%);
-  }
-
-  43.75% {
-    clip-path: polygon(0 0, calc(100% - 3.03px) 0.00%, calc(100% - 3.09px) 3.13%, calc(100% - 3.16px) 6.25%, calc(100% - 3.24px) 9.38%, calc(100% - 3.31px) 12.50%, calc(100% - 3.37px) 15.63%, calc(100% - 3.41px) 18.75%, calc(100% - 3.44px) 21.88%, calc(100% - 3.43px) 25.00%, calc(100% - 3.40px) 28.13%, calc(100% - 3.33px) 31.25%, calc(100% - 3.24px) 34.38%, calc(100% - 3.11px) 37.50%, calc(100% - 2.97px) 40.63%, calc(100% - 2.80px) 43.75%, calc(100% - 2.62px) 46.88%, calc(100% - 2.43px) 50.00%, calc(100% - 2.25px) 53.13%, calc(100% - 2.07px) 56.25%, calc(100% - 1.92px) 59.38%, calc(100% - 1.79px) 62.50%, calc(100% - 1.70px) 65.63%, calc(100% - 1.65px) 68.75%, calc(100% - 1.64px) 71.88%, calc(100% - 1.67px) 75.00%, calc(100% - 1.75px) 78.13%, calc(100% - 1.87px) 81.25%, calc(100% - 2.03px) 84.38%, calc(100% - 2.23px) 87.50%, calc(100% - 2.45px) 90.63%, calc(100% - 2.69px) 93.75%, calc(100% - 2.95px) 96.88%, calc(100% - 3.21px) 100.00%, 0 100%);
-  }
-
-  45.83% {
-    clip-path: polygon(0 0, calc(100% - 2.68px) 0.00%, calc(100% - 2.79px) 3.13%, calc(100% - 2.90px) 6.25%, calc(100% - 3.02px) 9.38%, calc(100% - 3.13px) 12.50%, calc(100% - 3.22px) 15.63%, calc(100% - 3.30px) 18.75%, calc(100% - 3.35px) 21.88%, calc(100% - 3.37px) 25.00%, calc(100% - 3.36px) 28.13%, calc(100% - 3.32px) 31.25%, calc(100% - 3.25px) 34.38%, calc(100% - 3.15px) 37.50%, calc(100% - 3.03px) 40.63%, calc(100% - 2.90px) 43.75%, calc(100% - 2.76px) 46.88%, calc(100% - 2.61px) 50.00%, calc(100% - 2.47px) 53.13%, calc(100% - 2.35px) 56.25%, calc(100% - 2.24px) 59.38%, calc(100% - 2.16px) 62.50%, calc(100% - 2.11px) 65.63%, calc(100% - 2.09px) 68.75%, calc(100% - 2.10px) 71.88%, calc(100% - 2.15px) 75.00%, calc(100% - 2.22px) 78.13%, calc(100% - 2.32px) 81.25%, calc(100% - 2.45px) 84.38%, calc(100% - 2.59px) 87.50%, calc(100% - 2.75px) 90.63%, calc(100% - 2.92px) 93.75%, calc(100% - 3.09px) 96.88%, calc(100% - 3.26px) 100.00%, 0 100%);
-  }
-
-  47.92% {
-    clip-path: polygon(0 0, calc(100% - 2.47px) 0.00%, calc(100% - 2.57px) 3.13%, calc(100% - 2.68px) 6.25%, calc(100% - 2.79px) 9.38%, calc(100% - 2.89px) 12.50%, calc(100% - 2.98px) 15.63%, calc(100% - 3.04px) 18.75%, calc(100% - 3.09px) 21.88%, calc(100% - 3.11px) 25.00%, calc(100% - 3.11px) 28.13%, calc(100% - 3.09px) 31.25%, calc(100% - 3.05px) 34.38%, calc(100% - 3.00px) 37.50%, calc(100% - 2.94px) 40.63%, calc(100% - 2.87px) 43.75%, calc(100% - 2.81px) 46.88%, calc(100% - 2.75px) 50.00%, calc(100% - 2.70px) 53.13%, calc(100% - 2.66px) 56.25%, calc(100% - 2.64px) 59.38%, calc(100% - 2.64px) 62.50%, calc(100% - 2.65px) 65.63%, calc(100% - 2.68px) 68.75%, calc(100% - 2.72px) 71.88%, calc(100% - 2.78px) 75.00%, calc(100% - 2.84px) 78.13%, calc(100% - 2.90px) 81.25%, calc(100% - 2.97px) 84.38%, calc(100% - 3.04px) 87.50%, calc(100% - 3.11px) 90.63%, calc(100% - 3.17px) 93.75%, calc(100% - 3.23px) 96.88%, calc(100% - 3.28px) 100.00%, 0 100%);
-  }
-
-  50.00% {
-    clip-path: polygon(0 0, calc(100% - 2.35px) 0.00%, calc(100% - 2.40px) 3.13%, calc(100% - 2.46px) 6.25%, calc(100% - 2.51px) 9.38%, calc(100% - 2.55px) 12.50%, calc(100% - 2.59px) 15.63%, calc(100% - 2.62px) 18.75%, calc(100% - 2.64px) 21.88%, calc(100% - 2.65px) 25.00%, calc(100% - 2.67px) 28.13%, calc(100% - 2.68px) 31.25%, calc(100% - 2.69px) 34.38%, calc(100% - 2.71px) 37.50%, calc(100% - 2.74px) 40.63%, calc(100% - 2.78px) 43.75%, calc(100% - 2.83px) 46.88%, calc(100% - 2.89px) 50.00%, calc(100% - 2.96px) 53.13%, calc(100% - 3.03px) 56.25%, calc(100% - 3.12px) 59.38%, calc(100% - 3.20px) 62.50%, calc(100% - 3.28px) 65.63%, calc(100% - 3.35px) 68.75%, calc(100% - 3.42px) 71.88%, calc(100% - 3.46px) 75.00%, calc(100% - 3.50px) 78.13%, calc(100% - 3.51px) 81.25%, calc(100% - 3.50px) 84.38%, calc(100% - 3.48px) 87.50%, calc(100% - 3.44px) 90.63%, calc(100% - 3.39px) 93.75%, calc(100% - 3.33px) 96.88%, calc(100% - 3.27px) 100.00%, 0 100%);
-  }
-
-  52.08% {
-    clip-path: polygon(0 0, calc(100% - 2.25px) 0.00%, calc(100% - 2.20px) 3.13%, calc(100% - 2.16px) 6.25%, calc(100% - 2.12px) 9.38%, calc(100% - 2.09px) 12.50%, calc(100% - 2.06px) 15.63%, calc(100% - 2.05px) 18.75%, calc(100% - 2.05px) 21.88%, calc(100% - 2.07px) 25.00%, calc(100% - 2.11px) 28.13%, calc(100% - 2.18px) 31.25%, calc(100% - 2.28px) 34.38%, calc(100% - 2.40px) 37.50%, calc(100% - 2.54px) 40.63%, calc(100% - 2.70px) 43.75%, calc(100% - 2.88px) 46.88%, calc(100% - 3.07px) 50.00%, calc(100% - 3.26px) 53.13%, calc(100% - 3.45px) 56.25%, calc(100% - 3.62px) 59.38%, calc(100% - 3.77px) 62.50%, calc(100% - 3.90px) 65.63%, calc(100% - 4.00px) 68.75%, calc(100% - 4.06px) 71.88%, calc(100% - 4.08px) 75.00%, calc(100% - 4.06px) 78.13%, calc(100% - 4.01px) 81.25%, calc(100% - 3.92px) 84.38%, calc(100% - 3.81px) 87.50%, calc(100% - 3.68px) 90.63%, calc(100% - 3.53px) 93.75%, calc(100% - 3.38px) 96.88%, calc(100% - 3.24px) 100.00%, 0 100%);
-  }
-
-  54.17% {
-    clip-path: polygon(0 0, calc(100% - 2.09px) 0.00%, calc(100% - 1.92px) 3.13%, calc(100% - 1.78px) 6.25%, calc(100% - 1.64px) 9.38%, calc(100% - 1.54px) 12.50%, calc(100% - 1.47px) 15.63%, calc(100% - 1.43px) 18.75%, calc(100% - 1.44px) 21.88%, calc(100% - 1.49px) 25.00%, calc(100% - 1.60px) 28.13%, calc(100% - 1.75px) 31.25%, calc(100% - 1.94px) 34.38%, calc(100% - 2.17px) 37.50%, calc(100% - 2.43px) 40.63%, calc(100% - 2.71px) 43.75%, calc(100% - 3.00px) 46.88%, calc(100% - 3.29px) 50.00%, calc(100% - 3.57px) 53.13%, calc(100% - 3.83px) 56.25%, calc(100% - 4.06px) 59.38%, calc(100% - 4.24px) 62.50%, calc(100% - 4.38px) 65.63%, calc(100% - 4.46px) 68.75%, calc(100% - 4.50px) 71.88%, calc(100% - 4.48px) 75.00%, calc(100% - 4.41px) 78.13%, calc(100% - 4.30px) 81.25%, calc(100% - 4.16px) 84.38%, calc(100% - 3.99px) 87.50%, calc(100% - 3.81px) 90.63%, calc(100% - 3.62px) 93.75%, calc(100% - 3.45px) 96.88%, calc(100% - 3.29px) 100.00%, 0 100%);
-  }
-
-  56.25% {
-    clip-path: polygon(0 0, calc(100% - 1.83px) 0.00%, calc(100% - 1.57px) 3.13%, calc(100% - 1.35px) 6.25%, calc(100% - 1.17px) 9.38%, calc(100% - 1.03px) 12.50%, calc(100% - 0.95px) 15.63%, calc(100% - 0.94px) 18.75%, calc(100% - 0.99px) 21.88%, calc(100% - 1.10px) 25.00%, calc(100% - 1.28px) 28.13%, calc(100% - 1.51px) 31.25%, calc(100% - 1.79px) 34.38%, calc(100% - 2.11px) 37.50%, calc(100% - 2.45px) 40.63%, calc(100% - 2.80px) 43.75%, calc(100% - 3.16px) 46.88%, calc(100% - 3.49px) 50.00%, calc(100% - 3.80px) 53.13%, calc(100% - 4.07px) 56.25%, calc(100% - 4.29px) 59.38%, calc(100% - 4.46px) 62.50%, calc(100% - 4.57px) 65.63%, calc(100% - 4.62px) 68.75%, calc(100% - 4.63px) 71.88%, calc(100% - 4.58px) 75.00%, calc(100% - 4.49px) 78.13%, calc(100% - 4.36px) 81.25%, calc(100% - 4.22px) 84.38%, calc(100% - 4.06px) 87.50%, calc(100% - 3.90px) 90.63%, calc(100% - 3.75px) 93.75%, calc(100% - 3.62px) 96.88%, calc(100% - 3.51px) 100.00%, 0 100%);
-  }
-
-  58.33% {
-    clip-path: polygon(0 0, calc(100% - 1.53px) 0.00%, calc(100% - 1.25px) 3.13%, calc(100% - 1.01px) 6.25%, calc(100% - 0.84px) 9.38%, calc(100% - 0.73px) 12.50%, calc(100% - 0.69px) 15.63%, calc(100% - 0.73px) 18.75%, calc(100% - 0.84px) 21.88%, calc(100% - 1.02px) 25.00%, calc(100% - 1.26px) 28.13%, calc(100% - 1.54px) 31.25%, calc(100% - 1.86px) 34.38%, calc(100% - 2.21px) 37.50%, calc(100% - 2.56px) 40.63%, calc(100% - 2.91px) 43.75%, calc(100% - 3.24px) 46.88%, calc(100% - 3.55px) 50.00%, calc(100% - 3.81px) 53.13%, calc(100% - 4.04px) 56.25%, calc(100% - 4.21px) 59.38%, calc(100% - 4.34px) 62.50%, calc(100% - 4.41px) 65.63%, calc(100% - 4.45px) 68.75%, calc(100% - 4.44px) 71.88%, calc(100% - 4.41px) 75.00%, calc(100% - 4.35px) 78.13%, calc(100% - 4.28px) 81.25%, calc(100% - 4.21px) 84.38%, calc(100% - 4.14px) 87.50%, calc(100% - 4.07px) 90.63%, calc(100% - 4.02px) 93.75%, calc(100% - 3.98px) 96.88%, calc(100% - 3.96px) 100.00%, 0 100%);
-  }
-
-  60.42% {
-    clip-path: polygon(0 0, calc(100% - 1.34px) 0.00%, calc(100% - 1.10px) 3.13%, calc(100% - 0.92px) 6.25%, calc(100% - 0.81px) 9.38%, calc(100% - 0.77px) 12.50%, calc(100% - 0.80px) 15.63%, calc(100% - 0.90px) 18.75%, calc(100% - 1.05px) 21.88%, calc(100% - 1.26px) 25.00%, calc(100% - 1.50px) 28.13%, calc(100% - 1.78px) 31.25%, calc(100% - 2.06px) 34.38%, calc(100% - 2.36px) 37.50%, calc(100% - 2.64px) 40.63%, calc(100% - 2.91px) 43.75%, calc(100% - 3.15px) 46.88%, calc(100% - 3.36px) 50.00%, calc(100% - 3.55px) 53.13%, calc(100% - 3.70px) 56.25%, calc(100% - 3.82px) 59.38%, calc(100% - 3.91px) 62.50%, calc(100% - 3.98px) 65.63%, calc(100% - 4.03px) 68.75%, calc(100% - 4.08px) 71.88%, calc(100% - 4.12px) 75.00%, calc(100% - 4.17px) 78.13%, calc(100% - 4.21px) 81.25%, calc(100% - 4.27px) 84.38%, calc(100% - 4.33px) 87.50%, calc(100% - 4.41px) 90.63%, calc(100% - 4.48px) 93.75%, calc(100% - 4.55px) 96.88%, calc(100% - 4.62px) 100.00%, 0 100%);
-  }
-
-  62.50% {
-    clip-path: polygon(0 0, calc(100% - 1.38px) 0.00%, calc(100% - 1.25px) 3.13%, calc(100% - 1.17px) 6.25%, calc(100% - 1.15px) 9.38%, calc(100% - 1.18px) 12.50%, calc(100% - 1.26px) 15.63%, calc(100% - 1.38px) 18.75%, calc(100% - 1.53px) 21.88%, calc(100% - 1.70px) 25.00%, calc(100% - 1.88px) 28.13%, calc(100% - 2.07px) 31.25%, calc(100% - 2.25px) 34.38%, calc(100% - 2.42px) 37.50%, calc(100% - 2.57px) 40.63%, calc(100% - 2.71px) 43.75%, calc(100% - 2.83px) 46.88%, calc(100% - 2.94px) 50.00%, calc(100% - 3.04px) 53.13%, calc(100% - 3.14px) 56.25%, calc(100% - 3.24px) 59.38%, calc(100% - 3.34px) 62.50%, calc(100% - 3.45px) 65.63%, calc(100% - 3.59px) 68.75%, calc(100% - 3.74px) 71.88%, calc(100% - 3.90px) 75.00%, calc(100% - 4.09px) 78.13%, calc(100% - 4.29px) 81.25%, calc(100% - 4.49px) 84.38%, calc(100% - 4.70px) 87.50%, calc(100% - 4.89px) 90.63%, calc(100% - 5.07px) 93.75%, calc(100% - 5.21px) 96.88%, calc(100% - 5.32px) 100.00%, 0 100%);
-  }
-
-  64.58% {
-    clip-path: polygon(0 0, calc(100% - 1.72px) 0.00%, calc(100% - 1.70px) 3.13%, calc(100% - 1.72px) 6.25%, calc(100% - 1.77px) 9.38%, calc(100% - 1.84px) 12.50%, calc(100% - 1.92px) 15.63%, calc(100% - 2.00px) 18.75%, calc(100% - 2.08px) 21.88%, calc(100% - 2.15px) 25.00%, calc(100% - 2.21px) 28.13%, calc(100% - 2.26px) 31.25%, calc(100% - 2.29px) 34.38%, calc(100% - 2.32px) 37.50%, calc(100% - 2.33px) 40.63%, calc(100% - 2.35px) 43.75%, calc(100% - 2.37px) 46.88%, calc(100% - 2.41px) 50.00%, calc(100% - 2.48px) 53.13%, calc(100% - 2.57px) 56.25%, calc(100% - 2.70px) 59.38%, calc(100% - 2.86px) 62.50%, calc(100% - 3.07px) 65.63%, calc(100% - 3.31px) 68.75%, calc(100% - 3.59px) 71.88%, calc(100% - 3.89px) 75.00%, calc(100% - 4.21px) 78.13%, calc(100% - 4.54px) 81.25%, calc(100% - 4.85px) 84.38%, calc(100% - 5.15px) 87.50%, calc(100% - 5.41px) 90.63%, calc(100% - 5.62px) 93.75%, calc(100% - 5.77px) 96.88%, calc(100% - 5.85px) 100.00%, 0 100%);
-  }
-
-  66.67% {
-    clip-path: polygon(0 0, calc(100% - 2.26px) 0.00%, calc(100% - 2.33px) 3.13%, calc(100% - 2.40px) 6.25%, calc(100% - 2.46px) 9.38%, calc(100% - 2.50px) 12.50%, calc(100% - 2.53px) 15.63%, calc(100% - 2.53px) 18.75%, calc(100% - 2.50px) 21.88%, calc(100% - 2.44px) 25.00%, calc(100% - 2.37px) 28.13%, calc(100% - 2.28px) 31.25%, calc(100% - 2.19px) 34.38%, calc(100% - 2.10px) 37.50%, calc(100% - 2.03px) 40.63%, calc(100% - 1.98px) 43.75%, calc(100% - 1.97px) 46.88%, calc(100% - 2.00px) 50.00%, calc(100% - 2.09px) 53.13%, calc(100% - 2.23px) 56.25%, calc(100% - 2.43px) 59.38%, calc(100% - 2.68px) 62.50%, calc(100% - 2.99px) 65.63%, calc(100% - 3.33px) 68.75%, calc(100% - 3.71px) 71.88%, calc(100% - 4.10px) 75.00%, calc(100% - 4.49px) 78.13%, calc(100% - 4.86px) 81.25%, calc(100% - 5.21px) 84.38%, calc(100% - 5.50px) 87.50%, calc(100% - 5.74px) 90.63%, calc(100% - 5.91px) 93.75%, calc(100% - 6.00px) 96.88%, calc(100% - 6.00px) 100.00%, 0 100%);
-  }
-
-  68.75% {
-    clip-path: polygon(0 0, calc(100% - 2.80px) 0.00%, calc(100% - 2.89px) 3.13%, calc(100% - 2.95px) 6.25%, calc(100% - 2.98px) 9.38%, calc(100% - 2.96px) 12.50%, calc(100% - 2.91px) 15.63%, calc(100% - 2.81px) 18.75%, calc(100% - 2.68px) 21.88%, calc(100% - 2.53px) 25.00%, calc(100% - 2.37px) 28.13%, calc(100% - 2.21px) 31.25%, calc(100% - 2.06px) 34.38%, calc(100% - 1.94px) 37.50%, calc(100% - 1.85px) 40.63%, calc(100% - 1.81px) 43.75%, calc(100% - 1.83px) 46.88%, calc(100% - 1.91px) 50.00%, calc(100% - 2.06px) 53.13%, calc(100% - 2.27px) 56.25%, calc(100% - 2.54px) 59.38%, calc(100% - 2.86px) 62.50%, calc(100% - 3.22px) 65.63%, calc(100% - 3.60px) 68.75%, calc(100% - 3.99px) 71.88%, calc(100% - 4.38px) 75.00%, calc(100% - 4.75px) 78.13%, calc(100% - 5.08px) 81.25%, calc(100% - 5.36px) 84.38%, calc(100% - 5.58px) 87.50%, calc(100% - 5.73px) 90.63%, calc(100% - 5.81px) 93.75%, calc(100% - 5.81px) 96.88%, calc(100% - 5.74px) 100.00%, 0 100%);
-  }
-
-  70.83% {
-    clip-path: polygon(0 0, calc(100% - 3.12px) 0.00%, calc(100% - 3.18px) 3.13%, calc(100% - 3.20px) 6.25%, calc(100% - 3.18px) 9.38%, calc(100% - 3.10px) 12.50%, calc(100% - 2.99px) 15.63%, calc(100% - 2.85px) 18.75%, calc(100% - 2.68px) 21.88%, calc(100% - 2.51px) 25.00%, calc(100% - 2.34px) 28.13%, calc(100% - 2.20px) 31.25%, calc(100% - 2.08px) 34.38%, calc(100% - 2.00px) 37.50%, calc(100% - 1.98px) 40.63%, calc(100% - 2.01px) 43.75%, calc(100% - 2.10px) 46.88%, calc(100% - 2.24px) 50.00%, calc(100% - 2.45px) 53.13%, calc(100% - 2.70px) 56.25%, calc(100% - 2.98px) 59.38%, calc(100% - 3.30px) 62.50%, calc(100% - 3.63px) 65.63%, calc(100% - 3.96px) 68.75%, calc(100% - 4.28px) 71.88%, calc(100% - 4.57px) 75.00%, calc(100% - 4.83px) 78.13%, calc(100% - 5.04px) 81.25%, calc(100% - 5.19px) 84.38%, calc(100% - 5.29px) 87.50%, calc(100% - 5.33px) 90.63%, calc(100% - 5.32px) 93.75%, calc(100% - 5.25px) 96.88%, calc(100% - 5.14px) 100.00%, 0 100%);
-  }
-
-  72.92% {
-    clip-path: polygon(0 0, calc(100% - 3.09px) 0.00%, calc(100% - 3.12px) 3.13%, calc(100% - 3.11px) 6.25%, calc(100% - 3.06px) 9.38%, calc(100% - 2.97px) 12.50%, calc(100% - 2.87px) 15.63%, calc(100% - 2.76px) 18.75%, calc(100% - 2.64px) 21.88%, calc(100% - 2.54px) 25.00%, calc(100% - 2.45px) 28.13%, calc(100% - 2.40px) 31.25%, calc(100% - 2.38px) 34.38%, calc(100% - 2.40px) 37.50%, calc(100% - 2.47px) 40.63%, calc(100% - 2.58px) 43.75%, calc(100% - 2.73px) 46.88%, calc(100% - 2.91px) 50.00%, calc(100% - 3.12px) 53.13%, calc(100% - 3.35px) 56.25%, calc(100% - 3.58px) 59.38%, calc(100% - 3.82px) 62.50%, calc(100% - 4.03px) 65.63%, calc(100% - 4.23px) 68.75%, calc(100% - 4.40px) 71.88%, calc(100% - 4.54px) 75.00%, calc(100% - 4.64px) 78.13%, calc(100% - 4.69px) 81.25%, calc(100% - 4.72px) 84.38%, calc(100% - 4.70px) 87.50%, calc(100% - 4.66px) 90.63%, calc(100% - 4.60px) 93.75%, calc(100% - 4.52px) 96.88%, calc(100% - 4.43px) 100.00%, 0 100%);
-  }
-
-  75.00% {
-    clip-path: polygon(0 0, calc(100% - 2.76px) 0.00%, calc(100% - 2.77px) 3.13%, calc(100% - 2.77px) 6.25%, calc(100% - 2.76px) 9.38%, calc(100% - 2.74px) 12.50%, calc(100% - 2.72px) 15.63%, calc(100% - 2.71px) 18.75%, calc(100% - 2.71px) 21.88%, calc(100% - 2.74px) 25.00%, calc(100% - 2.79px) 28.13%, calc(100% - 2.87px) 31.25%, calc(100% - 2.97px) 34.38%, calc(100% - 3.10px) 37.50%, calc(100% - 3.24px) 40.63%, calc(100% - 3.40px) 43.75%, calc(100% - 3.56px) 46.88%, calc(100% - 3.73px) 50.00%, calc(100% - 3.88px) 53.13%, calc(100% - 4.02px) 56.25%, calc(100% - 4.13px) 59.38%, calc(100% - 4.22px) 62.50%, calc(100% - 4.28px) 65.63%, calc(100% - 4.31px) 68.75%, calc(100% - 4.31px) 71.88%, calc(100% - 4.28px) 75.00%, calc(100% - 4.23px) 78.13%, calc(100% - 4.16px) 81.25%, calc(100% - 4.09px) 84.38%, calc(100% - 4.01px) 87.50%, calc(100% - 3.93px) 90.63%, calc(100% - 3.87px) 93.75%, calc(100% - 3.83px) 96.88%, calc(100% - 3.80px) 100.00%, 0 100%);
-  }
-
-  77.08% {
-    clip-path: polygon(0 0, calc(100% - 2.26px) 0.00%, calc(100% - 2.32px) 3.13%, calc(100% - 2.38px) 6.25%, calc(100% - 2.46px) 9.38%, calc(100% - 2.56px) 12.50%, calc(100% - 2.68px) 15.63%, calc(100% - 2.81px) 18.75%, calc(100% - 2.97px) 21.88%, calc(100% - 3.14px) 25.00%, calc(100% - 3.33px) 28.13%, calc(100% - 3.53px) 31.25%, calc(100% - 3.73px) 34.38%, calc(100% - 3.92px) 37.50%, calc(100% - 4.09px) 40.63%, calc(100% - 4.25px) 43.75%, calc(100% - 4.37px) 46.88%, calc(100% - 4.46px) 50.00%, calc(100% - 4.52px) 53.13%, calc(100% - 4.53px) 56.25%, calc(100% - 4.51px) 59.38%, calc(100% - 4.44px) 62.50%, calc(100% - 4.34px) 65.63%, calc(100% - 4.22px) 68.75%, calc(100% - 4.08px) 71.88%, calc(100% - 3.93px) 75.00%, calc(100% - 3.78px) 78.13%, calc(100% - 3.63px) 81.25%, calc(100% - 3.51px) 84.38%, calc(100% - 3.41px) 87.50%, calc(100% - 3.35px) 90.63%, calc(100% - 3.32px) 93.75%, calc(100% - 3.33px) 96.88%, calc(100% - 3.37px) 100.00%, 0 100%);
-  }
-
-  79.17% {
-    clip-path: polygon(0 0, calc(100% - 1.82px) 0.00%, calc(100% - 1.95px) 3.13%, calc(100% - 2.12px) 6.25%, calc(100% - 2.31px) 9.38%, calc(100% - 2.54px) 12.50%, calc(100% - 2.80px) 15.63%, calc(100% - 3.07px) 18.75%, calc(100% - 3.36px) 21.88%, calc(100% - 3.65px) 25.00%, calc(100% - 3.93px) 28.13%, calc(100% - 4.20px) 31.25%, calc(100% - 4.44px) 34.38%, calc(100% - 4.64px) 37.50%, calc(100% - 4.80px) 40.63%, calc(100% - 4.91px) 43.75%, calc(100% - 4.97px) 46.88%, calc(100% - 4.98px) 50.00%, calc(100% - 4.93px) 53.13%, calc(100% - 4.83px) 56.25%, calc(100% - 4.69px) 59.38%, calc(100% - 4.51px) 62.50%, calc(100% - 4.31px) 65.63%, calc(100% - 4.09px) 68.75%, calc(100% - 3.87px) 71.88%, calc(100% - 3.66px) 75.00%, calc(100% - 3.46px) 78.13%, calc(100% - 3.30px) 81.25%, calc(100% - 3.17px) 84.38%, calc(100% - 3.08px) 87.50%, calc(100% - 3.03px) 90.63%, calc(100% - 3.03px) 93.75%, calc(100% - 3.06px) 96.88%, calc(100% - 3.14px) 100.00%, 0 100%);
-  }
-
-  81.25% {
-    clip-path: polygon(0 0, calc(100% - 1.57px) 0.00%, calc(100% - 1.79px) 3.13%, calc(100% - 2.05px) 6.25%, calc(100% - 2.34px) 9.38%, calc(100% - 2.67px) 12.50%, calc(100% - 3.02px) 15.63%, calc(100% - 3.38px) 18.75%, calc(100% - 3.74px) 21.88%, calc(100% - 4.08px) 25.00%, calc(100% - 4.40px) 28.13%, calc(100% - 4.68px) 31.25%, calc(100% - 4.92px) 34.38%, calc(100% - 5.10px) 37.50%, calc(100% - 5.23px) 40.63%, calc(100% - 5.29px) 43.75%, calc(100% - 5.29px) 46.88%, calc(100% - 5.23px) 50.00%, calc(100% - 5.12px) 53.13%, calc(100% - 4.96px) 56.25%, calc(100% - 4.76px) 59.38%, calc(100% - 4.54px) 62.50%, calc(100% - 4.30px) 65.63%, calc(100% - 4.06px) 68.75%, calc(100% - 3.82px) 71.88%, calc(100% - 3.60px) 75.00%, calc(100% - 3.40px) 78.13%, calc(100% - 3.24px) 81.25%, calc(100% - 3.11px) 84.38%, calc(100% - 3.02px) 87.50%, calc(100% - 2.97px) 90.63%, calc(100% - 2.95px) 93.75%, calc(100% - 2.97px) 96.88%, calc(100% - 3.01px) 100.00%, 0 100%);
-  }
-
-  83.33% {
-    clip-path: polygon(0 0, calc(100% - 1.57px) 0.00%, calc(100% - 1.84px) 3.13%, calc(100% - 2.15px) 6.25%, calc(100% - 2.50px) 9.38%, calc(100% - 2.86px) 12.50%, calc(100% - 3.24px) 15.63%, calc(100% - 3.62px) 18.75%, calc(100% - 3.98px) 21.88%, calc(100% - 4.32px) 25.00%, calc(100% - 4.63px) 28.13%, calc(100% - 4.89px) 31.25%, calc(100% - 5.10px) 34.38%, calc(100% - 5.25px) 37.50%, calc(100% - 5.34px) 40.63%, calc(100% - 5.38px) 43.75%, calc(100% - 5.36px) 46.88%, calc(100% - 5.28px) 50.00%, calc(100% - 5.17px) 53.13%, calc(100% - 5.01px) 56.25%, calc(100% - 4.83px) 59.38%, calc(100% - 4.62px) 62.50%, calc(100% - 4.41px) 65.63%, calc(100% - 4.19px) 68.75%, calc(100% - 3.98px) 71.88%, calc(100% - 3.78px) 75.00%, calc(100% - 3.60px) 78.13%, calc(100% - 3.44px) 81.25%, calc(100% - 3.30px) 84.38%, calc(100% - 3.19px) 87.50%, calc(100% - 3.09px) 90.63%, calc(100% - 3.01px) 93.75%, calc(100% - 2.95px) 96.88%, calc(100% - 2.90px) 100.00%, 0 100%);
-  }
-
-  85.42% {
-    clip-path: polygon(0 0, calc(100% - 1.78px) 0.00%, calc(100% - 2.05px) 3.13%, calc(100% - 2.36px) 6.25%, calc(100% - 2.68px) 9.38%, calc(100% - 3.02px) 12.50%, calc(100% - 3.37px) 15.63%, calc(100% - 3.70px) 18.75%, calc(100% - 4.02px) 21.88%, calc(100% - 4.32px) 25.00%, calc(100% - 4.58px) 28.13%, calc(100% - 4.80px) 31.25%, calc(100% - 4.98px) 34.38%, calc(100% - 5.11px) 37.50%, calc(100% - 5.20px) 40.63%, calc(100% - 5.24px) 43.75%, calc(100% - 5.25px) 46.88%, calc(100% - 5.21px) 50.00%, calc(100% - 5.14px) 53.13%, calc(100% - 5.05px) 56.25%, calc(100% - 4.93px) 59.38%, calc(100% - 4.79px) 62.50%, calc(100% - 4.64px) 65.63%, calc(100% - 4.48px) 68.75%, calc(100% - 4.31px) 71.88%, calc(100% - 4.14px) 75.00%, calc(100% - 3.97px) 78.13%, calc(100% - 3.80px) 81.25%, calc(100% - 3.63px) 84.38%, calc(100% - 3.45px) 87.50%, calc(100% - 3.28px) 90.63%, calc(100% - 3.11px) 93.75%, calc(100% - 2.94px) 96.88%, calc(100% - 2.78px) 100.00%, 0 100%);
-  }
-
-  87.50% {
-    clip-path: polygon(0 0, calc(100% - 2.12px) 0.00%, calc(100% - 2.34px) 3.13%, calc(100% - 2.59px) 6.25%, calc(100% - 2.85px) 9.38%, calc(100% - 3.11px) 12.50%, calc(100% - 3.37px) 15.63%, calc(100% - 3.63px) 18.75%, calc(100% - 3.87px) 21.88%, calc(100% - 4.10px) 25.00%, calc(100% - 4.31px) 28.13%, calc(100% - 4.49px) 31.25%, calc(100% - 4.65px) 34.38%, calc(100% - 4.79px) 37.50%, calc(100% - 4.90px) 40.63%, calc(100% - 4.98px) 43.75%, calc(100% - 5.04px) 46.88%, calc(100% - 5.07px) 50.00%, calc(100% - 5.09px) 53.13%, calc(100% - 5.08px) 56.25%, calc(100% - 5.05px) 59.38%, calc(100% - 4.99px) 62.50%, calc(100% - 4.92px) 65.63%, calc(100% - 4.82px) 68.75%, calc(100% - 4.69px) 71.88%, calc(100% - 4.55px) 75.00%, calc(100% - 4.38px) 78.13%, calc(100% - 4.18px) 81.25%, calc(100% - 3.97px) 84.38%, calc(100% - 3.73px) 87.50%, calc(100% - 3.48px) 90.63%, calc(100% - 3.22px) 93.75%, calc(100% - 2.94px) 96.88%, calc(100% - 2.67px) 100.00%, 0 100%);
-  }
-
-  89.58% {
-    clip-path: polygon(0 0, calc(100% - 2.52px) 0.00%, calc(100% - 2.67px) 3.13%, calc(100% - 2.82px) 6.25%, calc(100% - 2.97px) 9.38%, calc(100% - 3.13px) 12.50%, calc(100% - 3.29px) 15.63%, calc(100% - 3.45px) 18.75%, calc(100% - 3.61px) 21.88%, calc(100% - 3.77px) 25.00%, calc(100% - 3.93px) 28.13%, calc(100% - 4.08px) 31.25%, calc(100% - 4.23px) 34.38%, calc(100% - 4.38px) 37.50%, calc(100% - 4.52px) 40.63%, calc(100% - 4.65px) 43.75%, calc(100% - 4.78px) 46.88%, calc(100% - 4.89px) 50.00%, calc(100% - 4.99px) 53.13%, calc(100% - 5.07px) 56.25%, calc(100% - 5.12px) 59.38%, calc(100% - 5.14px) 62.50%, calc(100% - 5.13px) 65.63%, calc(100% - 5.09px) 68.75%, calc(100% - 5.00px) 71.88%, calc(100% - 4.87px) 75.00%, calc(100% - 4.70px) 78.13%, calc(100% - 4.49px) 81.25%, calc(100% - 4.24px) 84.38%, calc(100% - 3.96px) 87.50%, calc(100% - 3.64px) 90.63%, calc(100% - 3.31px) 93.75%, calc(100% - 2.96px) 96.88%, calc(100% - 2.61px) 100.00%, 0 100%);
-  }
-
-  91.67% {
-    clip-path: polygon(0 0, calc(100% - 2.94px) 0.00%, calc(100% - 2.99px) 3.13%, calc(100% - 3.04px) 6.25%, calc(100% - 3.08px) 9.38%, calc(100% - 3.14px) 12.50%, calc(100% - 3.19px) 15.63%, calc(100% - 3.26px) 18.75%, calc(100% - 3.34px) 21.88%, calc(100% - 3.44px) 25.00%, calc(100% - 3.55px) 28.13%, calc(100% - 3.67px) 31.25%, calc(100% - 3.82px) 34.38%, calc(100% - 3.98px) 37.50%, calc(100% - 4.14px) 40.63%, calc(100% - 4.32px) 43.75%, calc(100% - 4.50px) 46.88%, calc(100% - 4.67px) 50.00%, calc(100% - 4.83px) 53.13%, calc(100% - 4.98px) 56.25%, calc(100% - 5.09px) 59.38%, calc(100% - 5.17px) 62.50%, calc(100% - 5.21px) 65.63%, calc(100% - 5.20px) 68.75%, calc(100% - 5.14px) 71.88%, calc(100% - 5.03px) 75.00%, calc(100% - 4.86px) 78.13%, calc(100% - 4.65px) 81.25%, calc(100% - 4.38px) 84.38%, calc(100% - 4.08px) 87.50%, calc(100% - 3.74px) 90.63%, calc(100% - 3.38px) 93.75%, calc(100% - 3.01px) 96.88%, calc(100% - 2.63px) 100.00%, 0 100%);
-  }
-
-  93.75% {
-    clip-path: polygon(0 0, calc(100% - 3.33px) 0.00%, calc(100% - 3.29px) 3.13%, calc(100% - 3.25px) 6.25%, calc(100% - 3.21px) 9.38%, calc(100% - 3.17px) 12.50%, calc(100% - 3.15px) 15.63%, calc(100% - 3.14px) 18.75%, calc(100% - 3.16px) 21.88%, calc(100% - 3.20px) 25.00%, calc(100% - 3.27px) 28.13%, calc(100% - 3.37px) 31.25%, calc(100% - 3.50px) 34.38%, calc(100% - 3.66px) 37.50%, calc(100% - 3.84px) 40.63%, calc(100% - 4.03px) 43.75%, calc(100% - 4.23px) 46.88%, calc(100% - 4.43px) 50.00%, calc(100% - 4.61px) 53.13%, calc(100% - 4.78px) 56.25%, calc(100% - 4.92px) 59.38%, calc(100% - 5.02px) 62.50%, calc(100% - 5.08px) 65.63%, calc(100% - 5.09px) 68.75%, calc(100% - 5.05px) 71.88%, calc(100% - 4.95px) 75.00%, calc(100% - 4.80px) 78.13%, calc(100% - 4.60px) 81.25%, calc(100% - 4.36px) 84.38%, calc(100% - 4.07px) 87.50%, calc(100% - 3.76px) 90.63%, calc(100% - 3.43px) 93.75%, calc(100% - 3.08px) 96.88%, calc(100% - 2.74px) 100.00%, 0 100%);
-  }
-
-  95.83% {
-    clip-path: polygon(0 0, calc(100% - 3.65px) 0.00%, calc(100% - 3.56px) 3.13%, calc(100% - 3.47px) 6.25%, calc(100% - 3.37px) 9.38%, calc(100% - 3.28px) 12.50%, calc(100% - 3.21px) 15.63%, calc(100% - 3.16px) 18.75%, calc(100% - 3.14px) 21.88%, calc(100% - 3.15px) 25.00%, calc(100% - 3.19px) 28.13%, calc(100% - 3.26px) 31.25%, calc(100% - 3.37px) 34.38%, calc(100% - 3.50px) 37.50%, calc(100% - 3.66px) 40.63%, calc(100% - 3.83px) 43.75%, calc(100% - 4.00px) 46.88%, calc(100% - 4.17px) 50.00%, calc(100% - 4.34px) 53.13%, calc(100% - 4.48px) 56.25%, calc(100% - 4.60px) 59.38%, calc(100% - 4.68px) 62.50%, calc(100% - 4.73px) 65.63%, calc(100% - 4.73px) 68.75%, calc(100% - 4.69px) 71.88%, calc(100% - 4.61px) 75.00%, calc(100% - 4.49px) 78.13%, calc(100% - 4.33px) 81.25%, calc(100% - 4.14px) 84.38%, calc(100% - 3.92px) 87.50%, calc(100% - 3.68px) 90.63%, calc(100% - 3.43px) 93.75%, calc(100% - 3.17px) 96.88%, calc(100% - 2.91px) 100.00%, 0 100%);
-  }
-
-  97.92% {
-    clip-path: polygon(0 0, calc(100% - 3.88px) 0.00%, calc(100% - 3.79px) 3.13%, calc(100% - 3.69px) 6.25%, calc(100% - 3.59px) 9.38%, calc(100% - 3.50px) 12.50%, calc(100% - 3.43px) 15.63%, calc(100% - 3.37px) 18.75%, calc(100% - 3.34px) 21.88%, calc(100% - 3.33px) 25.00%, calc(100% - 3.35px) 28.13%, calc(100% - 3.40px) 31.25%, calc(100% - 3.46px) 34.38%, calc(100% - 3.54px) 37.50%, calc(100% - 3.63px) 40.63%, calc(100% - 3.73px) 43.75%, calc(100% - 3.83px) 46.88%, calc(100% - 3.93px) 50.00%, calc(100% - 4.01px) 53.13%, calc(100% - 4.08px) 56.25%, calc(100% - 4.13px) 59.38%, calc(100% - 4.16px) 62.50%, calc(100% - 4.16px) 65.63%, calc(100% - 4.14px) 68.75%, calc(100% - 4.11px) 71.88%, calc(100% - 4.04px) 75.00%, calc(100% - 3.97px) 78.13%, calc(100% - 3.87px) 81.25%, calc(100% - 3.76px) 84.38%, calc(100% - 3.64px) 87.50%, calc(100% - 3.52px) 90.63%, calc(100% - 3.38px) 93.75%, calc(100% - 3.25px) 96.88%, calc(100% - 3.11px) 100.00%, 0 100%);
-  }
-
-  100.00% {
-    clip-path: polygon(0 0, calc(100% - 4.01px) 0.00%, calc(100% - 3.98px) 3.13%, calc(100% - 3.94px) 6.25%, calc(100% - 3.90px) 9.38%, calc(100% - 3.86px) 12.50%, calc(100% - 3.83px) 15.63%, calc(100% - 3.80px) 18.75%, calc(100% - 3.78px) 21.88%, calc(100% - 3.77px) 25.00%, calc(100% - 3.76px) 28.13%, calc(100% - 3.76px) 31.25%, calc(100% - 3.76px) 34.38%, calc(100% - 3.75px) 37.50%, calc(100% - 3.74px) 40.63%, calc(100% - 3.73px) 43.75%, calc(100% - 3.71px) 46.88%, calc(100% - 3.68px) 50.00%, calc(100% - 3.64px) 53.13%, calc(100% - 3.60px) 56.25%, calc(100% - 3.55px) 59.38%, calc(100% - 3.50px) 62.50%, calc(100% - 3.45px) 65.63%, calc(100% - 3.41px) 68.75%, calc(100% - 3.37px) 71.88%, calc(100% - 3.34px) 75.00%, calc(100% - 3.32px) 78.13%, calc(100% - 3.30px) 81.25%, calc(100% - 3.30px) 84.38%, calc(100% - 3.30px) 87.50%, calc(100% - 3.31px) 90.63%, calc(100% - 3.32px) 93.75%, calc(100% - 3.32px) 96.88%, calc(100% - 3.32px) 100.00%, 0 100%);
-  }
-}
-
-@keyframes waves-b {
-  0.00% {
-    clip-path: polygon(0 0, calc(100% - 3.79px) 0.00%, calc(100% - 3.77px) 3.13%, calc(100% - 3.75px) 6.25%, calc(100% - 3.74px) 9.38%, calc(100% - 3.74px) 12.50%, calc(100% - 3.76px) 15.63%, calc(100% - 3.79px) 18.75%, calc(100% - 3.84px) 21.88%, calc(100% - 3.89px) 25.00%, calc(100% - 3.94px) 28.13%, calc(100% - 3.98px) 31.25%, calc(100% - 4.01px) 34.38%, calc(100% - 4.01px) 37.50%, calc(100% - 3.98px) 40.63%, calc(100% - 3.90px) 43.75%, calc(100% - 3.79px) 46.88%, calc(100% - 3.62px) 50.00%, calc(100% - 3.42px) 53.13%, calc(100% - 3.17px) 56.25%, calc(100% - 2.89px) 59.38%, calc(100% - 2.60px) 62.50%, calc(100% - 2.30px) 65.63%, calc(100% - 2.00px) 68.75%, calc(100% - 1.73px) 71.88%, calc(100% - 1.49px) 75.00%, calc(100% - 1.31px) 78.13%, calc(100% - 1.18px) 81.25%, calc(100% - 1.12px) 84.38%, calc(100% - 1.12px) 87.50%, calc(100% - 1.20px) 90.63%, calc(100% - 1.34px) 93.75%, calc(100% - 1.54px) 96.88%, calc(100% - 1.79px) 100.00%, 0 100%);
-  }
-
-  2.08% {
-    clip-path: polygon(0 0, calc(100% - 4.28px) 0.00%, calc(100% - 4.27px) 3.13%, calc(100% - 4.24px) 6.25%, calc(100% - 4.19px) 9.38%, calc(100% - 4.12px) 12.50%, calc(100% - 4.04px) 15.63%, calc(100% - 3.97px) 18.75%, calc(100% - 3.90px) 21.88%, calc(100% - 3.85px) 25.00%, calc(100% - 3.80px) 28.13%, calc(100% - 3.76px) 31.25%, calc(100% - 3.74px) 34.38%, calc(100% - 3.71px) 37.50%, calc(100% - 3.68px) 40.63%, calc(100% - 3.64px) 43.75%, calc(100% - 3.58px) 46.88%, calc(100% - 3.50px) 50.00%, calc(100% - 3.39px) 53.13%, calc(100% - 3.25px) 56.25%, calc(100% - 3.08px) 59.38%, calc(100% - 2.88px) 62.50%, calc(100% - 2.66px) 65.63%, calc(100% - 2.43px) 68.75%, calc(100% - 2.19px) 71.88%, calc(100% - 1.95px) 75.00%, calc(100% - 1.74px) 78.13%, calc(100% - 1.55px) 81.25%, calc(100% - 1.40px) 84.38%, calc(100% - 1.31px) 87.50%, calc(100% - 1.27px) 90.63%, calc(100% - 1.28px) 93.75%, calc(100% - 1.36px) 96.88%, calc(100% - 1.49px) 100.00%, 0 100%);
-  }
-
-  4.17% {
-    clip-path: polygon(0 0, calc(100% - 4.62px) 0.00%, calc(100% - 4.69px) 3.13%, calc(100% - 4.72px) 6.25%, calc(100% - 4.68px) 9.38%, calc(100% - 4.61px) 12.50%, calc(100% - 4.50px) 15.63%, calc(100% - 4.36px) 18.75%, calc(100% - 4.21px) 21.88%, calc(100% - 4.05px) 25.00%, calc(100% - 3.89px) 28.13%, calc(100% - 3.75px) 31.25%, calc(100% - 3.63px) 34.38%, calc(100% - 3.52px) 37.50%, calc(100% - 3.42px) 40.63%, calc(100% - 3.35px) 43.75%, calc(100% - 3.28px) 46.88%, calc(100% - 3.22px) 50.00%, calc(100% - 3.16px) 53.13%, calc(100% - 3.09px) 56.25%, calc(100% - 3.01px) 59.38%, calc(100% - 2.91px) 62.50%, calc(100% - 2.79px) 65.63%, calc(100% - 2.65px) 68.75%, calc(100% - 2.50px) 71.88%, calc(100% - 2.33px) 75.00%, calc(100% - 2.15px) 78.13%, calc(100% - 1.98px) 81.25%, calc(100% - 1.81px) 84.38%, calc(100% - 1.67px) 87.50%, calc(100% - 1.55px) 90.63%, calc(100% - 1.48px) 93.75%, calc(100% - 1.44px) 96.88%, calc(100% - 1.45px) 100.00%, 0 100%);
-  }
-
-  6.25% {
-    clip-path: polygon(0 0, calc(100% - 4.74px) 0.00%, calc(100% - 4.92px) 3.13%, calc(100% - 5.03px) 6.25%, calc(100% - 5.06px) 9.38%, calc(100% - 5.04px) 12.50%, calc(100% - 4.95px) 15.63%, calc(100% - 4.80px) 18.75%, calc(100% - 4.62px) 21.88%, calc(100% - 4.41px) 25.00%, calc(100% - 4.18px) 28.13%, calc(100% - 3.94px) 31.25%, calc(100% - 3.71px) 34.38%, calc(100% - 3.50px) 37.50%, calc(100% - 3.31px) 40.63%, calc(100% - 3.15px) 43.75%, calc(100% - 3.02px) 46.88%, calc(100% - 2.92px) 50.00%, calc(100% - 2.85px) 53.13%, calc(100% - 2.79px) 56.25%, calc(100% - 2.75px) 59.38%, calc(100% - 2.72px) 62.50%, calc(100% - 2.68px) 65.63%, calc(100% - 2.64px) 68.75%, calc(100% - 2.58px) 71.88%, calc(100% - 2.51px) 75.00%, calc(100% - 2.42px) 78.13%, calc(100% - 2.32px) 81.25%, calc(100% - 2.21px) 84.38%, calc(100% - 2.08px) 87.50%, calc(100% - 1.96px) 90.63%, calc(100% - 1.85px) 93.75%, calc(100% - 1.76px) 96.88%, calc(100% - 1.68px) 100.00%, 0 100%);
-  }
-
-  8.33% {
-    clip-path: polygon(0 0, calc(100% - 4.67px) 0.00%, calc(100% - 4.92px) 3.13%, calc(100% - 5.11px) 6.25%, calc(100% - 5.22px) 9.38%, calc(100% - 5.26px) 12.50%, calc(100% - 5.22px) 15.63%, calc(100% - 5.12px) 18.75%, calc(100% - 4.96px) 21.88%, calc(100% - 4.74px) 25.00%, calc(100% - 4.49px) 28.13%, calc(100% - 4.21px) 31.25%, calc(100% - 3.92px) 34.38%, calc(100% - 3.63px) 37.50%, calc(100% - 3.36px) 40.63%, calc(100% - 3.12px) 43.75%, calc(100% - 2.91px) 46.88%, calc(100% - 2.74px) 50.00%, calc(100% - 2.61px) 53.13%, calc(100% - 2.52px) 56.25%, calc(100% - 2.47px) 59.38%, calc(100% - 2.45px) 62.50%, calc(100% - 2.45px) 65.63%, calc(100% - 2.47px) 68.75%, calc(100% - 2.50px) 71.88%, calc(100% - 2.52px) 75.00%, calc(100% - 2.53px) 78.13%, calc(100% - 2.52px) 81.25%, calc(100% - 2.49px) 84.38%, calc(100% - 2.44px) 87.50%, calc(100% - 2.37px) 90.63%, calc(100% - 2.28px) 93.75%, calc(100% - 2.19px) 96.88%, calc(100% - 2.08px) 100.00%, 0 100%);
-  }
-
-  10.42% {
-    clip-path: polygon(0 0, calc(100% - 4.51px) 0.00%, calc(100% - 4.77px) 3.13%, calc(100% - 4.98px) 6.25%, calc(100% - 5.12px) 9.38%, calc(100% - 5.21px) 12.50%, calc(100% - 5.22px) 15.63%, calc(100% - 5.17px) 18.75%, calc(100% - 5.05px) 21.88%, calc(100% - 4.88px) 25.00%, calc(100% - 4.65px) 28.13%, calc(100% - 4.38px) 31.25%, calc(100% - 4.09px) 34.38%, calc(100% - 3.79px) 37.50%, calc(100% - 3.49px) 40.63%, calc(100% - 3.20px) 43.75%, calc(100% - 2.94px) 46.88%, calc(100% - 2.72px) 50.00%, calc(100% - 2.54px) 53.13%, calc(100% - 2.41px) 56.25%, calc(100% - 2.33px) 59.38%, calc(100% - 2.29px) 62.50%, calc(100% - 2.29px) 65.63%, calc(100% - 2.33px) 68.75%, calc(100% - 2.39px) 71.88%, calc(100% - 2.46px) 75.00%, calc(100% - 2.54px) 78.13%, calc(100% - 2.61px) 81.25%, calc(100% - 2.66px) 84.38%, calc(100% - 2.69px) 87.50%, calc(100% - 2.68px) 90.63%, calc(100% - 2.65px) 93.75%, calc(100% - 2.59px) 96.88%, calc(100% - 2.50px) 100.00%, 0 100%);
-  }
-
-  12.50% {
-    clip-path: polygon(0 0, calc(100% - 4.34px) 0.00%, calc(100% - 4.54px) 3.13%, calc(100% - 4.71px) 6.25%, calc(100% - 4.84px) 9.38%, calc(100% - 4.92px) 12.50%, calc(100% - 4.95px) 15.63%, calc(100% - 4.93px) 18.75%, calc(100% - 4.86px) 21.88%, calc(100% - 4.73px) 25.00%, calc(100% - 4.56px) 28.13%, calc(100% - 4.35px) 31.25%, calc(100% - 4.11px) 34.38%, calc(100% - 3.86px) 37.50%, calc(100% - 3.59px) 40.63%, calc(100% - 3.33px) 43.75%, calc(100% - 3.08px) 46.88%, calc(100% - 2.86px) 50.00%, calc(100% - 2.67px) 53.13%, calc(100% - 2.52px) 56.25%, calc(100% - 2.42px) 59.38%, calc(100% - 2.36px) 62.50%, calc(100% - 2.34px) 65.63%, calc(100% - 2.37px) 68.75%, calc(100% - 2.42px) 71.88%, calc(100% - 2.50px) 75.00%, calc(100% - 2.60px) 78.13%, calc(100% - 2.69px) 81.25%, calc(100% - 2.78px) 84.38%, calc(100% - 2.85px) 87.50%, calc(100% - 2.89px) 90.63%, calc(100% - 2.90px) 93.75%, calc(100% - 2.87px) 96.88%, calc(100% - 2.81px) 100.00%, 0 100%);
-  }
-
-  14.58% {
-    clip-path: polygon(0 0, calc(100% - 4.20px) 0.00%, calc(100% - 4.30px) 3.13%, calc(100% - 4.38px) 6.25%, calc(100% - 4.44px) 9.38%, calc(100% - 4.48px) 12.50%, calc(100% - 4.48px) 15.63%, calc(100% - 4.46px) 18.75%, calc(100% - 4.41px) 21.88%, calc(100% - 4.33px) 25.00%, calc(100% - 4.23px) 28.13%, calc(100% - 4.09px) 31.25%, calc(100% - 3.94px) 34.38%, calc(100% - 3.78px) 37.50%, calc(100% - 3.60px) 40.63%, calc(100% - 3.42px) 43.75%, calc(100% - 3.25px) 46.88%, calc(100% - 3.09px) 50.00%, calc(100% - 2.95px) 53.13%, calc(100% - 2.83px) 56.25%, calc(100% - 2.74px) 59.38%, calc(100% - 2.68px) 62.50%, calc(100% - 2.65px) 65.63%, calc(100% - 2.65px) 68.75%, calc(100% - 2.68px) 71.88%, calc(100% - 2.73px) 75.00%, calc(100% - 2.80px) 78.13%, calc(100% - 2.87px) 81.25%, calc(100% - 2.93px) 84.38%, calc(100% - 2.99px) 87.50%, calc(100% - 3.02px) 90.63%, calc(100% - 3.03px) 93.75%, calc(100% - 3.00px) 96.88%, calc(100% - 2.94px) 100.00%, 0 100%);
-  }
-
-  16.67% {
-    clip-path: polygon(0 0, calc(100% - 4.06px) 0.00%, calc(100% - 4.05px) 3.13%, calc(100% - 4.03px) 6.25%, calc(100% - 4.00px) 9.38%, calc(100% - 3.97px) 12.50%, calc(100% - 3.93px) 15.63%, calc(100% - 3.88px) 18.75%, calc(100% - 3.83px) 21.88%, calc(100% - 3.79px) 25.00%, calc(100% - 3.74px) 28.13%, calc(100% - 3.69px) 31.25%, calc(100% - 3.64px) 34.38%, calc(100% - 3.58px) 37.50%, calc(100% - 3.52px) 40.63%, calc(100% - 3.47px) 43.75%, calc(100% - 3.41px) 46.88%, calc(100% - 3.36px) 50.00%, calc(100% - 3.31px) 53.13%, calc(100% - 3.26px) 56.25%, calc(100% - 3.22px) 59.38%, calc(100% - 3.19px) 62.50%, calc(100% - 3.17px) 65.63%, calc(100% - 3.16px) 68.75%, calc(100% - 3.16px) 71.88%, calc(100% - 3.16px) 75.00%, calc(100% - 3.16px) 78.13%, calc(100% - 3.17px) 81.25%, calc(100% - 3.17px) 84.38%, calc(100% - 3.16px) 87.50%, calc(100% - 3.13px) 90.63%, calc(100% - 3.09px) 93.75%, calc(100% - 3.02px) 96.88%, calc(100% - 2.93px) 100.00%, 0 100%);
-  }
-
-  18.75% {
-    clip-path: polygon(0 0, calc(100% - 3.86px) 0.00%, calc(100% - 3.77px) 3.13%, calc(100% - 3.67px) 6.25%, calc(100% - 3.56px) 9.38%, calc(100% - 3.46px) 12.50%, calc(100% - 3.38px) 15.63%, calc(100% - 3.31px) 18.75%, calc(100% - 3.26px) 21.88%, calc(100% - 3.24px) 25.00%, calc(100% - 3.24px) 28.13%, calc(100% - 3.26px) 31.25%, calc(100% - 3.30px) 34.38%, calc(100% - 3.35px) 37.50%, calc(100% - 3.42px) 40.63%, calc(100% - 3.49px) 43.75%, calc(100% - 3.56px) 46.88%, calc(100% - 3.63px) 50.00%, calc(100% - 3.69px) 53.13%, calc(100% - 3.74px) 56.25%, calc(100% - 3.77px) 59.38%, calc(100% - 3.79px) 62.50%, calc(100% - 3.80px) 65.63%, calc(100% - 3.78px) 68.75%, calc(100% - 3.75px) 71.88%, calc(100% - 3.71px) 75.00%, calc(100% - 3.65px) 78.13%, calc(100% - 3.57px) 81.25%, calc(100% - 3.48px) 84.38%, calc(100% - 3.37px) 87.50%, calc(100% - 3.25px) 90.63%, calc(100% - 3.12px) 93.75%, calc(100% - 2.97px) 96.88%, calc(100% - 2.81px) 100.00%, 0 100%);
-  }
-
-  20.83% {
-    clip-path: polygon(0 0, calc(100% - 3.56px) 0.00%, calc(100% - 3.43px) 3.13%, calc(100% - 3.28px) 6.25%, calc(100% - 3.14px) 9.38%, calc(100% - 3.01px) 12.50%, calc(100% - 2.91px) 15.63%, calc(100% - 2.83px) 18.75%, calc(100% - 2.79px) 21.88%, calc(100% - 2.79px) 25.00%, calc(100% - 2.83px) 28.13%, calc(100% - 2.92px) 31.25%, calc(100% - 3.03px) 34.38%, calc(100% - 3.18px) 37.50%, calc(100% - 3.34px) 40.63%, calc(100% - 3.52px) 43.75%, calc(100% - 3.71px) 46.88%, calc(100% - 3.89px) 50.00%, calc(100% - 4.05px) 53.13%, calc(100% - 4.19px) 56.25%, calc(100% - 4.30px) 59.38%, calc(100% - 4.38px) 62.50%, calc(100% - 4.41px) 65.63%, calc(100% - 4.41px) 68.75%, calc(100% - 4.36px) 71.88%, calc(100% - 4.28px) 75.00%, calc(100% - 4.15px) 78.13%, calc(100% - 3.99px) 81.25%, calc(100% - 3.81px) 84.38%, calc(100% - 3.60px) 87.50%, calc(100% - 3.38px) 90.63%, calc(100% - 3.14px) 93.75%, calc(100% - 2.89px) 96.88%, calc(100% - 2.65px) 100.00%, 0 100%);
-  }
-
-  22.92% {
-    clip-path: polygon(0 0, calc(100% - 3.17px) 0.00%, calc(100% - 3.03px) 3.13%, calc(100% - 2.89px) 6.25%, calc(100% - 2.76px) 9.38%, calc(100% - 2.65px) 12.50%, calc(100% - 2.56px) 15.63%, calc(100% - 2.50px) 18.75%, calc(100% - 2.49px) 21.88%, calc(100% - 2.52px) 25.00%, calc(100% - 2.61px) 28.13%, calc(100% - 2.74px) 31.25%, calc(100% - 2.91px) 34.38%, calc(100% - 3.12px) 37.50%, calc(100% - 3.35px) 40.63%, calc(100% - 3.61px) 43.75%, calc(100% - 3.87px) 46.88%, calc(100% - 4.13px) 50.00%, calc(100% - 4.36px) 53.13%, calc(100% - 4.57px) 56.25%, calc(100% - 4.74px) 59.38%, calc(100% - 4.86px) 62.50%, calc(100% - 4.92px) 65.63%, calc(100% - 4.93px) 68.75%, calc(100% - 4.87px) 71.88%, calc(100% - 4.76px) 75.00%, calc(100% - 4.59px) 78.13%, calc(100% - 4.37px) 81.25%, calc(100% - 4.11px) 84.38%, calc(100% - 3.82px) 87.50%, calc(100% - 3.50px) 90.63%, calc(100% - 3.17px) 93.75%, calc(100% - 2.84px) 96.88%, calc(100% - 2.51px) 100.00%, 0 100%);
-  }
-
-  25.00% {
-    clip-path: polygon(0 0, calc(100% - 2.69px) 0.00%, calc(100% - 2.61px) 3.13%, calc(100% - 2.52px) 6.25%, calc(100% - 2.44px) 9.38%, calc(100% - 2.38px) 12.50%, calc(100% - 2.35px) 15.63%, calc(100% - 2.35px) 18.75%, calc(100% - 2.38px) 21.88%, calc(100% - 2.46px) 25.00%, calc(100% - 2.58px) 28.13%, calc(100% - 2.74px) 31.25%, calc(100% - 2.95px) 34.38%, calc(100% - 3.19px) 37.50%, calc(100% - 3.46px) 40.63%, calc(100% - 3.75px) 43.75%, calc(100% - 4.04px) 46.88%, calc(100% - 4.33px) 50.00%, calc(100% - 4.60px) 53.13%, calc(100% - 4.84px) 56.25%, calc(100% - 5.03px) 59.38%, calc(100% - 5.18px) 62.50%, calc(100% - 5.26px) 65.63%, calc(100% - 5.27px) 68.75%, calc(100% - 5.22px) 71.88%, calc(100% - 5.09px) 75.00%, calc(100% - 4.90px) 78.13%, calc(100% - 4.65px) 81.25%, calc(100% - 4.34px) 84.38%, calc(100% - 4.00px) 87.50%, calc(100% - 3.62px) 90.63%, calc(100% - 3.22px) 93.75%, calc(100% - 2.83px) 96.88%, calc(100% - 2.44px) 100.00%, 0 100%);
-  }
-
-  27.08% {
-    clip-path: polygon(0 0, calc(100% - 2.18px) 0.00%, calc(100% - 2.17px) 3.13%, calc(100% - 2.17px) 6.25%, calc(100% - 2.19px) 9.38%, calc(100% - 2.22px) 12.50%, calc(100% - 2.27px) 15.63%, calc(100% - 2.34px) 18.75%, calc(100% - 2.45px) 21.88%, calc(100% - 2.58px) 25.00%, calc(100% - 2.74px) 28.13%, calc(100% - 2.93px) 31.25%, calc(100% - 3.15px) 34.38%, calc(100% - 3.39px) 37.50%, calc(100% - 3.66px) 40.63%, calc(100% - 3.93px) 43.75%, calc(100% - 4.21px) 46.88%, calc(100% - 4.49px) 50.00%, calc(100% - 4.74px) 53.13%, calc(100% - 4.97px) 56.25%, calc(100% - 5.16px) 59.38%, calc(100% - 5.30px) 62.50%, calc(100% - 5.39px) 65.63%, calc(100% - 5.40px) 68.75%, calc(100% - 5.35px) 71.88%, calc(100% - 5.23px) 75.00%, calc(100% - 5.05px) 78.13%, calc(100% - 4.79px) 81.25%, calc(100% - 4.48px) 84.38%, calc(100% - 4.12px) 87.50%, calc(100% - 3.73px) 90.63%, calc(100% - 3.31px) 93.75%, calc(100% - 2.89px) 96.88%, calc(100% - 2.47px) 100.00%, 0 100%);
-  }
-
-  29.17% {
-    clip-path: polygon(0 0, calc(100% - 1.66px) 0.00%, calc(100% - 1.74px) 3.13%, calc(100% - 1.84px) 6.25%, calc(100% - 1.96px) 9.38%, calc(100% - 2.11px) 12.50%, calc(100% - 2.26px) 15.63%, calc(100% - 2.44px) 18.75%, calc(100% - 2.62px) 21.88%, calc(100% - 2.82px) 25.00%, calc(100% - 3.03px) 28.13%, calc(100% - 3.25px) 31.25%, calc(100% - 3.47px) 34.38%, calc(100% - 3.70px) 37.50%, calc(100% - 3.94px) 40.63%, calc(100% - 4.17px) 43.75%, calc(100% - 4.40px) 46.88%, calc(100% - 4.62px) 50.00%, calc(100% - 4.82px) 53.13%, calc(100% - 5.00px) 56.25%, calc(100% - 5.14px) 59.38%, calc(100% - 5.25px) 62.50%, calc(100% - 5.31px) 65.63%, calc(100% - 5.32px) 68.75%, calc(100% - 5.27px) 71.88%, calc(100% - 5.17px) 75.00%, calc(100% - 5.00px) 78.13%, calc(100% - 4.78px) 81.25%, calc(100% - 4.50px) 84.38%, calc(100% - 4.17px) 87.50%, calc(100% - 3.81px) 90.63%, calc(100% - 3.42px) 93.75%, calc(100% - 3.01px) 96.88%, calc(100% - 2.60px) 100.00%, 0 100%);
-  }
-
-  31.25% {
-    clip-path: polygon(0 0, calc(100% - 1.18px) 0.00%, calc(100% - 1.32px) 3.13%, calc(100% - 1.51px) 6.25%, calc(100% - 1.74px) 9.38%, calc(100% - 1.99px) 12.50%, calc(100% - 2.25px) 15.63%, calc(100% - 2.53px) 18.75%, calc(100% - 2.81px) 21.88%, calc(100% - 3.09px) 25.00%, calc(100% - 3.36px) 28.13%, calc(100% - 3.61px) 31.25%, calc(100% - 3.85px) 34.38%, calc(100% - 4.07px) 37.50%, calc(100% - 4.28px) 40.63%, calc(100% - 4.46px) 43.75%, calc(100% - 4.62px) 46.88%, calc(100% - 4.76px) 50.00%, calc(100% - 4.88px) 53.13%, calc(100% - 4.97px) 56.25%, calc(100% - 5.04px) 59.38%, calc(100% - 5.08px) 62.50%, calc(100% - 5.09px) 65.63%, calc(100% - 5.07px) 68.75%, calc(100% - 5.01px) 71.88%, calc(100% - 4.91px) 75.00%, calc(100% - 4.77px) 78.13%, calc(100% - 4.59px) 81.25%, calc(100% - 4.36px) 84.38%, calc(100% - 4.10px) 87.50%, calc(100% - 3.81px) 90.63%, calc(100% - 3.49px) 93.75%, calc(100% - 3.15px) 96.88%, calc(100% - 2.79px) 100.00%, 0 100%);
-  }
-
-  33.33% {
-    clip-path: polygon(0 0, calc(100% - 0.79px) 0.00%, calc(100% - 0.97px) 3.13%, calc(100% - 1.21px) 6.25%, calc(100% - 1.49px) 9.38%, calc(100% - 1.82px) 12.50%, calc(100% - 2.17px) 15.63%, calc(100% - 2.54px) 18.75%, calc(100% - 2.91px) 21.88%, calc(100% - 3.27px) 25.00%, calc(100% - 3.61px) 28.13%, calc(100% - 3.92px) 31.25%, calc(100% - 4.19px) 34.38%, calc(100% - 4.43px) 37.50%, calc(100% - 4.62px) 40.63%, calc(100% - 4.77px) 43.75%, calc(100% - 4.87px) 46.88%, calc(100% - 4.94px) 50.00%, calc(100% - 4.97px) 53.13%, calc(100% - 4.98px) 56.25%, calc(100% - 4.95px) 59.38%, calc(100% - 4.90px) 62.50%, calc(100% - 4.84px) 65.63%, calc(100% - 4.75px) 68.75%, calc(100% - 4.65px) 71.88%, calc(100% - 4.53px) 75.00%, calc(100% - 4.39px) 78.13%, calc(100% - 4.24px) 81.25%, calc(100% - 4.07px) 84.38%, calc(100% - 3.88px) 87.50%, calc(100% - 3.68px) 90.63%, calc(100% - 3.45px) 93.75%, calc(100% - 3.21px) 96.88%, calc(100% - 2.95px) 100.00%, 0 100%);
-  }
-
-  35.42% {
-    clip-path: polygon(0 0, calc(100% - 0.60px) 0.00%, calc(100% - 0.75px) 3.13%, calc(100% - 0.98px) 6.25%, calc(100% - 1.27px) 9.38%, calc(100% - 1.62px) 12.50%, calc(100% - 2.01px) 15.63%, calc(100% - 2.42px) 18.75%, calc(100% - 2.85px) 21.88%, calc(100% - 3.28px) 25.00%, calc(100% - 3.68px) 28.13%, calc(100% - 4.05px) 31.25%, calc(100% - 4.38px) 34.38%, calc(100% - 4.65px) 37.50%, calc(100% - 4.87px) 40.63%, calc(100% - 5.02px) 43.75%, calc(100% - 5.11px) 46.88%, calc(100% - 5.14px) 50.00%, calc(100% - 5.12px) 53.13%, calc(100% - 5.05px) 56.25%, calc(100% - 4.94px) 59.38%, calc(100% - 4.80px) 62.50%, calc(100% - 4.65px) 65.63%, calc(100% - 4.48px) 68.75%, calc(100% - 4.31px) 71.88%, calc(100% - 4.14px) 75.00%, calc(100% - 3.98px) 78.13%, calc(100% - 3.82px) 81.25%, calc(100% - 3.67px) 84.38%, calc(100% - 3.53px) 87.50%, calc(100% - 3.40px) 90.63%, calc(100% - 3.26px) 93.75%, calc(100% - 3.13px) 96.88%, calc(100% - 2.99px) 100.00%, 0 100%);
-  }
-
-  37.50% {
-    clip-path: polygon(0 0, calc(100% - 0.66px) 0.00%, calc(100% - 0.77px) 3.13%, calc(100% - 0.94px) 6.25%, calc(100% - 1.18px) 9.38%, calc(100% - 1.49px) 12.50%, calc(100% - 1.85px) 15.63%, calc(100% - 2.25px) 18.75%, calc(100% - 2.68px) 21.88%, calc(100% - 3.12px) 25.00%, calc(100% - 3.55px) 28.13%, calc(100% - 3.96px) 31.25%, calc(100% - 4.34px) 34.38%, calc(100% - 4.66px) 37.50%, calc(100% - 4.92px) 40.63%, calc(100% - 5.11px) 43.75%, calc(100% - 5.22px) 46.88%, calc(100% - 5.26px) 50.00%, calc(100% - 5.23px) 53.13%, calc(100% - 5.13px) 56.25%, calc(100% - 4.99px) 59.38%, calc(100% - 4.79px) 62.50%, calc(100% - 4.57px) 65.63%, calc(100% - 4.33px) 68.75%, calc(100% - 4.09px) 71.88%, calc(100% - 3.85px) 75.00%, calc(100% - 3.63px) 78.13%, calc(100% - 3.44px) 81.25%, calc(100% - 3.27px) 84.38%, calc(100% - 3.14px) 87.50%, calc(100% - 3.04px) 90.63%, calc(100% - 2.96px) 93.75%, calc(100% - 2.91px) 96.88%, calc(100% - 2.87px) 100.00%, 0 100%);
-  }
-
-  39.58% {
-    clip-path: polygon(0 0, calc(100% - 0.99px) 0.00%, calc(100% - 1.04px) 3.13%, calc(100% - 1.15px) 6.25%, calc(100% - 1.32px) 9.38%, calc(100% - 1.54px) 12.50%, calc(100% - 1.82px) 15.63%, calc(100% - 2.14px) 18.75%, calc(100% - 2.50px) 21.88%, calc(100% - 2.89px) 25.00%, calc(100% - 3.29px) 28.13%, calc(100% - 3.69px) 31.25%, calc(100% - 4.07px) 34.38%, calc(100% - 4.41px) 37.50%, calc(100% - 4.70px) 40.63%, calc(100% - 4.93px) 43.75%, calc(100% - 5.09px) 46.88%, calc(100% - 5.18px) 50.00%, calc(100% - 5.19px) 53.13%, calc(100% - 5.12px) 56.25%, calc(100% - 4.99px) 59.38%, calc(100% - 4.80px) 62.50%, calc(100% - 4.56px) 65.63%, calc(100% - 4.29px) 68.75%, calc(100% - 4.01px) 71.88%, calc(100% - 3.72px) 75.00%, calc(100% - 3.45px) 78.13%, calc(100% - 3.21px) 81.25%, calc(100% - 3.01px) 84.38%, calc(100% - 2.85px) 87.50%, calc(100% - 2.74px) 90.63%, calc(100% - 2.67px) 93.75%, calc(100% - 2.66px) 96.88%, calc(100% - 2.68px) 100.00%, 0 100%);
-  }
-
-  41.67% {
-    clip-path: polygon(0 0, calc(100% - 1.49px) 0.00%, calc(100% - 1.53px) 3.13%, calc(100% - 1.60px) 6.25%, calc(100% - 1.71px) 9.38%, calc(100% - 1.84px) 12.50%, calc(100% - 2.01px) 15.63%, calc(100% - 2.22px) 18.75%, calc(100% - 2.47px) 21.88%, calc(100% - 2.75px) 25.00%, calc(100% - 3.04px) 28.13%, calc(100% - 3.35px) 31.25%, calc(100% - 3.67px) 34.38%, calc(100% - 3.97px) 37.50%, calc(100% - 4.24px) 40.63%, calc(100% - 4.48px) 43.75%, calc(100% - 4.67px) 46.88%, calc(100% - 4.80px) 50.00%, calc(100% - 4.87px) 53.13%, calc(100% - 4.87px) 56.25%, calc(100% - 4.80px) 59.38%, calc(100% - 4.68px) 62.50%, calc(100% - 4.49px) 65.63%, calc(100% - 4.26px) 68.75%, calc(100% - 4.00px) 71.88%, calc(100% - 3.73px) 75.00%, calc(100% - 3.45px) 78.13%, calc(100% - 3.19px) 81.25%, calc(100% - 2.96px) 84.38%, calc(100% - 2.78px) 87.50%, calc(100% - 2.64px) 90.63%, calc(100% - 2.56px) 93.75%, calc(100% - 2.53px) 96.88%, calc(100% - 2.56px) 100.00%, 0 100%);
-  }
-
-  43.75% {
-    clip-path: polygon(0 0, calc(100% - 2.00px) 0.00%, calc(100% - 2.10px) 3.13%, calc(100% - 2.19px) 6.25%, calc(100% - 2.27px) 9.38%, calc(100% - 2.36px) 12.50%, calc(100% - 2.45px) 15.63%, calc(100% - 2.55px) 18.75%, calc(100% - 2.66px) 21.88%, calc(100% - 2.79px) 25.00%, calc(100% - 2.94px) 28.13%, calc(100% - 3.10px) 31.25%, calc(100% - 3.28px) 34.38%, calc(100% - 3.47px) 37.50%, calc(100% - 3.66px) 40.63%, calc(100% - 3.84px) 43.75%, calc(100% - 4.00px) 46.88%, calc(100% - 4.14px) 50.00%, calc(100% - 4.25px) 53.13%, calc(100% - 4.31px) 56.25%, calc(100% - 4.33px) 59.38%, calc(100% - 4.30px) 62.50%, calc(100% - 4.22px) 65.63%, calc(100% - 4.10px) 68.75%, calc(100% - 3.94px) 71.88%, calc(100% - 3.75px) 75.00%, calc(100% - 3.55px) 78.13%, calc(100% - 3.34px) 81.25%, calc(100% - 3.14px) 84.38%, calc(100% - 2.97px) 87.50%, calc(100% - 2.83px) 90.63%, calc(100% - 2.73px) 93.75%, calc(100% - 2.69px) 96.88%, calc(100% - 2.69px) 100.00%, 0 100%);
-  }
-
-  45.83% {
-    clip-path: polygon(0 0, calc(100% - 2.38px) 0.00%, calc(100% - 2.56px) 3.13%, calc(100% - 2.72px) 6.25%, calc(100% - 2.84px) 9.38%, calc(100% - 2.93px) 12.50%, calc(100% - 2.99px) 15.63%, calc(100% - 3.02px) 18.75%, calc(100% - 3.03px) 21.88%, calc(100% - 3.03px) 25.00%, calc(100% - 3.02px) 28.13%, calc(100% - 3.02px) 31.25%, calc(100% - 3.03px) 34.38%, calc(100% - 3.06px) 37.50%, calc(100% - 3.10px) 40.63%, calc(100% - 3.16px) 43.75%, calc(100% - 3.23px) 46.88%, calc(100% - 3.32px) 50.00%, calc(100% - 3.41px) 53.13%, calc(100% - 3.50px) 56.25%, calc(100% - 3.58px) 59.38%, calc(100% - 3.64px) 62.50%, calc(100% - 3.68px) 65.63%, calc(100% - 3.70px) 68.75%, calc(100% - 3.70px) 71.88%, calc(100% - 3.66px) 75.00%, calc(100% - 3.61px) 78.13%, calc(100% - 3.53px) 81.25%, calc(100% - 3.45px) 84.38%, calc(100% - 3.36px) 87.50%, calc(100% - 3.28px) 90.63%, calc(100% - 3.21px) 93.75%, calc(100% - 3.17px) 96.88%, calc(100% - 3.15px) 100.00%, 0 100%);
-  }
-
-  47.92% {
-    clip-path: polygon(0 0, calc(100% - 2.54px) 0.00%, calc(100% - 2.81px) 3.13%, calc(100% - 3.04px) 6.25%, calc(100% - 3.23px) 9.38%, calc(100% - 3.36px) 12.50%, calc(100% - 3.43px) 15.63%, calc(100% - 3.45px) 18.75%, calc(100% - 3.42px) 21.88%, calc(100% - 3.34px) 25.00%, calc(100% - 3.23px) 28.13%, calc(100% - 3.09px) 31.25%, calc(100% - 2.95px) 34.38%, calc(100% - 2.82px) 37.50%, calc(100% - 2.70px) 40.63%, calc(100% - 2.61px) 43.75%, calc(100% - 2.55px) 46.88%, calc(100% - 2.53px) 50.00%, calc(100% - 2.55px) 53.13%, calc(100% - 2.61px) 56.25%, calc(100% - 2.70px) 59.38%, calc(100% - 2.82px) 62.50%, calc(100% - 2.96px) 65.63%, calc(100% - 3.11px) 68.75%, calc(100% - 3.26px) 71.88%, calc(100% - 3.40px) 75.00%, calc(100% - 3.53px) 78.13%, calc(100% - 3.64px) 81.25%, calc(100% - 3.73px) 84.38%, calc(100% - 3.80px) 87.50%, calc(100% - 3.84px) 90.63%, calc(100% - 3.87px) 93.75%, calc(100% - 3.88px) 96.88%, calc(100% - 3.88px) 100.00%, 0 100%);
-  }
-
-  50.00% {
-    clip-path: polygon(0 0, calc(100% - 2.53px) 0.00%, calc(100% - 2.83px) 3.13%, calc(100% - 3.10px) 6.25%, calc(100% - 3.32px) 9.38%, calc(100% - 3.50px) 12.50%, calc(100% - 3.61px) 15.63%, calc(100% - 3.65px) 18.75%, calc(100% - 3.62px) 21.88%, calc(100% - 3.53px) 25.00%, calc(100% - 3.38px) 28.13%, calc(100% - 3.18px) 31.25%, calc(100% - 2.96px) 34.38%, calc(100% - 2.72px) 37.50%, calc(100% - 2.49px) 40.63%, calc(100% - 2.27px) 43.75%, calc(100% - 2.09px) 46.88%, calc(100% - 1.96px) 50.00%, calc(100% - 1.89px) 53.13%, calc(100% - 1.89px) 56.25%, calc(100% - 1.94px) 59.38%, calc(100% - 2.07px) 62.50%, calc(100% - 2.25px) 65.63%, calc(100% - 2.47px) 68.75%, calc(100% - 2.74px) 71.88%, calc(100% - 3.03px) 75.00%, calc(100% - 3.32px) 78.13%, calc(100% - 3.61px) 81.25%, calc(100% - 3.89px) 84.38%, calc(100% - 4.13px) 87.50%, calc(100% - 4.34px) 90.63%, calc(100% - 4.50px) 93.75%, calc(100% - 4.62px) 96.88%, calc(100% - 4.68px) 100.00%, 0 100%);
-  }
-
-  52.08% {
-    clip-path: polygon(0 0, calc(100% - 2.47px) 0.00%, calc(100% - 2.71px) 3.13%, calc(100% - 2.94px) 6.25%, calc(100% - 3.15px) 9.38%, calc(100% - 3.32px) 12.50%, calc(100% - 3.44px) 15.63%, calc(100% - 3.50px) 18.75%, calc(100% - 3.50px) 21.88%, calc(100% - 3.44px) 25.00%, calc(100% - 3.31px) 28.13%, calc(100% - 3.12px) 31.25%, calc(100% - 2.90px) 34.38%, calc(100% - 2.64px) 37.50%, calc(100% - 2.38px) 40.63%, calc(100% - 2.12px) 43.75%, calc(100% - 1.88px) 46.88%, calc(100% - 1.69px) 50.00%, calc(100% - 1.55px) 53.13%, calc(100% - 1.48px) 56.25%, calc(100% - 1.49px) 59.38%, calc(100% - 1.59px) 62.50%, calc(100% - 1.76px) 65.63%, calc(100% - 2.00px) 68.75%, calc(100% - 2.31px) 71.88%, calc(100% - 2.68px) 75.00%, calc(100% - 3.07px) 78.13%, calc(100% - 3.49px) 81.25%, calc(100% - 3.90px) 84.38%, calc(100% - 4.29px) 87.50%, calc(100% - 4.64px) 90.63%, calc(100% - 4.93px) 93.75%, calc(100% - 5.17px) 96.88%, calc(100% - 5.33px) 100.00%, 0 100%);
-  }
-
-  54.17% {
-    clip-path: polygon(0 0, calc(100% - 2.48px) 0.00%, calc(100% - 2.59px) 3.13%, calc(100% - 2.71px) 6.25%, calc(100% - 2.82px) 9.38%, calc(100% - 2.92px) 12.50%, calc(100% - 3.00px) 15.63%, calc(100% - 3.05px) 18.75%, calc(100% - 3.06px) 21.88%, calc(100% - 3.03px) 25.00%, calc(100% - 2.95px) 28.13%, calc(100% - 2.82px) 31.25%, calc(100% - 2.66px) 34.38%, calc(100% - 2.47px) 37.50%, calc(100% - 2.25px) 40.63%, calc(100% - 2.04px) 43.75%, calc(100% - 1.83px) 46.88%, calc(100% - 1.66px) 50.00%, calc(100% - 1.52px) 53.13%, calc(100% - 1.44px) 56.25%, calc(100% - 1.43px) 59.38%, calc(100% - 1.50px) 62.50%, calc(100% - 1.64px) 65.63%, calc(100% - 1.86px) 68.75%, calc(100% - 2.16px) 71.88%, calc(100% - 2.52px) 75.00%, calc(100% - 2.93px) 78.13%, calc(100% - 3.38px) 81.25%, calc(100% - 3.83px) 84.38%, calc(100% - 4.29px) 87.50%, calc(100% - 4.71px) 90.63%, calc(100% - 5.09px) 93.75%, calc(100% - 5.41px) 96.88%, calc(100% - 5.65px) 100.00%, 0 100%);
-  }
-
-  56.25% {
-    clip-path: polygon(0 0, calc(100% - 2.62px) 0.00%, calc(100% - 2.57px) 3.13%, calc(100% - 2.53px) 6.25%, calc(100% - 2.51px) 9.38%, calc(100% - 2.49px) 12.50%, calc(100% - 2.48px) 15.63%, calc(100% - 2.46px) 18.75%, calc(100% - 2.44px) 21.88%, calc(100% - 2.41px) 25.00%, calc(100% - 2.37px) 28.13%, calc(100% - 2.31px) 31.25%, calc(100% - 2.23px) 34.38%, calc(100% - 2.14px) 37.50%, calc(100% - 2.04px) 40.63%, calc(100% - 1.94px) 43.75%, calc(100% - 1.84px) 46.88%, calc(100% - 1.75px) 50.00%, calc(100% - 1.69px) 53.13%, calc(100% - 1.67px) 56.25%, calc(100% - 1.68px) 59.38%, calc(100% - 1.76px) 62.50%, calc(100% - 1.89px) 65.63%, calc(100% - 2.08px) 68.75%, calc(100% - 2.33px) 71.88%, calc(100% - 2.64px) 75.00%, calc(100% - 3.00px) 78.13%, calc(100% - 3.39px) 81.25%, calc(100% - 3.81px) 84.38%, calc(100% - 4.23px) 87.50%, calc(100% - 4.64px) 90.63%, calc(100% - 5.01px) 93.75%, calc(100% - 5.34px) 96.88%, calc(100% - 5.60px) 100.00%, 0 100%);
-  }
-
-  58.33% {
-    clip-path: polygon(0 0, calc(100% - 2.86px) 0.00%, calc(100% - 2.67px) 3.13%, calc(100% - 2.49px) 6.25%, calc(100% - 2.32px) 9.38%, calc(100% - 2.17px) 12.50%, calc(100% - 2.04px) 15.63%, calc(100% - 1.94px) 18.75%, calc(100% - 1.85px) 21.88%, calc(100% - 1.79px) 25.00%, calc(100% - 1.75px) 28.13%, calc(100% - 1.73px) 31.25%, calc(100% - 1.72px) 34.38%, calc(100% - 1.73px) 37.50%, calc(100% - 1.74px) 40.63%, calc(100% - 1.77px) 43.75%, calc(100% - 1.80px) 46.88%, calc(100% - 1.85px) 50.00%, calc(100% - 1.91px) 53.13%, calc(100% - 1.99px) 56.25%, calc(100% - 2.08px) 59.38%, calc(100% - 2.21px) 62.50%, calc(100% - 2.36px) 65.63%, calc(100% - 2.54px) 68.75%, calc(100% - 2.75px) 71.88%, calc(100% - 3.00px) 75.00%, calc(100% - 3.27px) 78.13%, calc(100% - 3.57px) 81.25%, calc(100% - 3.88px) 84.38%, calc(100% - 4.20px) 87.50%, calc(100% - 4.52px) 90.63%, calc(100% - 4.81px) 93.75%, calc(100% - 5.07px) 96.88%, calc(100% - 5.28px) 100.00%, 0 100%);
-  }
-
-  60.42% {
-    clip-path: polygon(0 0, calc(100% - 3.09px) 0.00%, calc(100% - 2.83px) 3.13%, calc(100% - 2.56px) 6.25%, calc(100% - 2.29px) 9.38%, calc(100% - 2.04px) 12.50%, calc(100% - 1.81px) 15.63%, calc(100% - 1.62px) 18.75%, calc(100% - 1.46px) 21.88%, calc(100% - 1.35px) 25.00%, calc(100% - 1.29px) 28.13%, calc(100% - 1.26px) 31.25%, calc(100% - 1.29px) 34.38%, calc(100% - 1.35px) 37.50%, calc(100% - 1.45px) 40.63%, calc(100% - 1.57px) 43.75%, calc(100% - 1.72px) 46.88%, calc(100% - 1.89px) 50.00%, calc(100% - 2.07px) 53.13%, calc(100% - 2.26px) 56.25%, calc(100% - 2.45px) 59.38%, calc(100% - 2.65px) 62.50%, calc(100% - 2.85px) 65.63%, calc(100% - 3.05px) 68.75%, calc(100% - 3.24px) 71.88%, calc(100% - 3.44px) 75.00%, calc(100% - 3.65px) 78.13%, calc(100% - 3.84px) 81.25%, calc(100% - 4.04px) 84.38%, calc(100% - 4.23px) 87.50%, calc(100% - 4.42px) 90.63%, calc(100% - 4.58px) 93.75%, calc(100% - 4.73px) 96.88%, calc(100% - 4.85px) 100.00%, 0 100%);
-  }
-
-  62.50% {
-    clip-path: polygon(0 0, calc(100% - 3.22px) 0.00%, calc(100% - 2.95px) 3.13%, calc(100% - 2.67px) 6.25%, calc(100% - 2.37px) 9.38%, calc(100% - 2.08px) 12.50%, calc(100% - 1.81px) 15.63%, calc(100% - 1.56px) 18.75%, calc(100% - 1.35px) 21.88%, calc(100% - 1.20px) 25.00%, calc(100% - 1.09px) 28.13%, calc(100% - 1.05px) 31.25%, calc(100% - 1.06px) 34.38%, calc(100% - 1.13px) 37.50%, calc(100% - 1.26px) 40.63%, calc(100% - 1.43px) 43.75%, calc(100% - 1.64px) 46.88%, calc(100% - 1.88px) 50.00%, calc(100% - 2.14px) 53.13%, calc(100% - 2.41px) 56.25%, calc(100% - 2.68px) 59.38%, calc(100% - 2.94px) 62.50%, calc(100% - 3.19px) 65.63%, calc(100% - 3.42px) 68.75%, calc(100% - 3.62px) 71.88%, calc(100% - 3.81px) 75.00%, calc(100% - 3.96px) 78.13%, calc(100% - 4.09px) 81.25%, calc(100% - 4.20px) 84.38%, calc(100% - 4.29px) 87.50%, calc(100% - 4.35px) 90.63%, calc(100% - 4.40px) 93.75%, calc(100% - 4.42px) 96.88%, calc(100% - 4.43px) 100.00%, 0 100%);
-  }
-
-  64.58% {
-    clip-path: polygon(0 0, calc(100% - 3.22px) 0.00%, calc(100% - 3.00px) 3.13%, calc(100% - 2.75px) 6.25%, calc(100% - 2.49px) 9.38%, calc(100% - 2.22px) 12.50%, calc(100% - 1.95px) 15.63%, calc(100% - 1.70px) 18.75%, calc(100% - 1.48px) 21.88%, calc(100% - 1.31px) 25.00%, calc(100% - 1.18px) 28.13%, calc(100% - 1.10px) 31.25%, calc(100% - 1.09px) 34.38%, calc(100% - 1.14px) 37.50%, calc(100% - 1.24px) 40.63%, calc(100% - 1.40px) 43.75%, calc(100% - 1.61px) 46.88%, calc(100% - 1.86px) 50.00%, calc(100% - 2.14px) 53.13%, calc(100% - 2.43px) 56.25%, calc(100% - 2.73px) 59.38%, calc(100% - 3.03px) 62.50%, calc(100% - 3.31px) 65.63%, calc(100% - 3.56px) 68.75%, calc(100% - 3.78px) 71.88%, calc(100% - 3.96px) 75.00%, calc(100% - 4.10px) 78.13%, calc(100% - 4.20px) 81.25%, calc(100% - 4.26px) 84.38%, calc(100% - 4.29px) 87.50%, calc(100% - 4.28px) 90.63%, calc(100% - 4.24px) 93.75%, calc(100% - 4.18px) 96.88%, calc(100% - 4.11px) 100.00%, 0 100%);
-  }
-
-  66.67% {
-    clip-path: polygon(0 0, calc(100% - 3.13px) 0.00%, calc(100% - 2.97px) 3.13%, calc(100% - 2.78px) 6.25%, calc(100% - 2.58px) 9.38%, calc(100% - 2.37px) 12.50%, calc(100% - 2.15px) 15.63%, calc(100% - 1.94px) 18.75%, calc(100% - 1.75px) 21.88%, calc(100% - 1.59px) 25.00%, calc(100% - 1.45px) 28.13%, calc(100% - 1.36px) 31.25%, calc(100% - 1.32px) 34.38%, calc(100% - 1.33px) 37.50%, calc(100% - 1.40px) 40.63%, calc(100% - 1.51px) 43.75%, calc(100% - 1.68px) 46.88%, calc(100% - 1.88px) 50.00%, calc(100% - 2.13px) 53.13%, calc(100% - 2.39px) 56.25%, calc(100% - 2.67px) 59.38%, calc(100% - 2.95px) 62.50%, calc(100% - 3.22px) 65.63%, calc(100% - 3.48px) 68.75%, calc(100% - 3.70px) 71.88%, calc(100% - 3.88px) 75.00%, calc(100% - 4.03px) 78.13%, calc(100% - 4.13px) 81.25%, calc(100% - 4.18px) 84.38%, calc(100% - 4.19px) 87.50%, calc(100% - 4.16px) 90.63%, calc(100% - 4.09px) 93.75%, calc(100% - 3.99px) 96.88%, calc(100% - 3.88px) 100.00%, 0 100%);
-  }
-
-  68.75% {
-    clip-path: polygon(0 0, calc(100% - 3.01px) 0.00%, calc(100% - 2.90px) 3.13%, calc(100% - 2.77px) 6.25%, calc(100% - 2.63px) 9.38%, calc(100% - 2.48px) 12.50%, calc(100% - 2.33px) 15.63%, calc(100% - 2.18px) 18.75%, calc(100% - 2.04px) 21.88%, calc(100% - 1.91px) 25.00%, calc(100% - 1.80px) 28.13%, calc(100% - 1.71px) 31.25%, calc(100% - 1.65px) 34.38%, calc(100% - 1.64px) 37.50%, calc(100% - 1.66px) 40.63%, calc(100% - 1.72px) 43.75%, calc(100% - 1.82px) 46.88%, calc(100% - 1.96px) 50.00%, calc(100% - 2.14px) 53.13%, calc(100% - 2.34px) 56.25%, calc(100% - 2.56px) 59.38%, calc(100% - 2.79px) 62.50%, calc(100% - 3.03px) 65.63%, calc(100% - 3.25px) 68.75%, calc(100% - 3.45px) 71.88%, calc(100% - 3.63px) 75.00%, calc(100% - 3.78px) 78.13%, calc(100% - 3.89px) 81.25%, calc(100% - 3.95px) 84.38%, calc(100% - 3.97px) 87.50%, calc(100% - 3.96px) 90.63%, calc(100% - 3.90px) 93.75%, calc(100% - 3.82px) 96.88%, calc(100% - 3.71px) 100.00%, 0 100%);
-  }
-
-  70.83% {
-    clip-path: polygon(0 0, calc(100% - 2.92px) 0.00%, calc(100% - 2.82px) 3.13%, calc(100% - 2.73px) 6.25%, calc(100% - 2.63px) 9.38%, calc(100% - 2.54px) 12.50%, calc(100% - 2.44px) 15.63%, calc(100% - 2.35px) 18.75%, calc(100% - 2.26px) 21.88%, calc(100% - 2.17px) 25.00%, calc(100% - 2.10px) 28.13%, calc(100% - 2.03px) 31.25%, calc(100% - 1.98px) 34.38%, calc(100% - 1.96px) 37.50%, calc(100% - 1.95px) 40.63%, calc(100% - 1.97px) 43.75%, calc(100% - 2.02px) 46.88%, calc(100% - 2.09px) 50.00%, calc(100% - 2.20px) 53.13%, calc(100% - 2.32px) 56.25%, calc(100% - 2.47px) 59.38%, calc(100% - 2.63px) 62.50%, calc(100% - 2.81px) 65.63%, calc(100% - 2.98px) 68.75%, calc(100% - 3.15px) 71.88%, calc(100% - 3.30px) 75.00%, calc(100% - 3.44px) 78.13%, calc(100% - 3.55px) 81.25%, calc(100% - 3.63px) 84.38%, calc(100% - 3.67px) 87.50%, calc(100% - 3.69px) 90.63%, calc(100% - 3.67px) 93.75%, calc(100% - 3.62px) 96.88%, calc(100% - 3.55px) 100.00%, 0 100%);
-  }
-
-  72.92% {
-    clip-path: polygon(0 0, calc(100% - 2.87px) 0.00%, calc(100% - 2.76px) 3.13%, calc(100% - 2.67px) 6.25%, calc(100% - 2.59px) 9.38%, calc(100% - 2.52px) 12.50%, calc(100% - 2.46px) 15.63%, calc(100% - 2.41px) 18.75%, calc(100% - 2.37px) 21.88%, calc(100% - 2.33px) 25.00%, calc(100% - 2.30px) 28.13%, calc(100% - 2.27px) 31.25%, calc(100% - 2.24px) 34.38%, calc(100% - 2.23px) 37.50%, calc(100% - 2.22px) 40.63%, calc(100% - 2.22px) 43.75%, calc(100% - 2.24px) 46.88%, calc(100% - 2.27px) 50.00%, calc(100% - 2.31px) 53.13%, calc(100% - 2.37px) 56.25%, calc(100% - 2.45px) 59.38%, calc(100% - 2.54px) 62.50%, calc(100% - 2.64px) 65.63%, calc(100% - 2.75px) 68.75%, calc(100% - 2.86px) 71.88%, calc(100% - 2.97px) 75.00%, calc(100% - 3.08px) 78.13%, calc(100% - 3.18px) 81.25%, calc(100% - 3.26px) 84.38%, calc(100% - 3.32px) 87.50%, calc(100% - 3.37px) 90.63%, calc(100% - 3.39px) 93.75%, calc(100% - 3.39px) 96.88%, calc(100% - 3.37px) 100.00%, 0 100%);
-  }
-
-  75.00% {
-    clip-path: polygon(0 0, calc(100% - 2.86px) 0.00%, calc(100% - 2.72px) 3.13%, calc(100% - 2.61px) 6.25%, calc(100% - 2.51px) 9.38%, calc(100% - 2.44px) 12.50%, calc(100% - 2.40px) 15.63%, calc(100% - 2.37px) 18.75%, calc(100% - 2.36px) 21.88%, calc(100% - 2.36px) 25.00%, calc(100% - 2.37px) 28.13%, calc(100% - 2.39px) 31.25%, calc(100% - 2.41px) 34.38%, calc(100% - 2.43px) 37.50%, calc(100% - 2.44px) 40.63%, calc(100% - 2.46px) 43.75%, calc(100% - 2.47px) 46.88%, calc(100% - 2.48px) 50.00%, calc(100% - 2.49px) 53.13%, calc(100% - 2.51px) 56.25%, calc(100% - 2.52px) 59.38%, calc(100% - 2.54px) 62.50%, calc(100% - 2.57px) 65.63%, calc(100% - 2.61px) 68.75%, calc(100% - 2.65px) 71.88%, calc(100% - 2.71px) 75.00%, calc(100% - 2.76px) 78.13%, calc(100% - 2.82px) 81.25%, calc(100% - 2.88px) 84.38%, calc(100% - 2.94px) 87.50%, calc(100% - 3.00px) 90.63%, calc(100% - 3.05px) 93.75%, calc(100% - 3.09px) 96.88%, calc(100% - 3.12px) 100.00%, 0 100%);
-  }
-
-  77.08% {
-    clip-path: polygon(0 0, calc(100% - 2.91px) 0.00%, calc(100% - 2.72px) 3.13%, calc(100% - 2.56px) 6.25%, calc(100% - 2.43px) 9.38%, calc(100% - 2.34px) 12.50%, calc(100% - 2.28px) 15.63%, calc(100% - 2.26px) 18.75%, calc(100% - 2.27px) 21.88%, calc(100% - 2.30px) 25.00%, calc(100% - 2.35px) 28.13%, calc(100% - 2.41px) 31.25%, calc(100% - 2.48px) 34.38%, calc(100% - 2.55px) 37.50%, calc(100% - 2.61px) 40.63%, calc(100% - 2.66px) 43.75%, calc(100% - 2.70px) 46.88%, calc(100% - 2.72px) 50.00%, calc(100% - 2.72px) 53.13%, calc(100% - 2.71px) 56.25%, calc(100% - 2.69px) 59.38%, calc(100% - 2.66px) 62.50%, calc(100% - 2.63px) 65.63%, calc(100% - 2.59px) 68.75%, calc(100% - 2.56px) 71.88%, calc(100% - 2.53px) 75.00%, calc(100% - 2.52px) 78.13%, calc(100% - 2.52px) 81.25%, calc(100% - 2.53px) 84.38%, calc(100% - 2.56px) 87.50%, calc(100% - 2.60px) 90.63%, calc(100% - 2.66px) 93.75%, calc(100% - 2.72px) 96.88%, calc(100% - 2.79px) 100.00%, 0 100%);
-  }
-
-  79.17% {
-    clip-path: polygon(0 0, calc(100% - 3.00px) 0.00%, calc(100% - 2.77px) 3.13%, calc(100% - 2.57px) 6.25%, calc(100% - 2.40px) 9.38%, calc(100% - 2.28px) 12.50%, calc(100% - 2.19px) 15.63%, calc(100% - 2.15px) 18.75%, calc(100% - 2.16px) 21.88%, calc(100% - 2.20px) 25.00%, calc(100% - 2.27px) 28.13%, calc(100% - 2.37px) 31.25%, calc(100% - 2.48px) 34.38%, calc(100% - 2.60px) 37.50%, calc(100% - 2.71px) 40.63%, calc(100% - 2.80px) 43.75%, calc(100% - 2.88px) 46.88%, calc(100% - 2.93px) 50.00%, calc(100% - 2.96px) 53.13%, calc(100% - 2.95px) 56.25%, calc(100% - 2.91px) 59.38%, calc(100% - 2.85px) 62.50%, calc(100% - 2.77px) 65.63%, calc(100% - 2.67px) 68.75%, calc(100% - 2.57px) 71.88%, calc(100% - 2.47px) 75.00%, calc(100% - 2.37px) 78.13%, calc(100% - 2.29px) 81.25%, calc(100% - 2.24px) 84.38%, calc(100% - 2.21px) 87.50%, calc(100% - 2.21px) 90.63%, calc(100% - 2.24px) 93.75%, calc(100% - 2.30px) 96.88%, calc(100% - 2.39px) 100.00%, 0 100%);
-  }
-
-  81.25% {
-    clip-path: polygon(0 0, calc(100% - 3.13px) 0.00%, calc(100% - 2.90px) 3.13%, calc(100% - 2.68px) 6.25%, calc(100% - 2.49px) 9.38%, calc(100% - 2.34px) 12.50%, calc(100% - 2.22px) 15.63%, calc(100% - 2.16px) 18.75%, calc(100% - 2.14px) 21.88%, calc(100% - 2.17px) 25.00%, calc(100% - 2.23px) 28.13%, calc(100% - 2.33px) 31.25%, calc(100% - 2.46px) 34.38%, calc(100% - 2.59px) 37.50%, calc(100% - 2.73px) 40.63%, calc(100% - 2.86px) 43.75%, calc(100% - 2.98px) 46.88%, calc(100% - 3.06px) 50.00%, calc(100% - 3.12px) 53.13%, calc(100% - 3.13px) 56.25%, calc(100% - 3.10px) 59.38%, calc(100% - 3.03px) 62.50%, calc(100% - 2.93px) 65.63%, calc(100% - 2.80px) 68.75%, calc(100% - 2.65px) 71.88%, calc(100% - 2.48px) 75.00%, calc(100% - 2.32px) 78.13%, calc(100% - 2.17px) 81.25%, calc(100% - 2.04px) 84.38%, calc(100% - 1.94px) 87.50%, calc(100% - 1.88px) 90.63%, calc(100% - 1.87px) 93.75%, calc(100% - 1.90px) 96.88%, calc(100% - 1.98px) 100.00%, 0 100%);
-  }
-
-  83.33% {
-    clip-path: polygon(0 0, calc(100% - 3.28px) 0.00%, calc(100% - 3.09px) 3.13%, calc(100% - 2.90px) 6.25%, calc(100% - 2.72px) 9.38%, calc(100% - 2.57px) 12.50%, calc(100% - 2.45px) 15.63%, calc(100% - 2.36px) 18.75%, calc(100% - 2.31px) 21.88%, calc(100% - 2.30px) 25.00%, calc(100% - 2.32px) 28.13%, calc(100% - 2.39px) 31.25%, calc(100% - 2.48px) 34.38%, calc(100% - 2.59px) 37.50%, calc(100% - 2.71px) 40.63%, calc(100% - 2.84px) 43.75%, calc(100% - 2.96px) 46.88%, calc(100% - 3.05px) 50.00%, calc(100% - 3.12px) 53.13%, calc(100% - 3.16px) 56.25%, calc(100% - 3.15px) 59.38%, calc(100% - 3.10px) 62.50%, calc(100% - 3.00px) 65.63%, calc(100% - 2.87px) 68.75%, calc(100% - 2.71px) 71.88%, calc(100% - 2.53px) 75.00%, calc(100% - 2.33px) 78.13%, calc(100% - 2.14px) 81.25%, calc(100% - 1.96px) 84.38%, calc(100% - 1.81px) 87.50%, calc(100% - 1.69px) 90.63%, calc(100% - 1.63px) 93.75%, calc(100% - 1.62px) 96.88%, calc(100% - 1.68px) 100.00%, 0 100%);
-  }
-
-  85.42% {
-    clip-path: polygon(0 0, calc(100% - 3.37px) 0.00%, calc(100% - 3.27px) 3.13%, calc(100% - 3.17px) 6.25%, calc(100% - 3.06px) 9.38%, calc(100% - 2.96px) 12.50%, calc(100% - 2.86px) 15.63%, calc(100% - 2.77px) 18.75%, calc(100% - 2.70px) 21.88%, calc(100% - 2.65px) 25.00%, calc(100% - 2.62px) 28.13%, calc(100% - 2.61px) 31.25%, calc(100% - 2.63px) 34.38%, calc(100% - 2.67px) 37.50%, calc(100% - 2.72px) 40.63%, calc(100% - 2.78px) 43.75%, calc(100% - 2.85px) 46.88%, calc(100% - 2.91px) 50.00%, calc(100% - 2.96px) 53.13%, calc(100% - 2.98px) 56.25%, calc(100% - 2.98px) 59.38%, calc(100% - 2.95px) 62.50%, calc(100% - 2.89px) 65.63%, calc(100% - 2.79px) 68.75%, calc(100% - 2.66px) 71.88%, calc(100% - 2.51px) 75.00%, calc(100% - 2.34px) 78.13%, calc(100% - 2.16px) 81.25%, calc(100% - 1.98px) 84.38%, calc(100% - 1.82px) 87.50%, calc(100% - 1.69px) 90.63%, calc(100% - 1.60px) 93.75%, calc(100% - 1.56px) 96.88%, calc(100% - 1.58px) 100.00%, 0 100%);
-  }
-
-  87.50% {
-    clip-path: polygon(0 0, calc(100% - 3.35px) 0.00%, calc(100% - 3.38px) 3.13%, calc(100% - 3.40px) 6.25%, calc(100% - 3.41px) 9.38%, calc(100% - 3.39px) 12.50%, calc(100% - 3.37px) 15.63%, calc(100% - 3.32px) 18.75%, calc(100% - 3.26px) 21.88%, calc(100% - 3.19px) 25.00%, calc(100% - 3.11px) 28.13%, calc(100% - 3.03px) 31.25%, calc(100% - 2.96px) 34.38%, calc(100% - 2.89px) 37.50%, calc(100% - 2.83px) 40.63%, calc(100% - 2.78px) 43.75%, calc(100% - 2.74px) 46.88%, calc(100% - 2.70px) 50.00%, calc(100% - 2.68px) 53.13%, calc(100% - 2.66px) 56.25%, calc(100% - 2.63px) 59.38%, calc(100% - 2.60px) 62.50%, calc(100% - 2.56px) 65.63%, calc(100% - 2.50px) 68.75%, calc(100% - 2.43px) 71.88%, calc(100% - 2.34px) 75.00%, calc(100% - 2.25px) 78.13%, calc(100% - 2.14px) 81.25%, calc(100% - 2.03px) 84.38%, calc(100% - 1.92px) 87.50%, calc(100% - 1.83px) 90.63%, calc(100% - 1.76px) 93.75%, calc(100% - 1.72px) 96.88%, calc(100% - 1.73px) 100.00%, 0 100%);
-  }
-
-  89.58% {
-    clip-path: polygon(0 0, calc(100% - 3.20px) 0.00%, calc(100% - 3.35px) 3.13%, calc(100% - 3.50px) 6.25%, calc(100% - 3.63px) 9.38%, calc(100% - 3.73px) 12.50%, calc(100% - 3.80px) 15.63%, calc(100% - 3.84px) 18.75%, calc(100% - 3.83px) 21.88%, calc(100% - 3.78px) 25.00%, calc(100% - 3.70px) 28.13%, calc(100% - 3.58px) 31.25%, calc(100% - 3.43px) 34.38%, calc(100% - 3.26px) 37.50%, calc(100% - 3.08px) 40.63%, calc(100% - 2.91px) 43.75%, calc(100% - 2.73px) 46.88%, calc(100% - 2.57px) 50.00%, calc(100% - 2.43px) 53.13%, calc(100% - 2.31px) 56.25%, calc(100% - 2.22px) 59.38%, calc(100% - 2.14px) 62.50%, calc(100% - 2.09px) 65.63%, calc(100% - 2.05px) 68.75%, calc(100% - 2.02px) 71.88%, calc(100% - 2.01px) 75.00%, calc(100% - 2.00px) 78.13%, calc(100% - 2.00px) 81.25%, calc(100% - 1.99px) 84.38%, calc(100% - 1.99px) 87.50%, calc(100% - 1.99px) 90.63%, calc(100% - 2.00px) 93.75%, calc(100% - 2.02px) 96.88%, calc(100% - 2.06px) 100.00%, 0 100%);
-  }
-
-  91.67% {
-    clip-path: polygon(0 0, calc(100% - 3.01px) 0.00%, calc(100% - 3.22px) 3.13%, calc(100% - 3.44px) 6.25%, calc(100% - 3.66px) 9.38%, calc(100% - 3.87px) 12.50%, calc(100% - 4.04px) 15.63%, calc(100% - 4.17px) 18.75%, calc(100% - 4.24px) 21.88%, calc(100% - 4.25px) 25.00%, calc(100% - 4.21px) 28.13%, calc(100% - 4.10px) 31.25%, calc(100% - 3.93px) 34.38%, calc(100% - 3.72px) 37.50%, calc(100% - 3.47px) 40.63%, calc(100% - 3.19px) 43.75%, calc(100% - 2.91px) 46.88%, calc(100% - 2.62px) 50.00%, calc(100% - 2.36px) 53.13%, calc(100% - 2.12px) 56.25%, calc(100% - 1.91px) 59.38%, calc(100% - 1.75px) 62.50%, calc(100% - 1.64px) 65.63%, calc(100% - 1.57px) 68.75%, calc(100% - 1.55px) 71.88%, calc(100% - 1.58px) 75.00%, calc(100% - 1.63px) 78.13%, calc(100% - 1.71px) 81.25%, calc(100% - 1.82px) 84.38%, calc(100% - 1.93px) 87.50%, calc(100% - 2.06px) 90.63%, calc(100% - 2.18px) 93.75%, calc(100% - 2.30px) 96.88%, calc(100% - 2.41px) 100.00%, 0 100%);
-  }
-
-  93.75% {
-    clip-path: polygon(0 0, calc(100% - 2.90px) 0.00%, calc(100% - 3.09px) 3.13%, calc(100% - 3.32px) 6.25%, calc(100% - 3.56px) 9.38%, calc(100% - 3.80px) 12.50%, calc(100% - 4.03px) 15.63%, calc(100% - 4.22px) 18.75%, calc(100% - 4.37px) 21.88%, calc(100% - 4.46px) 25.00%, calc(100% - 4.48px) 28.13%, calc(100% - 4.43px) 31.25%, calc(100% - 4.31px) 34.38%, calc(100% - 4.11px) 37.50%, calc(100% - 3.86px) 40.63%, calc(100% - 3.56px) 43.75%, calc(100% - 3.22px) 46.88%, calc(100% - 2.87px) 50.00%, calc(100% - 2.51px) 53.13%, calc(100% - 2.17px) 56.25%, calc(100% - 1.87px) 59.38%, calc(100% - 1.61px) 62.50%, calc(100% - 1.40px) 65.63%, calc(100% - 1.27px) 68.75%, calc(100% - 1.19px) 71.88%, calc(100% - 1.19px) 75.00%, calc(100% - 1.25px) 78.13%, calc(100% - 1.36px) 81.25%, calc(100% - 1.52px) 84.38%, calc(100% - 1.72px) 87.50%, calc(100% - 1.94px) 90.63%, calc(100% - 2.16px) 93.75%, calc(100% - 2.39px) 96.88%, calc(100% - 2.60px) 100.00%, 0 100%);
-  }
-
-  95.83% {
-    clip-path: polygon(0 0, calc(100% - 2.99px) 0.00%, calc(100% - 3.11px) 3.13%, calc(100% - 3.26px) 6.25%, calc(100% - 3.45px) 9.38%, calc(100% - 3.65px) 12.50%, calc(100% - 3.86px) 15.63%, calc(100% - 4.07px) 18.75%, calc(100% - 4.24px) 21.88%, calc(100% - 4.38px) 25.00%, calc(100% - 4.46px) 28.13%, calc(100% - 4.48px) 31.25%, calc(100% - 4.43px) 34.38%, calc(100% - 4.31px) 37.50%, calc(100% - 4.12px) 40.63%, calc(100% - 3.87px) 43.75%, calc(100% - 3.56px) 46.88%, calc(100% - 3.22px) 50.00%, calc(100% - 2.85px) 53.13%, calc(100% - 2.47px) 56.25%, calc(100% - 2.10px) 59.38%, calc(100% - 1.77px) 62.50%, calc(100% - 1.48px) 65.63%, calc(100% - 1.25px) 68.75%, calc(100% - 1.10px) 71.88%, calc(100% - 1.01px) 75.00%, calc(100% - 1.01px) 78.13%, calc(100% - 1.08px) 81.25%, calc(100% - 1.22px) 84.38%, calc(100% - 1.42px) 87.50%, calc(100% - 1.66px) 90.63%, calc(100% - 1.94px) 93.75%, calc(100% - 2.23px) 96.88%, calc(100% - 2.52px) 100.00%, 0 100%);
-  }
-
-  97.92% {
-    clip-path: polygon(0 0, calc(100% - 3.31px) 0.00%, calc(100% - 3.34px) 3.13%, calc(100% - 3.40px) 6.25%, calc(100% - 3.48px) 9.38%, calc(100% - 3.59px) 12.50%, calc(100% - 3.72px) 15.63%, calc(100% - 3.86px) 18.75%, calc(100% - 4.00px) 21.88%, calc(100% - 4.12px) 25.00%, calc(100% - 4.22px) 28.13%, calc(100% - 4.28px) 31.25%, calc(100% - 4.30px) 34.38%, calc(100% - 4.26px) 37.50%, calc(100% - 4.16px) 40.63%, calc(100% - 4.00px) 43.75%, calc(100% - 3.78px) 46.88%, calc(100% - 3.51px) 50.00%, calc(100% - 3.20px) 53.13%, calc(100% - 2.86px) 56.25%, calc(100% - 2.51px) 59.38%, calc(100% - 2.16px) 62.50%, calc(100% - 1.83px) 65.63%, calc(100% - 1.54px) 68.75%, calc(100% - 1.30px) 71.88%, calc(100% - 1.13px) 75.00%, calc(100% - 1.03px) 78.13%, calc(100% - 1.00px) 81.25%, calc(100% - 1.05px) 84.38%, calc(100% - 1.18px) 87.50%, calc(100% - 1.37px) 90.63%, calc(100% - 1.61px) 93.75%, calc(100% - 1.89px) 96.88%, calc(100% - 2.19px) 100.00%, 0 100%);
-  }
-
-  100.00% {
-    clip-path: polygon(0 0, calc(100% - 3.79px) 0.00%, calc(100% - 3.77px) 3.13%, calc(100% - 3.75px) 6.25%, calc(100% - 3.74px) 9.38%, calc(100% - 3.74px) 12.50%, calc(100% - 3.76px) 15.63%, calc(100% - 3.79px) 18.75%, calc(100% - 3.84px) 21.88%, calc(100% - 3.89px) 25.00%, calc(100% - 3.94px) 28.13%, calc(100% - 3.98px) 31.25%, calc(100% - 4.01px) 34.38%, calc(100% - 4.01px) 37.50%, calc(100% - 3.98px) 40.63%, calc(100% - 3.90px) 43.75%, calc(100% - 3.79px) 46.88%, calc(100% - 3.62px) 50.00%, calc(100% - 3.42px) 53.13%, calc(100% - 3.17px) 56.25%, calc(100% - 2.89px) 59.38%, calc(100% - 2.60px) 62.50%, calc(100% - 2.30px) 65.63%, calc(100% - 2.00px) 68.75%, calc(100% - 1.73px) 71.88%, calc(100% - 1.49px) 75.00%, calc(100% - 1.31px) 78.13%, calc(100% - 1.18px) 81.25%, calc(100% - 1.12px) 84.38%, calc(100% - 1.12px) 87.50%, calc(100% - 1.20px) 90.63%, calc(100% - 1.34px) 93.75%, calc(100% - 1.54px) 96.88%, calc(100% - 1.79px) 100.00%, 0 100%);
-  }
-}
-
-/* Layer order: shimmer, meniscus, volume, fill. The shimmer drifts across the
-   fill while the meniscus highlight bobs up and down the leading edge. */
-@keyframes liquid {
-  0% {
-    background-position: 130% 0, 100% 15%, 0 0, 0 0;
-  }
-
-  17% {
-    background-position: 86% 0, 100% 85%, 0 0, 0 0;
-  }
-
-  33% {
-    background-position: 42% 0, 100% 20%, 0 0, 0 0;
-  }
-
-  50% {
-    background-position: 0% 0, 100% 80%, 0 0, 0 0;
-  }
-
-  67% {
-    background-position: -42% 0, 100% 25%, 0 0, 0 0;
-  }
-
-  83% {
-    background-position: -86% 0, 100% 75%, 0 0, 0 0;
-  }
-
-  100% {
-    background-position: -130% 0, 100% 15%, 0 0, 0 0;
-  }
+.account-row.low-1 .row-liquid,
+.account-row.low-2 .row-liquid {
+  animation: breathe 2.4s ease-in-out infinite;
 }
 
 @keyframes breathe {
   0%,
   100% {
-    opacity: 0.7;
+    opacity: 0.72;
   }
 
   50% {
@@ -903,6 +471,13 @@ h1 {
   min-width: 0;
   height: var(--band-1);
   padding-right: 10px;
+}
+
+/* With two windows the wordmark rides the weekly band: it is the taller of the
+   two and the one that names the account's week. */
+.account-row[data-bands="2"] .account-meta {
+  grid-row: 2;
+  height: var(--band);
 }
 
 .account-row .account-type,
@@ -947,7 +522,8 @@ h1 {
 }
 
 .limit-window {
-  grid-column: 1 / -1;
+  grid-column: 2;
+  grid-row: 2;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -956,7 +532,6 @@ h1 {
 }
 
 .limit-window:first-child {
-  grid-column: 2;
   grid-row: 1;
   height: var(--band-1);
 }

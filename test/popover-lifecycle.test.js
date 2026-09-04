@@ -11,7 +11,7 @@ class FakeBrowserWindow {
     this.visible = false;
     this.visibleOnAllWorkspacesCalls = [];
     this.handlers = new Map();
-    this._webContents = { id: 1 };
+    this._webContents = { id: 1, send() {} };
   }
 
   get webContents() {
@@ -24,6 +24,7 @@ class FakeBrowserWindow {
   }
 
   setAlwaysOnTop() {}
+  setIgnoreMouseEvents() {}
   setVisibleOnAllWorkspaces(visible, options) {
     this.visibleOnAllWorkspacesCalls.push({ visible, options });
   }
@@ -61,7 +62,8 @@ test("shortcut recreates a popover destroyed by macOS", async () => {
     process: { env: {} },
     screen: {
       getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }),
-      getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } })
+      getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }),
+      getCursorScreenPoint: () => context.cursorPoint
     },
     __dirname: "/app",
     clearTimeout: () => {},
@@ -76,14 +78,21 @@ test("shortcut recreates a popover destroyed by macOS", async () => {
       let currentRowCount = 3;
       let popoverPosition = null;
       let popoverPositionSaveTimer = null;
+      const popoverDock = { open: false, outsideSince: null };
       let isQuitting = false;
       const windowWidth = 344;
+      let currentWindowWidth = windowWidth;
+      let popoverSize = null;
       const compactWindowHeight = 170;
       const expandedWindowHeight = 220;
       const minWindowHeight = 70;
       const maxWindowHeight = 620;
       ${lifecycleSource}
-      globalThis.popoverLifecycle = { togglePopover, getPopover: () => popover };
+      globalThis.popoverLifecycle = {
+        togglePopover,
+        getPopover: () => popover,
+        isCursorNearPopoverBottom
+      };
     `,
     context
   );
@@ -97,6 +106,16 @@ test("shortcut recreates a popover destroyed by macOS", async () => {
     assert.equal(call.options.visibleOnFullScreen, true);
     assert.equal(call.options.skipTransformProcessType, true);
   }
+
+  const bounds = windows[0].getBounds();
+  context.cursorPoint = { x: bounds.x + 100, y: bounds.y + bounds.height - 10 };
+  assert.equal(context.popoverLifecycle.isCursorNearPopoverBottom(30), true);
+
+  context.cursorPoint = { x: bounds.x + 100, y: bounds.y + 40 };
+  assert.equal(context.popoverLifecycle.isCursorNearPopoverBottom(30), false);
+
+  context.cursorPoint = { x: bounds.x + bounds.width + 1, y: bounds.y + bounds.height - 10 };
+  assert.equal(context.popoverLifecycle.isCursorNearPopoverBottom(30), false);
 
   windows[0].destroy();
   assert.equal(context.popoverLifecycle.getPopover(), null);
