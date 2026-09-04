@@ -1,6 +1,6 @@
 {
   "name": "usage-meter",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "private": true,
   "description": "Local Mac app for checking Codex and Claude usage limits.",
   "author": "Samarth Kumbla",
@@ -15,7 +15,7 @@
     "dist:mac": "bash scripts/dist-mac.sh"
   },
   "usageMeter": {
-    "minimumShellVersion": "0.2.11"
+    "minimumShellVersion": "0.2.12"
   },
   "build": {
     "appId": "com.samarth.usagemeter",
