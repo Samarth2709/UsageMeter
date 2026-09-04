@@ -953,13 +953,23 @@ function claudeUsageBackoffRemainingMs() {
   return Math.max(0, claudeUsageRetryAt - Date.now());
 }
 
-// `Retry-After` is in seconds when the server sends one; fall back to a fixed
-// wait, and never hold off longer than the cap.
+// `Retry-After` can be delay-seconds or an HTTP date. Fall back to a fixed wait
+// when neither is usable, and never hold off longer than the cap.
+function claudeUsageRetryAfterMs(retryAfter, now = Date.now()) {
+  const text = String(retryAfter || "").trim();
+  const seconds = Number(text);
+  let waitMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+
+  if (waitMs === null) {
+    const retryAt = Date.parse(text);
+    waitMs = Number.isFinite(retryAt) && retryAt > now ? retryAt - now : claudeUsageBackoffMs;
+  }
+
+  return Math.min(waitMs, claudeUsageBackoffMaxMs);
+}
+
 function noteClaudeUsageRateLimited(retryAfter) {
-  const seconds = Number(retryAfter);
-  const waitMs = Number.isFinite(seconds) && seconds > 0
-    ? Math.min(seconds * 1000, claudeUsageBackoffMaxMs)
-    : claudeUsageBackoffMs;
+  const waitMs = claudeUsageRetryAfterMs(retryAfter);
   claudeUsageRetryAt = Date.now() + waitMs;
 }
 
@@ -2748,7 +2758,9 @@ module.exports = {
     fetchClaudeUsage,
     claudeUsageRequestTimeoutMs,
     claudeUsageBackoffMs,
+    claudeUsageBackoffMaxMs,
     claudeUsageBackoffRemainingMs,
+    claudeUsageRetryAfterMs,
     resetClaudeUsageBackoff,
     usageStaleAfterMs,
     normalizeCodexRateWindows,

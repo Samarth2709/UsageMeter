@@ -1631,6 +1631,19 @@ test("Claude honors Retry-After when it backs off", async () => {
   _test.resetClaudeUsageBackoff();
 });
 
+test("Claude parses HTTP-date Retry-After values and caps excessive waits", () => {
+  const now = Date.parse("2026-09-02T12:00:00.000Z");
+  assert.equal(
+    _test.claudeUsageRetryAfterMs("Wed, 02 Sep 2026 12:10:00 GMT", now),
+    10 * 60 * 1000
+  );
+  assert.equal(
+    _test.claudeUsageRetryAfterMs("Wed, 02 Sep 2026 13:00:00 GMT", now),
+    _test.claudeUsageBackoffMaxMs
+  );
+  assert.equal(_test.claudeUsageRetryAfterMs("not a date", now), _test.claudeUsageBackoffMs);
+});
+
 test("a failed poll keeps a recent reading live and only ages into cached", () => {
   const now = Date.parse("2026-09-02T12:00:00.000Z");
   const identity = { id: "claude-1", lastUsage: { windows: [], fetchedAt: "2026-09-02T11:59:00.000Z" } };
