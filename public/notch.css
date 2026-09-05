@@ -1,0 +1,427 @@
+/* Codenotch-inspired presentation layer.
+ *
+ * The app already owns the data and dock behavior. This layer gives that
+ * behavior a compact, edge-mounted surface: quiet black material, luminous
+ * allowance rings, and details that open up only when the pointer asks for
+ * them. Everything is local CSS so the popover remains usable offline.
+ */
+
+.notch-shell {
+  --notch-black: #050505;
+  --notch-panel: #0c0c0c;
+  --notch-panel-raised: #141414;
+  --notch-line: rgba(255, 255, 255, 0.12);
+  --notch-copy: #f7f7f2;
+  --notch-muted: rgba(247, 247, 242, 0.56);
+  --notch-dim: rgba(247, 247, 242, 0.34);
+  --notch-orange: #ff5a1f;
+  --notch-green: #31e883;
+  --notch-yellow: #f4e21b;
+  --notch-red: #ff6a45;
+  --notch-shadow: 0 24px 42px rgba(0, 0, 0, 0.64), 0 5px 16px rgba(0, 0, 0, 0.55);
+  position: relative;
+  overflow: visible !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 27px !important;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255, 255, 255, 0.13), transparent 28%),
+    linear-gradient(180deg, #0d0d0d 0%, var(--notch-black) 58%, #020202 100%) !important;
+  box-shadow: var(--notch-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
+  color: var(--notch-copy);
+}
+
+.notch-shell::before {
+  position: absolute;
+  z-index: 0;
+  inset: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.045);
+  border-radius: 22px;
+  content: "";
+  pointer-events: none;
+}
+
+.notch-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.notch-shell .sculpture-header {
+  flex-basis: 39px;
+  min-height: 39px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.065), transparent);
+}
+
+.notch-shell .sculpture-header h1 {
+  color: var(--notch-copy);
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.notch-shell .sculpture-header > span {
+  color: var(--notch-muted);
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.notch-shell .account-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px 9px 12px;
+  overflow: auto;
+  background: transparent;
+  box-shadow: none;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.notch-shell .account-row {
+  --meter-accent: var(--notch-green);
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 11px;
+  align-items: center;
+  min-height: 91px;
+  padding: 10px 12px 12px 10px;
+  border: 1px solid var(--notch-line);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--meter-accent) 13%, transparent), transparent 34%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025) 46%, rgba(255, 255, 255, 0.01));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.8),
+    0 5px 11px rgba(0, 0, 0, 0.43);
+  transform: translateZ(0);
+  transition: border-color 180ms ease, background 220ms ease, box-shadow 220ms ease, transform 220ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.notch-shell .account-row:nth-child(2) { --meter-accent: #35a7ff; }
+.notch-shell .account-row:nth-child(3) { --meter-accent: #bb7dff; }
+.notch-shell .account-row-claude { --meter-accent: var(--notch-orange); }
+.notch-shell .account-row-codex { --meter-accent: var(--notch-green); }
+
+.notch-shell .account-row:hover,
+.notch-shell .account-row:focus-visible,
+.notch-shell .account-row:focus-within {
+  border-color: color-mix(in srgb, var(--meter-accent) 64%, white 12%);
+  background:
+    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--meter-accent) 22%, transparent), transparent 40%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035) 50%, rgba(255, 255, 255, 0.015));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 0 0 1px color-mix(in srgb, var(--meter-accent) 18%, transparent),
+    0 8px 18px rgba(0, 0, 0, 0.52),
+    0 0 24px color-mix(in srgb, var(--meter-accent) 12%, transparent);
+  transform: translateX(-3px);
+}
+
+.notch-shell .account-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--meter-accent) 74%, white 26%);
+  outline-offset: 2px;
+}
+
+.notch-shell .account-row + .account-row::after { display: none; }
+
+.meter-badge {
+  display: grid;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-content: center;
+  justify-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.meter-ring {
+  position: relative;
+  display: grid;
+  width: 47px;
+  height: 47px;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(var(--meter-accent) var(--remaining, 0%), #2a2a2a 0 100%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 17px color-mix(in srgb, var(--meter-accent) 25%, transparent);
+  transform: rotate(-90deg);
+  transition: background 420ms cubic-bezier(.22, 1, .36, 1), box-shadow 220ms ease;
+}
+
+.meter-ring::before {
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  background: radial-gradient(circle at 35% 28%, #252525, #090909 68%);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.85), inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+  content: "";
+}
+
+.meter-glyph {
+  position: relative;
+  z-index: 1;
+  color: var(--notch-copy);
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
+  font-size: 17px;
+  line-height: 1;
+  transform: rotate(90deg);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+
+.meter-value {
+  color: var(--notch-copy);
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.meter-badge.low .meter-ring {
+  --meter-accent: var(--notch-red);
+  animation: notchPulse 2.3s ease-in-out infinite;
+}
+
+.meter-badge.is-stale { opacity: 0.52; }
+.meter-badge.is-empty { opacity: 0.52; }
+
+@keyframes notchPulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 14px color-mix(in srgb, var(--meter-accent) 18%, transparent); }
+  50% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 0 24px color-mix(in srgb, var(--meter-accent) 42%, transparent); }
+}
+
+.notch-shell .account-meta,
+.notch-shell .account-row[data-bands="2"] .account-meta {
+  display: block;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  transform: none;
+}
+
+.notch-shell .account-type {
+  display: block;
+  overflow: hidden;
+  color: var(--notch-copy);
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notch-shell .account-row-claude .account-type { color: #fff3ec; }
+.notch-shell .account-name {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--notch-muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notch-shell .account-right {
+  display: block;
+  grid-column: 2;
+  grid-row: 2;
+  align-self: start;
+  min-width: 0;
+  padding-top: 8px;
+  transform: none;
+}
+
+.notch-shell .limit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.notch-shell .limit-window,
+.notch-shell .limit-window:first-child {
+  display: block;
+  min-width: 0;
+  height: auto;
+  transform: none;
+}
+
+.notch-shell .limit-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.notch-shell .limit-label {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--notch-muted);
+  font-size: 9px;
+  font-weight: 500;
+  opacity: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notch-shell .limit-value,
+.notch-shell .account-row[data-thin-top="1"] .limit-window:first-child .limit-value {
+  margin: 0;
+  color: var(--notch-copy);
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 1.1;
+}
+
+.notch-shell .limit-topline::after { display: none; }
+
+.notch-shell .allowance-track {
+  height: 4px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #292929;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.75), 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.notch-shell .allowance-fill {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), transparent 46%), var(--meter-accent) !important;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--meter-accent) 40%, transparent);
+}
+
+.notch-shell .allowance-fill::before { opacity: 0.44; }
+.notch-shell .allowance-fill::after { width: 2px; }
+
+.notch-shell .limit-window.low .limit-value { color: var(--notch-red); }
+.notch-shell .limit-window.low .allowance-fill { --meter-accent: var(--notch-red); }
+
+.notch-shell .limit-reset {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--notch-dim);
+  font-size: 8px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.notch-shell .account-summary {
+  margin: 0;
+  color: var(--notch-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.notch-shell .account-summary.error { color: #ff9a86; }
+
+.notch-shell .account-actions {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.notch-shell .connect-button,
+.notch-shell .delete-button {
+  min-height: 25px;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: var(--notch-copy);
+  font-size: 9px;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.notch-shell .connect-button:hover:not(:disabled),
+.notch-shell .delete-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--meter-accent) 60%, white 20%);
+  background: color-mix(in srgb, var(--meter-accent) 20%, white 8%);
+  transform: translateY(-1px);
+}
+
+.notch-shell .delete-button { color: var(--notch-muted); }
+.notch-shell .widget-bar {
+  flex: 0 0 36px;
+  height: 36px;
+  padding: 0 15px 0 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent);
+  box-shadow: none;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.notch-shell .status-anchor { gap: 6px; }
+.notch-shell .header-status { width: 5px; height: 5px; box-shadow: 0 0 7px currentColor; }
+.notch-shell .status-ok { color: var(--notch-green); background: currentColor; }
+.notch-shell .status-error { color: var(--notch-red); background: currentColor; }
+.notch-shell .status-pending { color: var(--notch-yellow); background: currentColor; }
+.notch-shell .status-text { color: var(--notch-muted); font-size: 8px; }
+
+.notch-shell .header-actions { gap: 5px; }
+.notch-shell .icon-button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--notch-muted);
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.notch-shell .icon-button:hover:not(:disabled),
+.notch-shell .icon-button:focus-visible {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--notch-copy);
+  transform: translateY(-1px);
+}
+
+.notch-shell .update-pill {
+  padding: 3px 8px;
+  border: 1px solid var(--notch-yellow);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--notch-yellow);
+  font-size: 8px;
+}
+
+.notch-shell .update-pill:hover:not(:disabled) {
+  background: var(--notch-yellow);
+  color: #0a0a0a;
+}
+
+@media (max-width: 250px) {
+  .notch-shell .account-list { padding-inline: 7px; }
+  .notch-shell .account-row { grid-template-columns: 48px minmax(0, 1fr); column-gap: 8px; padding-right: 9px; }
+  .meter-ring { width: 41px; height: 41px; }
+  .meter-glyph { font-size: 15px; }
+  .notch-shell .limit-grid { gap: 7px; }
+  .notch-shell .limit-value { font-size: 17px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notch-shell *,
+  .notch-shell *::before,
+  .notch-shell *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

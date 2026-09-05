@@ -164,6 +164,28 @@ function paintRowMeter(elements, windows) {
   row.dataset.bands = String(Math.min(2, windows.length));
 }
 
+function paintMeterBadge(elements, windows) {
+  const badge = elements?.badge;
+  const ring = elements?.meterRing;
+  const value = elements?.meterValue;
+  if (!badge || !ring || !value) return;
+
+  const primary = windows[0];
+  if (!primary) {
+    badge.classList.add("is-empty");
+    badge.classList.remove("low");
+    ring.style.setProperty("--remaining", "0%");
+    value.textContent = "—";
+    return;
+  }
+
+  const remaining = Math.min(100, Math.max(0, Number(primary.remainingPercent) || 0));
+  badge.classList.remove("is-empty");
+  badge.classList.toggle("low", isLowRemaining(primary));
+  ring.style.setProperty("--remaining", `${remaining}%`);
+  value.textContent = `${Math.round(remaining)}%`;
+}
+
 function buildCompactSummary(data) {
   const windows = usageWindows(data);
 
@@ -298,6 +320,7 @@ function renderLimitWindows(elements, data, options = {}) {
     [...elements.limitGrid.querySelectorAll?.(".limit-window") ?? []].map((node) => [node.dataset.label, Number(node.dataset.remaining)])
   );
   paintRowMeter(elements, displayWindows);
+  paintMeterBadge(elements, displayWindows);
   elements.limitGrid.replaceChildren(...displayWindows.map((window) => {
     const root = limitWindowTemplate.content.firstElementChild.cloneNode(true);
     const resetDate = getResetDate(window);
@@ -322,6 +345,7 @@ function renderLimitWindows(elements, data, options = {}) {
 
 function showStatusSummary(elements, text, className, title = "") {
   paintRowMeter(elements, []);
+  paintMeterBadge(elements, []);
   elements.limitGrid.replaceChildren();
   elements.limitGrid.classList.add("hidden");
   elements.summary.textContent = text;
@@ -508,6 +532,7 @@ function setStalePresentation(accountId, elements, stale, error = null) {
     : "";
 
   elements.row.classList.toggle("is-stale", stale);
+  elements.badge?.classList.toggle("is-stale", stale);
   elements.row.title = detail;
   elements.typeTag.textContent = stale ? `${type} · Cached` : type;
   elements.typeTag.title = detail;
@@ -677,6 +702,10 @@ function syncAccountsFromConfig(config) {
 
 function createAccountRow(account) {
   const node = accountTemplate.content.firstElementChild.cloneNode(true);
+  const badge = node.querySelector(".meter-badge");
+  const meterRing = node.querySelector(".meter-ring");
+  const meterGlyph = node.querySelector(".meter-glyph");
+  const meterValue = node.querySelector(".meter-value");
   const name = node.querySelector(".account-name");
   const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
@@ -686,6 +715,9 @@ function createAccountRow(account) {
   const deleteButton = node.querySelector(".delete-button");
 
   node.classList.add(account.type === "claude" ? "account-row-claude" : "account-row-codex");
+  if (meterGlyph) {
+    meterGlyph.textContent = account.type === "claude" ? "✳" : "⌾";
+  }
   typeTag.textContent = account.type === "claude" ? "Claude" : "Codex";
   name.textContent = buildAccountName(account);
   showStatusSummary(
@@ -794,6 +826,9 @@ function createAccountRow(account) {
 
   accountElements.set(account.id, {
     row: node,
+    badge,
+    meterRing,
+    meterValue,
     typeTag,
     name,
     limitGrid,
