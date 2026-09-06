@@ -4,7 +4,7 @@ set -euo pipefail
 project_root=$(pwd)
 build_output=$(mktemp -d /tmp/usage-meter-build.XXXXXX)
 app_path="$build_output/mac-arm64/Usage Meter.app"
-entitlements_path="$project_root/node_modules/app-builder-lib/templates/entitlements.mac.plist"
+entitlements_path="$project_root/scripts/entitlements.mac.plist"
 trap 'rm -rf "$build_output"' EXIT
 
 npm run clean

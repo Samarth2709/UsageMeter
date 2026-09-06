@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { app, BrowserWindow, session } = require("electron");
-const { ClaudeWebUsage, partitionForAccount } = require("../claude-web-usage");
+const { ClaudeWebUsage } = require("../claude-web-usage");
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "usage-meter-web-fixture-"));
 app.setPath("userData", profile);
@@ -18,7 +18,7 @@ app.whenReady().then(async () => {
   let utilization = 1;
   let status = 200;
   let requests = 0;
-  const webSession = session.fromPartition(partitionForAccount(account.id));
+  const webSession = session.fromPartition("offline-chrome-page-fixture");
   await webSession.protocol.handle("https", (request) => {
     requests += 1;
     const url = new URL(request.url);
@@ -37,11 +37,15 @@ app.whenReady().then(async () => {
     }
     return new Response("", { status: 404 });
   });
-  reader = new ClaudeWebUsage({ BrowserWindow, session, timeoutMs: 10000 });
+  const window = new BrowserWindow({ show: false, webPreferences: { session: webSession, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  await window.loadURL("https://claude.ai/settings/usage");
+  reader = new ClaudeWebUsage({ timeoutMs: 10000, run: async ({ script }) => JSON.parse(await window.webContents.executeJavaScript(script)) });
+  reader.tabs[account.id] = "offline-fixture";
   const first = await reader.read(account);
   assert.equal(first.source, "claude_web_usage");
   assert.equal(first.windows[0].usedPercent, 1);
-  assert.equal(BrowserWindow.getAllWindows().length, 0);
+
+  await window.webContents.executeJavaScript("performance.clearResourceTimings()");
   utilization = 2;
   const second = await reader.read(account);
   assert.equal(second.windows[0].usedPercent, 2);
@@ -52,8 +56,8 @@ app.whenReady().then(async () => {
   await assert.rejects(reader.read(account), /rate limiting/);
   assert.equal(requests, requestsBeforeBackoff);
   await reader.logout(account);
-  assert.equal(BrowserWindow.getAllWindows().length, 0);
-  console.log(JSON.stringify({ ok: true, checks: ["actual sandboxed Electron navigation", "both response bodies observed", "changed allowance", "window cleanup", "429 backoff", "logout"], externalRequests: 0 }));
+
+  console.log(JSON.stringify({ ok: true, checks: ["actual Chromium page collector", "identity before and after usage", "changed allowance after cleared resource timings", "429 backoff", "disconnect"], externalRequests: 0 }));
 }).catch((error) => {
   failed = true;
   console.error(error.stack);

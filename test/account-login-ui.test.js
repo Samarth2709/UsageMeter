@@ -34,6 +34,8 @@ test("Claude Keychain failures route to the explicit sign-in action", async () =
     true
   );
   assert.equal(context.isLoginNeededError("Claude usage request timed out."), false);
+  assert.equal(context.isLoginNeededError("Sign in to Claude again after allowing Usage Meter in macOS Privacy & Security > Automation and enabling Chrome View > Developer > Allow JavaScript from Apple Events."), true);
+  assert.equal(context.isLoginNeededError("This Chrome profile is signed in to a different Claude account or organization. Bring the matching Chrome profile forward, then Sign in to Claude again."), true);
 });
 
 test("healthy accounts hide the redundant overall status message", async () => {

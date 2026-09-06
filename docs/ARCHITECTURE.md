@@ -61,13 +61,13 @@ The app's local state is under `~/.rate-limit-tool/`:
 
 Transcript parsing is read-only. The cache stores aggregate buckets plus normalized Claude message usage needed to prevent fork/resume double counting; it does not store raw transcript text or message content.
 
-Claude web sessions use isolated Chromium persistent partitions under Electron's user-data directory (`~/Library/Application Support/usage-meter/Partitions/`). Partition names hash the stable row ID. Cookie values and authentication headers are not read by the collector or stored in account JSON.
+Claude web authentication stays in Google Chrome. `claude-chrome-tabs.json` stores only the Chrome tab ID associated with each row. Apple Events execute a bounded collector inside that tab; cookie values and authentication headers are never read or copied. The packaged shell requires the Apple Events automation entitlement and a macOS usage description.
 
 ## Refresh and resilience
 
 - Main snapshots refresh every minute.
-- Each Claude poll opens the normal usage page in a hidden sandboxed window, observes that document's bootstrap account and usage responses, then destroys the window. Session storage persists. Matching account IDs, email addresses, and organizations are required; navigation and lifecycle changes discard pending observations. Successful readings use `source: "claude_web_usage"`.
-- Concurrent refreshes share one operation. Reads time out after 25 seconds; interactive sign-in windows allow 10 minutes. A 429 honors the full `Retry-After` delay, with 150 seconds as fallback. No private endpoint is replayed outside the page.
+- Sign In opens or focuses a dedicated Claude tab in the foreground Chrome profile. Each poll performs same-origin bootstrap and usage GETs for the saved organization inside that signed-in page, then rechecks identity before accepting the result. New rows can discover the organization from the page's bootstrap request. Matching account IDs, email addresses, and organizations are required. Polling does not launch Chrome or focus tabs; closed tabs require Sign In again. Successful readings use `source: "claude_web_usage"`.
+- Concurrent refreshes share one operation. Reads time out after 25 seconds. A 429 honors the full `Retry-After` delay, with 150 seconds as fallback. Browser requests remain inside Chrome and use its normal same-origin session. An account mismatch removes the old association so Sign In can select another profile.
 - A failed Claude web poll immediately shows the last reading as grey `Cached` data with its original timestamp. Sign-in failures retain the numbers and expose the Sign in action. Existing Codex and standalone OAuth fallback aging remains six minutes.
 - History refreshes start a short-lived utility process for index work, then retain only compact dashboard results in the Electron main process.
 - Index updates perform a metadata inventory, read only bytes appended after each file's saved offset, and rebuild a truncated, replaced, reclassified, or indexed-tail-modified file.
@@ -78,7 +78,7 @@ Claude web sessions use isolated Chromium persistent partitions under Electron's
 - A schema-version mismatch or corrupt canonical index rebuilds from transcripts instead of accepting potentially stale legacy cache data.
 - Diagnostics exposes an explicit full index rebuild for an in-place rewrite earlier in an already-indexed prefix, which append-only tail validation cannot detect without rereading the prefix on every refresh. The repair preserves retained 90-day aggregates for transcripts that are no longer present.
 - Private JSON state is written with unique temporary files, file and directory sync, restrictive permissions, and atomic rename. Incomplete trailing JSONL is left uncommitted until it becomes a complete valid record.
-- The standalone browser/debug server has no Electron session and retains the read-only Claude Code Keychain/OAuth reader. It never uses the refresh token or rewrites the credential. The Electron app injects its web provider into refresh, sign-in, logout, and row deletion instead.
+- The standalone browser/debug server has no Chrome connection and retains the read-only Claude Code Keychain/OAuth reader. It never uses the refresh token or rewrites the credential. The Electron app injects its web provider into refresh, sign-in, logout, and row deletion instead.
 - Usage History is recomputed only while its window is open. In-memory history data is released when the window closes.
 - Aggregate-bearing file entries use device/inode identity, CLI tag, size, byte offset, parser continuation state, and a tail hash. Duplicate entries retain only identity and file metadata. Append-only growth is incremental; replacement/truncation rebuilds only that file.
 - Calendar ranges use local dates, not fixed 24-hour jumps, so daylight-saving transitions stay correct.
@@ -90,7 +90,7 @@ Claude web sessions use isolated Chromium persistent partitions under Electron's
 - The Electron renderer uses IPC rather than direct Node access.
 - The browser/debug server protects its API with a session token and is intended for local debugging.
 - The Electron app never launches Claude Code for usage, sign-in, logout, or reset automation. The standalone debug server retains explicit CLI Sign In and Log Out actions.
-- Remote Claude windows have sandboxing and context isolation, no Node integration or app preload, denied permissions/downloads/popups, and bounded HTTPS navigation. Logout and deletion cancel pending observations and clear only the row's browser storage.
+- Claude runs in ordinary Google Chrome without any app preload or Node bridge. The native adapter executes only in the recorded tab on the exact `https://claude.ai` origin. Logout and deletion discard pending results and remove the local association, preserving the shared Chrome login. macOS automation and Chrome JavaScript-from-Apple-Events permissions must be granted by the user; the app does not alter those settings.
 - Model names and paths derived from transcripts are escaped before renderer insertion. Paths are tooltip-only in the Project Ledger.
 - On the first packaged launch from `/Applications`, the app enables the macOS login item once. Source-mode runs and later user opt-outs are left alone.
 - The fixed shell fetches a signed GitHub Release manifest. It validates the Ed25519 signature, archive SHA-256, path-safe archive contents, minimum shell version, and an exact signed per-file SHA-256 map before activation and before every later Core launch. Missing, modified, extra, or symlinked Core files are rejected.

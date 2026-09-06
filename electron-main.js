@@ -12,8 +12,7 @@ const {
   nativeTheme,
   screen,
   dialog,
-  utilityProcess,
-  session
+  utilityProcess
 } = require("electron");
 
 const {
@@ -1031,8 +1030,7 @@ if (!gotSingleInstanceLock) {
     await loadPopoverPosition();
     await refreshScanRoots();
     claudeWebUsage = new ClaudeWebUsage({
-      BrowserWindow,
-      session,
+      statePath: path.join(appDataDir, "claude-chrome-tabs.json"),
       onSignedIn: () => refreshSnapshot({ forceClaudeUsage: true }).catch(() => {})
     });
     setClaudeWebProvider(claudeWebUsage);

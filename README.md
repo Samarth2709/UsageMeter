@@ -19,7 +19,7 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 
 1. Download and install the DMG into `/Applications`.
 2. Open **Usage Meter** once. It adds a menu-bar icon and enables launch-at-login for the packaged app.
-3. Use the refresh control to load limits. For Claude, select **Sign in** and sign in to the account saved in that row in Usage Meter's Claude window. This web session is separate from Claude Code. Codex continues to use its existing CLI login.
+3. Use the refresh control to load limits. For Claude, bring the matching Google Chrome profile forward and select **Sign in**. Usage Meter opens a Claude usage tab and reuses that profile's web login. Keep Chrome and this tab open. Allow Chrome automation when macOS asks, and enable Chrome **View > Developer > Allow JavaScript from Apple Events** if needed. Codex continues to use its existing CLI login.
 4. Select **View usage history** for local transcript analytics. If history is empty, open **Diagnostics** and add the folder containing your `.jsonl` sessions.
 
 The packaged app supports Apple Silicon Macs. If macOS blocks an unsigned download, use the instructions on the [website](https://usage-meter-five.vercel.app).
@@ -36,8 +36,8 @@ Usage Meter is designed around local CLI state:
 
 - Usage History indexes local `.jsonl` transcripts in a short-lived worker, reads only newly appended bytes after the first pass, and saves compact 90-day aggregates under `~/.rate-limit-tool/`. Indexed history stays available when a CLI cleans up an old transcript. It does not upload transcript contents.
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
-- The Electron app reads Claude limits from the normal Claude usage page every 60 seconds using a separate browser session per row. It checks the account and organization before accepting percentages or reset times. Failed reads retain the original timestamp and show `Cached`; authentication failures also show **Sign in**. Provider throttling can delay a refresh.
-- Claude web sessions stay in Chromium's local storage under `~/Library/Application Support/usage-meter/Partitions/`. The reader does not extract cookies or modify Claude Code credentials. **Log Out**, **Log Out & Remove Login**, and **Delete Row** clear that row's web session. The standalone browser/debug server retains the older read-only Keychain/OAuth path.
+- The app reads Claude limits every 60 seconds through a dedicated Google Chrome tab using its existing signed-in session. It checks the account and organization before accepting percentages or reset times. Failed reads retain the original timestamp and show `Cached`; authentication failures also show **Sign in**. Provider throttling can delay a refresh.
+- Claude credentials stay in Google Chrome. Only tab IDs are saved in `~/.rate-limit-tool/claude-chrome-tabs.json`; the reader does not extract cookies or modify Claude Code credentials. **Log Out**, **Log Out & Remove Login**, and **Delete Row** disconnect that row from Chrome. They preserve your shared Chrome login; use Claude's own menu to sign out of the website. The standalone browser/debug server retains the older read-only Keychain/OAuth path.
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
 
 Append validation detects truncation, replacement, source reclassification, and changes at the saved file tail. An in-place rewrite earlier in an already-indexed prefix cannot be detected without rereading the whole prefix, so **Usage History → Diagnostics → Rebuild index** provides an explicit full repair from current transcripts while preserving retained 90-day history for files the CLIs already cleaned up.

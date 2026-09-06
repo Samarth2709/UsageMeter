@@ -1,18 +1,13 @@
-# Claude web reader verification
+# Claude Chrome reader verification
 
-Status: implemented and reviewed; live authentication and sustained polling in the new Electron reader remain unverified.
+Verified in the installed macOS arm64 app on September 5, 2026.
 
-## Completed
+- **301 tests passed.** Coverage includes identity and organization binding, exact reset times, cached errors, 429 backoff, disconnect races, tab persistence, wrong-profile/auth/permission recovery, and refresh coalescing. Independent reviews have no remaining actionable findings.
+- The actual Chromium fixture passed with local HTTPS responses: identity checks before and after usage, changing allowances, cleared resource timings, and backoff. It makes no external requests.
+- Installed **Sign In** opened Google Chrome and reused the existing work-profile login. Four successive live readings arrived 59.905, 60.008, and 60.074 seconds apart. After the final auth-recovery correction, restart reused the same Chrome session. Closing the connected tab produced explicit Cached data and Sign In; reconnect restored a fresh reading, followed by two automatic readings 59.879 seconds apart.
+- Native UI inspection showed live Claude data and preserved the compact layout. The installed app retains all 11 pre-existing public UI files and the prior local server auth fixes; these local additions are excluded from the PR and canonical release archive.
+- The canonical 0.2.13 ZIP matches the PR source, the DMG checksum is valid, and both the release bundle and installed app pass strict deep signature verification. The Apple Events entitlement and Chrome usage description are present. Shell 0.2.12 rejects the new Core; 0.2.13 accepts it.
 
-- Baseline: 276 Node tests passed. Final suite: 296 tests passed, including a clean dependency install.
-- Focused regressions cover strict percentages/reset parsing, account and organization mismatches, weekly-only windows, concurrent reads, navigation changes, login completion, logout races, and API/page-level rate limits.
-- The offline Electron fixture passed with actual sandboxed windows and local HTTPS responses: both response bodies were collected, changing usage was reflected, windows were cleaned up, and 429 backoff prevented another request. It made no external requests.
-- Core build and packaged-source parity passed. The arm64 DMG passed `hdiutil verify`.
-- Independent design and implementation reviews completed. Three implementation findings were fixed and retested: preserving a usable error after rate-limit cancellation, honoring document-level 429 responses, and blocking reads during session clearing. The follow-up review reported no remaining actionable findings.
-- The local installed app passed startup, deep strict signature verification, and staged-file hash checks. Its existing local UI and Keychain error handling were preserved; those unrelated changes are excluded from this PR.
+Live allowance values stayed constant during this installed-app check; changed values were exercised in the Chromium fixture. Chrome and its connected usage tab must remain open. Provider throttling, expired login, or a future web API change can still require a retry or reconnection.
 
-## Still required
-
-The Mac locked before interactive verification. Unlock it, open Usage Meter, and select **Sign in** on the Claude row using the saved account and organization. Then verify fresh `claude_web_usage` readings on successive 60-second background refreshes, changing allowance, restart persistence, and the installed compact UI.
-
-The ordinary Claude web page's current bootstrap identity fields and usage/reset fields were inspected through Chrome's response preview. That schema inspection and the offline fixture do not establish that embedded sign-in, upstream throttling, or future page versions will work. Keep the PR in draft until the new reader passes live verification.
+Local evidence is under `build/chrome-install/`: source hashes, polling samples, restart/lifecycle checks, and the previous installed app for rollback. No credentials or raw browser responses are recorded there.

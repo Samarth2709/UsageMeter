@@ -105,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           npm version "$VERSION" --no-git-tag-version
-          shell_files=(bootstrap.js bootstrap-updater.js core-updater.js atomic-file.js preload.js update-public-key.pem package.json package-lock.json scripts/dist-mac.sh)
+          shell_files=(bootstrap.js bootstrap-updater.js core-updater.js atomic-file.js preload.js update-public-key.pem package.json package-lock.json scripts/dist-mac.sh scripts/entitlements.mac.plist)
           if [ -z "$BASE_TAG" ] || ! git diff --quiet "$BASE_TAG"..HEAD -- "${shell_files[@]}"; then
             npm pkg set "usageMeter.minimumShellVersion=$VERSION"
           fi

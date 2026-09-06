@@ -1,28 +1,13 @@
-const crypto = require("crypto");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
+const { atomicWriteJsonSync } = require("./atomic-file");
 
 const usagePage = "https://claude.ai/settings/usage";
 const pollIntervalMs = 60000;
-const signInMessage = "Sign in to Claude in Usage Meter to read live usage.";
-const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const bootstrapPath = new RegExp(`^/edge-api/bootstrap/(${uuid})/app_start$`, "i");
-const usagePath = new RegExp(`^/api/organizations/(${uuid})/usage$`, "i");
-
-function responseKind(value) {
-  try {
-    const url = new URL(value);
-    if (url.origin !== "https://claude.ai") return null;
-    const bootstrap = url.pathname.match(bootstrapPath);
-    const usage = url.pathname.match(usagePath);
-    if (!bootstrap && !usage) return null;
-    return { kind: bootstrap ? "bootstrap" : "usage", organization: (bootstrap || usage)[1] };
-  } catch {
-    return null;
-  }
-}
-
-function partitionForAccount(accountId) {
-  return `persist:claude-web-${crypto.createHash("sha256").update(accountId).digest("hex")}`;
-}
+const signInMessage = "Sign in to Claude in Chrome from Usage Meter and keep its usage tab open.";
+const runFile = promisify(execFile);
 
 function retryDelay(value, now) {
   const text = String(value || "").trim();
@@ -75,233 +60,245 @@ function parseWebUsage(expected, bootstrap, usage, organization, now = new Date(
   return { service: "claude", source: "claude_web_usage", ...actual, windows, fetchedAt: now.toISOString() };
 }
 
-// The page performs its own authenticated requests. Only its account and usage
-// response bodies are observed; cookies, request headers and tokens stay in Chromium.
+// Runs in Chrome's ordinary page context. Authentication stays in Chrome;
+// only the account identifiers, allowance windows and request status leave it.
+function pageRead(requestId, expected) {
+  if (location.origin !== "https://claude.ai" || location.pathname.startsWith("/login")) {
+    return JSON.stringify({ error: "Sign in to Claude in Chrome." });
+  }
+  const key = "__usageMeterClaudeRead";
+  if (window[key]?.requestId === requestId) return JSON.stringify(window[key]);
+  if (window[key]?.pending) return JSON.stringify({ pending: true });
+  if (window[key]?.retryAt > Date.now()) return JSON.stringify({ status: 429, retryAfter: String((window[key].retryAt - Date.now()) / 1000) });
+  const names = performance.getEntriesByType("resource").map((entry) => entry.name);
+  const pattern = /^https:\/\/claude\.ai\/edge-api\/bootstrap\/([0-9a-f-]{36})\/app_start(?:\?|$)/i;
+  // Saved rows already bind an organization. Use that identifier even when
+  // Claude clears resource timings; new rows can discover it from the page.
+  const organizationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const observedUrl = names.reverse().find((name) => pattern.test(name));
+  const organization = organizationPattern.test(expected.organization || "") ? expected.organization : observedUrl?.match(pattern)[1];
+  if (!organization) return JSON.stringify({ pending: true, phase: "page loading" });
+  const bootstrapUrl = `https://claude.ai/edge-api/bootstrap/${organization}/app_start`;
+  window[key] = { requestId, pending: true, phase: "account response" };
+  (async () => {
+    const signal = AbortSignal.timeout(20000);
+    const get = async (url) => {
+      const response = await fetch(url, { credentials: "same-origin", cache: "no-store", redirect: "error", signal });
+      if (response.status !== 200) {
+        throw { status: response.status, retryAfter: response.headers.get("retry-after") };
+      }
+      const text = await response.text();
+      if (text.length > 2 * 1024 * 1024) throw new Error("Response too large");
+      return JSON.parse(text);
+    };
+    try {
+      const body = await get(bootstrapUrl);
+      const identity = { providerAccountId: body?.account?.uuid, email: body?.account?.email_address, organization };
+      if (!identity.providerAccountId || !identity.email) throw new Error("Missing account");
+      for (const field of ["providerAccountId", "email", "organization"]) {
+        if (expected[field] && String(expected[field]).trim().toLowerCase() !== String(identity[field]).trim().toLowerCase()) {
+          window[key] = { requestId, mismatch: true, error: "This Chrome profile is signed in to a different Claude account or organization. Bring the matching Chrome profile forward, then Sign in to Claude again." };
+          return;
+        }
+      }
+      window[key].phase = "usage response";
+      const usage = await get(`/api/organizations/${organization}/usage`);
+      // Recheck identity after usage so a simultaneous account switch cannot
+      // pair the previous user with the new user's allowance in a shared org.
+      window[key].phase = "account confirmation";
+      const confirmed = await get(bootstrapUrl);
+      if (confirmed?.account?.uuid !== identity.providerAccountId || confirmed?.account?.email_address !== identity.email) {
+        throw new Error("Account changed");
+      }
+      window[key] = { requestId, identity, usage: { five_hour: usage.five_hour, seven_day: usage.seven_day } };
+    } catch (error) {
+      const text = String(error.retryAfter || "").trim();
+      const seconds = Number(text);
+      const date = Date.parse(text);
+      const delay = text && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : Number.isFinite(date) && date > Date.now() ? date - Date.now() : 150000;
+      window[key] = { requestId, status: error.status, reconnect: error.status === 401 || error.status === 403, retryAfter: error.retryAfter, retryAt: error.status === 429 ? Date.now() + delay : 0,
+        error: error.status === 401 || error.status === 403 ? "Sign in to Claude in Chrome." : "Claude usage could not be read from Chrome." };
+    }
+  })();
+  return JSON.stringify({ requestId, pending: true });
+}
+
+// JXA uses Chrome's supported Apple Events interface. Only the selected tab is
+// executed; polling neither opens Chrome nor switches the user's active tab.
+function chromeCommand(command) {
+  const chrome = Application("Google Chrome");
+  if (!chrome.running() && command.action !== "open") throw new Error("Sign in to Claude in Chrome and keep Chrome open.");
+  if (command.action === "open") chrome.launch();
+  const windows = chrome.windows();
+  let target = null;
+  let targetWindow = null;
+  let targetIndex = 0;
+  for (const window of windows) {
+    const tabs = window.tabs();
+    for (let index = 0; index < tabs.length; index += 1) {
+      if (String(tabs[index].id()) === String(command.tabId)) {
+        target = tabs[index]; targetWindow = window; targetIndex = index + 1;
+      }
+    }
+  }
+  if (command.action === "open") {
+    if (target && /^https:\/\/claude\.ai(?:\/|$)/.test(target.url())) {
+      target.url = command.url;
+    } else {
+      if (!windows.length) {
+        targetWindow = chrome.Window().make();
+        target = targetWindow.activeTab();
+        target.url = command.url;
+        targetIndex = 1;
+      } else {
+        targetWindow = windows[0];
+        target = chrome.Tab({ url: command.url });
+        targetWindow.tabs.push(target);
+        targetIndex = targetWindow.tabs.length;
+      }
+    }
+    chrome.activate();
+    targetWindow.index = 1;
+    targetWindow.activeTabIndex = targetIndex;
+    return JSON.stringify({ tabId: String(target.id()) });
+  }
+  if (!target) throw new Error("Sign in to Claude in Chrome again; its usage tab was closed.");
+  if (!/^https:\/\/claude\.ai(?:\/|$)/.test(target.url())) throw new Error("Sign in to Claude in Chrome again; its usage tab has navigated away.");
+  return target.execute({ javascript: command.script });
+}
+
+async function runChrome(command) {
+  try {
+    const { stdout } = await runFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", `(${chromeCommand.toString()})(${JSON.stringify(command)})`], { timeout: 10000, maxBuffer: 65536 });
+    return JSON.parse(stdout.trim());
+  } catch (error) {
+    const message = String(error.stderr || error.message);
+    if (/Apple Events|AppleEvents|javascript.*disabled|JavaScript.*turned off/i.test(message)) {
+      const failure = new Error("Sign in to Claude again after allowing Usage Meter in macOS Privacy & Security > Automation and enabling Chrome View > Developer > Allow JavaScript from Apple Events.");
+      failure.reconnect = true;
+      throw failure;
+    }
+    if (/Sign in to Claude[^\n]*/.test(message)) throw new Error(message.match(/Sign in to Claude[^\n]*/)[0].replace(/ \(-?\d+\)$/, ""));
+    throw new Error("Could not read Claude in Google Chrome. Sign in to Claude again to check Chrome's automation permission.");
+  }
+}
+
 class ClaudeWebUsage {
-  constructor({ BrowserWindow, session, onSignedIn = () => {}, now = Date.now, timeoutMs = 25000 }) {
-    this.BrowserWindow = BrowserWindow;
-    this.session = session;
+  constructor({ statePath, onSignedIn = () => {}, run = runChrome, now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), timeoutMs = 25000 } = {}) {
+    this.statePath = statePath;
     this.onSignedIn = onSignedIn;
+    this.run = run;
     this.now = now;
+    this.wait = wait;
     this.timeoutMs = timeoutMs;
     this.entries = new Map();
+    this.tabs = {};
     this.closed = false;
+    if (statePath) {
+      try { this.tabs = JSON.parse(fs.readFileSync(statePath, "utf8")); } catch { /* first run or invalid state requires Sign in */ }
+      if (!this.tabs || typeof this.tabs !== "object" || Array.isArray(this.tabs)) this.tabs = {};
+    }
   }
+
+  save() { if (this.statePath) atomicWriteJsonSync(this.statePath, this.tabs); }
 
   entry(account) {
     if (this.closed) throw new Error("Claude web reader is closed.");
-    if (!this.entries.has(account.id)) {
-      this.entries.set(account.id, { generation: 0, retryAt: 0, operation: null, ready: null, clearing: null });
-    }
+    if (!this.entries.has(account.id)) this.entries.set(account.id, { generation: 0, retryAt: 0, operation: null, login: null });
     return this.entries.get(account.id);
   }
 
-  read(account) {
-    const entry = this.entry(account);
-    if (entry.clearing) return Promise.reject(new Error("Claude web session is being cleared. Sign in to Claude after logout finishes."));
-    if (entry.operation && entry.operation.binding !== accountBinding(account)) this.cancel(entry);
-    if (entry.operation) {
-      return entry.operation.login ? Promise.reject(new Error(signInMessage)) : entry.operation.promise;
-    }
-    if (this.now() < entry.retryAt) return Promise.reject(this.backoffError(entry));
-    if (entry.ready) {
-      const result = entry.ready;
-      entry.ready = null;
-      try { assertAccount(account, result); } catch (error) { return Promise.reject(error); }
-      return Promise.resolve(result);
-    }
-    return this.capture(account, entry, false);
+  backoff(entry) {
+    if (this.now() < entry.retryAt) throw new Error(`Claude is rate limiting web usage. Retrying in ${Math.max(1, Math.ceil((entry.retryAt - this.now()) / 1000))}s.`);
   }
 
   async openLogin(account) {
     const entry = this.entry(account);
-    if (entry.clearing) throw new Error("Claude web session is being cleared. Sign in to Claude after logout finishes.");
-    if (entry.operation && entry.operation.binding !== accountBinding(account)) this.cancel(entry);
-    if (entry.operation?.login) {
-      entry.operation.window.show();
-      entry.operation.window.focus();
-      return;
-    }
-    if (this.now() < entry.retryAt) throw this.backoffError(entry);
-    this.cancel(entry);
-    const generation = entry.generation;
-    this.capture(account, entry, true).then(() => {
-      if (entry.generation === generation) this.onSignedIn();
-    }).catch(() => {});
-  }
-
-  capture(account, entry, login) {
-    const expected = { ...account };
-    const generation = entry.generation;
-    const webSession = this.session.fromPartition(partitionForAccount(account.id));
-    webSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    webSession.setPermissionCheckHandler(() => false);
-    const denyDownload = (event) => event.preventDefault();
-    webSession.on("will-download", denyDownload);
-    const window = new this.BrowserWindow({
-      title: "Usage Meter — Claude sign-in",
-      width: 1000,
-      height: 780,
-      show: login,
-      webPreferences: { session: webSession, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }
-    });
-    const contents = window.webContents;
-    const requests = new Map();
-    let bootstrap = null;
-    let usage = null;
-    let document = 0;
-    let settled = false;
-    let resolve;
-    let reject;
-    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    const finish = (error, result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      requests.clear();
-      webSession.removeListener("will-download", denyDownload);
-      if (entry.operation?.promise === promise) entry.operation = null;
-      if (!window.isDestroyed()) window.destroy();
-      if (generation !== entry.generation) {
-        reject(new Error("Claude web session changed during refresh."));
-        return;
-      }
-      if (result && login) entry.ready = result;
-      if (error) reject(error);
-      else resolve(result);
-    };
-    const timer = setTimeout(() => finish(new Error(login ? signInMessage : "Claude web usage timed out. Sign in to Claude to check the browser session.")), login ? 10 * 60 * 1000 : this.timeoutMs);
-    entry.operation = { promise, window, login, binding: accountBinding(account), cancel: () => finish(new Error("Claude web refresh was cancelled.")) };
-
-    const allowedNavigation = (value) => {
-      try {
-        const url = new URL(value);
-        return url.protocol === "https:" && (url.hostname === "claude.ai"
-          || (login && ["accounts.google.com", "appleid.apple.com", "account.apple.com"].includes(url.hostname)));
-      } catch { return false; }
-    };
-    for (const eventName of ["will-navigate", "will-redirect"]) {
-      contents.on(eventName, (event, url) => {
-        if (!allowedNavigation(url)) {
-          event.preventDefault();
-          finish(new Error("Claude sign-in opened an unsupported destination. Sign in to Claude again."));
-        }
-      });
-    }
-    contents.setWindowOpenHandler(() => ({ action: "deny" }));
-    contents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
-      if (!mainFrame || inPlace) return;
-      document += 1;
-      bootstrap = usage = null;
-      requests.clear();
-    });
-    contents.on("did-navigate", (_event, value) => {
-      if (!login && new URL(value).pathname.startsWith("/login")) finish(new Error(signInMessage));
-    });
-    contents.on("did-fail-load", (_event, code, _description, _url, mainFrame) => {
-      if (mainFrame && code !== -3) finish(new Error("Claude web usage could not load. Check your connection or sign in to Claude again."));
-    });
-    contents.on("render-process-gone", () => finish(new Error("Claude web usage browser stopped.")));
-    window.on("closed", () => finish(new Error(signInMessage)));
-
-    const accept = () => {
-      if (!bootstrap || !usage || settled || generation !== entry.generation) return;
-      if (bootstrap.organization !== usage.organization) {
-        finish(new Error("Claude web account and usage organizations did not match. Sign in to Claude again."));
-        return;
-      }
-      try {
-        finish(null, parseWebUsage(expected, bootstrap.body, usage.body, usage.organization, new Date(this.now())));
-      } catch (error) { finish(error); }
-    };
-    contents.debugger.on("message", async (_event, method, params) => {
-      if (settled || generation !== entry.generation) return;
-      if (method === "Network.responseReceived" && params.type === "Document") {
-        let origin;
-        try { origin = new URL(params.response.url).origin; } catch { return; }
-        if (origin === "https://claude.ai") {
-          if (params.response.status === 429) {
-            this.rateLimited(entry, params.response);
-            finish(this.backoffError(entry));
-          } else if (!login && [401, 403].includes(params.response.status)) {
-            finish(new Error(signInMessage));
-          }
-        }
-      }
-      if (method === "Network.requestWillBeSent") {
-        const kind = responseKind(params.request.url);
-        if (kind && params.request.method === "GET") requests.set(params.requestId, { ...kind, document });
-      }
-      const request = requests.get(params.requestId);
-      if (!request) return;
-      if (method === "Network.responseReceived") {
-        const response = params.response;
-        if (response.status === 429) {
-          this.rateLimited(entry, response);
-          finish(this.backoffError(entry));
-        } else if (response.status === 401 || response.status === 403) {
-          finish(new Error(signInMessage));
-        } else if (response.status !== 200 || response.fromDiskCache || response.fromServiceWorker) {
-          finish(new Error("Claude web usage did not return a fresh response."));
-        } else request.received = true;
-      }
-      if (method === "Network.requestServedFromCache") finish(new Error("Claude web usage returned a cached response."));
-      if (method === "Network.loadingFailed") finish(new Error("Claude web usage request failed."));
-      if (method !== "Network.loadingFinished") return;
-      requests.delete(params.requestId);
-      if (!request.received || request.document !== document) return;
-      try {
-        if (params.encodedDataLength > 2 * 1024 * 1024) throw new Error("Response is too large.");
-        const response = await contents.debugger.sendCommand("Network.getResponseBody", { requestId: params.requestId });
-        if (settled || generation !== entry.generation || request.document !== document) return;
-        if (response.body.length > 3 * 1024 * 1024) throw new Error("Response is too large.");
-        const body = JSON.parse(response.base64Encoded ? Buffer.from(response.body, "base64").toString("utf8") : response.body);
-        if (request.kind === "bootstrap") bootstrap = { body, organization: request.organization };
-        else usage = { body, organization: request.organization };
-        accept();
-      } catch {
-        finish(new Error("Claude web usage response could not be read."));
-      }
-    });
-    contents.debugger.on("detach", () => finish(new Error("Claude web usage observer disconnected.")));
-    try {
-      contents.debugger.attach("1.3");
-      // An initial about:blank target may not answer Network.enable until navigation starts.
-      contents.debugger.sendCommand("Network.enable").catch(() => finish(new Error("Claude web usage observer could not start.")));
-      window.loadURL(usagePage).catch(() => finish(new Error("Claude web usage could not load. Sign in to Claude again.")));
-    } catch { finish(new Error("Claude web usage browser could not start.")); }
-    return promise;
-  }
-
-  cancel(entry) {
+    this.backoff(entry);
+    if (entry.login) return entry.login;
     entry.generation += 1;
-    entry.operation?.cancel();
-    entry.ready = null;
+    const generation = entry.generation;
+    entry.login = (async () => {
+      const result = await this.run({ action: "open", tabId: this.tabs[account.id], url: usagePage });
+      if (generation !== entry.generation) return;
+      this.tabs[account.id] = result.tabId;
+      this.save();
+    })();
+    try {
+      await entry.login;
+      entry.login = null;
+      if (generation === entry.generation) this.onSignedIn();
+    } finally { entry.login = null; }
   }
 
-  rateLimited(entry, response) {
-    const retryAfter = Object.entries(response.headers || {}).find(([key]) => key.toLowerCase() === "retry-after")?.[1];
-    entry.retryAt = this.now() + retryDelay(retryAfter, this.now());
+  read(account) {
+    const entry = this.entry(account);
+    try { this.backoff(entry); } catch (error) { return Promise.reject(error); }
+    if (entry.login) return Promise.reject(new Error(signInMessage));
+    if (!this.tabs[account.id]) return Promise.reject(new Error(signInMessage));
+    if (entry.operation?.binding === accountBinding(account)) return entry.operation.promise;
+    if (entry.operation) entry.generation += 1;
+    const generation = entry.generation;
+    const operation = { binding: accountBinding(account) };
+    operation.promise = this.capture({ ...account }, entry, generation).finally(() => {
+      if (entry.operation === operation) entry.operation = null;
+    });
+    entry.operation = operation;
+    return operation.promise;
   }
 
-  backoffError(entry) {
-    return new Error(`Claude is rate limiting web usage. Retrying in ${Math.max(1, Math.ceil((entry.retryAt - this.now()) / 1000))}s.`);
+  async capture(account, entry, generation) {
+    const requestId = crypto.randomUUID();
+    const tabId = this.tabs[account.id];
+    const script = `(${pageRead.toString()})(${JSON.stringify(requestId)}, ${JSON.stringify({ providerAccountId: account.providerAccountId, email: account.email, organization: account.organization })})`;
+    const deadline = this.now() + this.timeoutMs;
+    let phase = "page loading";
+    while (this.now() < deadline) {
+      if (generation !== entry.generation) throw new Error("Claude Chrome connection changed during refresh.");
+      let result;
+      try {
+        result = await this.run({ action: "read", tabId, script });
+      } catch (error) {
+        if (error.reconnect && generation === entry.generation) {
+          delete this.tabs[account.id];
+          this.save();
+        }
+        throw error;
+      }
+      if (generation !== entry.generation) throw new Error("Claude Chrome connection changed during refresh.");
+      if (result.status === 429) {
+        entry.retryAt = this.now() + retryDelay(result.retryAfter, this.now());
+        this.backoff(entry);
+      }
+      if (result.mismatch || result.reconnect) {
+        delete this.tabs[account.id];
+        this.save();
+      }
+      if (result.error) throw new Error(result.error);
+      if (!result.pending) {
+        if (result.requestId !== requestId) throw new Error("Claude Chrome usage response did not match this refresh.");
+        return parseWebUsage(account, { account: { uuid: result.identity?.providerAccountId, email_address: result.identity?.email } }, result.usage, result.identity?.organization, new Date(this.now()));
+      }
+      phase = result.phase || phase;
+      await this.wait(250);
+    }
+    throw new Error(`Claude Chrome usage timed out waiting for ${phase}. Sign in to Claude again to check its usage tab.`);
   }
 
   async logout(account) {
     const entry = this.entry(account);
-    if (entry.clearing) return entry.clearing;
-    this.cancel(entry);
-    entry.clearing = this.session.fromPartition(partitionForAccount(account.id)).clearStorageData();
-    try { await entry.clearing; } finally { entry.clearing = null; }
+    entry.generation += 1;
+    delete this.tabs[account.id];
+    this.save();
+    // Disconnect only this row. Chrome's shared login belongs to the user.
   }
 
-  remove(account) { return this.logout(account, true); }
+  remove(account) { return this.logout(account); }
 
   close() {
-    for (const entry of this.entries.values()) this.cancel(entry);
+    for (const entry of this.entries.values()) entry.generation += 1;
     this.closed = true;
   }
 }
 
-module.exports = { ClaudeWebUsage, parseWebUsage, responseKind, partitionForAccount, retryDelay, pollIntervalMs };
+module.exports = { ClaudeWebUsage, parseWebUsage, retryDelay, pollIntervalMs, pageRead, chromeCommand };

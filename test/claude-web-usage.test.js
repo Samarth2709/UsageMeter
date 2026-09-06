@@ -1,75 +1,28 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { EventEmitter } = require("node:events");
-const { ClaudeWebUsage, parseWebUsage, responseKind, partitionForAccount, retryDelay } = require("../claude-web-usage");
+const vm = require("node:vm");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { ClaudeWebUsage, parseWebUsage, retryDelay, pageRead, chromeCommand } = require("../claude-web-usage");
 const server = require("../server");
-
 const org = "11111111-1111-4111-8111-111111111111";
 const otherOrg = "22222222-2222-4222-8222-222222222222";
 const account = { id: "claude-one", type: "claude", providerAccountId: "account-one", email: "one@example.test", organization: org };
 const bootstrap = { account: { uuid: account.providerAccountId, email_address: account.email } };
 const payload = { five_hour: { utilization: 1.5, resets_at: "2026-09-06T05:00:00Z" }, seven_day: { utilization: 0, resets_at: null } };
-const bootstrapUrl = (organization = org) => `https://claude.ai/edge-api/bootstrap/${organization}/app_start?include_system_prompts=false`;
-const usageUrl = (organization = org) => `https://claude.ai/api/organizations/${organization}/usage`;
-
 function harness(options = {}) {
-  const windows = [];
-  const sessions = new Map();
   let clock = Date.parse("2026-09-06T01:00:00Z");
-  class Window extends EventEmitter {
-    constructor(config) {
-      super();
-      this.config = config;
-      this.destroyed = false;
-      this.bodies = new Map();
-      this.webContents = new EventEmitter();
-      this.webContents.debugger = new EventEmitter();
-      this.webContents.debugger.attach = () => {};
-      this.webContents.debugger.sendCommand = async (method, params) => method === "Network.getResponseBody"
-        ? this.bodies.get(params.requestId) : {};
-      this.webContents.setWindowOpenHandler = (handler) => { this.openHandler = handler; };
-      windows.push(this);
-    }
-    loadURL(url) {
-      this.url = url;
-      this.webContents.emit("did-start-navigation", {}, url, false, true);
-      return Promise.resolve();
-    }
-    isDestroyed() { return this.destroyed; }
-    destroy() { this.destroyed = true; this.emit("closed"); }
-    show() { this.shown = true; }
-    focus() { this.focused = true; }
-  }
-  const session = {
-    fromPartition(partition) {
-      if (!sessions.has(partition)) {
-        const item = new EventEmitter();
-        item.setPermissionRequestHandler = (handler) => { item.permissionRequest = handler; };
-        item.setPermissionCheckHandler = (handler) => { item.permissionCheck = handler; };
-        item.clearStorageData = async () => { item.cleared = true; };
-        sessions.set(partition, item);
-      }
-      return sessions.get(partition);
-    }
+  const calls = [];
+  let handle = async (command) => {
+    if (command.action === "open") return { tabId: "123" };
+    const requestId = command.script.match(/\)\("([^"]+)"/)[1];
+    return { requestId, identity: account, usage: payload };
   };
-  const reader = new ClaudeWebUsage({ BrowserWindow: Window, session, now: () => clock, ...options });
-  let id = 0;
-  const send = (window, url, body, response = {}) => {
-    const requestId = String(++id);
-    const debuggerApi = window.webContents.debugger;
-    window.bodies.set(requestId, { body: JSON.stringify(body), base64Encoded: false });
-    debuggerApi.emit("message", {}, "Network.requestWillBeSent", { requestId, request: { url, method: "GET" } });
-    debuggerApi.emit("message", {}, "Network.responseReceived", { requestId, response: { url, status: 200, ...response } });
-    debuggerApi.emit("message", {}, "Network.loadingFinished", { requestId, encodedDataLength: 100 });
-    return requestId;
-  };
-  const complete = (window, data = payload) => {
-    send(window, usageUrl(), data);
-    send(window, bootstrapUrl(), bootstrap);
-  };
-  return { reader, windows, sessions, send, complete, advance: (ms) => { clock += ms; } };
+  const reader = new ClaudeWebUsage({ now: () => clock, wait: async (ms) => { clock += ms; }, run: async (command) => { calls.push(command); return handle(command); }, ...options });
+  reader.tabs[account.id] = "123";
+  return { reader, calls, set: (handler) => { handle = handler; }, advance: (ms) => { clock += ms; } };
 }
-
 test("web usage preserves exact percentages, timestamps, and account identity", () => {
   const result = parseWebUsage(account, bootstrap, payload, org, new Date("2026-09-06T01:00:00Z"));
   assert.equal(result.source, "claude_web_usage");
@@ -101,192 +54,145 @@ test("web parser never converts missing, null, boolean, or out-of-range utilizat
   }
 });
 
-test("only exact Claude bootstrap and usage paths are observed", () => {
-  assert.deepEqual(responseKind(bootstrapUrl()), { kind: "bootstrap", organization: org });
-  assert.deepEqual(responseKind(usageUrl()), { kind: "usage", organization: org });
-  for (const url of ["invalid", usageUrl().replace("https:", "http:"), usageUrl().replace("claude.ai", "claude.ai.example.test"), `${usageUrl()}/other`, "https://claude.ai/api/auth/login"]) {
-    assert.equal(responseKind(url), null);
-  }
-  assert.notEqual(partitionForAccount("one"), partitionForAccount("two"));
-  assert.match(partitionForAccount("../one@example.test"), /^persist:claude-web-[a-f0-9]{64}$/);
-});
 
-test("provider retry delay honors long Retry-After values without shortening them", () => {
+test("backoff honors full Retry-After and does not turn zero into an immediate retry", () => {
   const now = Date.parse("2026-09-06T01:00:00Z");
   assert.equal(retryDelay("3600", now), 3600000);
   assert.equal(retryDelay("Sun, 06 Sep 2026 02:00:00 GMT", now), 3600000);
   for (const value of [undefined, "0", "-1", "invalid"]) assert.equal(retryDelay(value, now), 150000);
 });
 
-test("a poll waits for both matching responses and concurrent reads share one window", async () => {
+test("reads share one operation and exact timestamps advance on the next poll", async () => {
   const h = harness();
   const first = h.reader.read(account);
   assert.equal(first, h.reader.read(account));
-  assert.equal(h.windows.length, 1);
-  h.complete(h.windows[0]);
-  const result = await first;
-  assert.equal(result.windows[0].usedPercent, 1.5);
-  assert.equal(h.windows[0].destroyed, true);
-  assert.equal(h.sessions.values().next().value.listenerCount("will-download"), 0);
+  const data = await first;
+  assert.equal(h.calls.length, 1);
   h.advance(60000);
-  const second = h.reader.read(account);
-  h.complete(h.windows[1], { ...payload, five_hour: { ...payload.five_hour, utilization: 2 } });
-  const updated = await second;
-  assert.equal(updated.windows[0].usedPercent, 2);
-  assert.equal(Date.parse(updated.fetchedAt) - Date.parse(result.fetchedAt), 60000);
-  h.reader.close();
+  assert.equal(Date.parse((await h.reader.read(account)).fetchedAt) - Date.parse(data.fetchedAt), 60000);
+  assert.ok(h.calls.every((call) => call.action === "read"));
 });
 
-test("remote page has no preload or Node bridge, denies permissions, popups and downloads", async () => {
-  const h = harness();
-  const pending = h.reader.read(account);
-  const window = h.windows[0];
-  assert.equal(window.config.show, false);
-  assert.equal(window.config.webPreferences.sandbox, true);
-  assert.equal(window.config.webPreferences.contextIsolation, true);
-  assert.equal(window.config.webPreferences.nodeIntegration, false);
-  assert.equal(window.config.webPreferences.preload, undefined);
-  assert.deepEqual(window.openHandler({ url: "https://example.test" }), { action: "deny" });
-  const session = window.config.webPreferences.session;
-  session.permissionRequest(null, "media", (allowed) => assert.equal(allowed, false));
-  assert.equal(session.permissionCheck(), false);
-  let prevented = false;
-  session.emit("will-download", { preventDefault: () => { prevented = true; } });
-  assert.equal(prevented, true);
-  window.webContents.emit("will-navigate", { preventDefault() {} }, "file:///tmp/other");
-  await assert.rejects(pending, /unsupported destination/);
+test("Sign In opens Chrome and persists only its tab association", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "chrome-usage-test-"));
+  const statePath = path.join(directory, "tabs.json");
+  try {
+    let callbacks = 0;
+    const h = harness({ statePath, onSignedIn: () => { callbacks += 1; } });
+    await h.reader.openLogin(account);
+    assert.equal(callbacks, 1);
+    assert.deepEqual(h.calls[0], { action: "open", tabId: "123", url: "https://claude.ai/settings/usage" });
+    assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), { [account.id]: "123" });
+    const restarted = new ClaudeWebUsage({ statePath });
+    assert.equal(restarted.tabs[account.id], "123");
+    await restarted.logout(account);
+    assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), {});
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("429 backs off all reads and sign-in until the full provider delay passes", async () => {
+test("missing association never launches Chrome in the background", async () => {
   const h = harness();
-  const pending = h.reader.read(account);
-  h.send(h.windows[0], usageUrl(), {}, { status: 429, headers: { "Retry-After": "3600" } });
-  await assert.rejects(pending, /rate limiting/);
-  h.advance(59 * 60 * 1000);
+  delete h.reader.tabs[account.id];
+  await assert.rejects(h.reader.read(account), /Sign in/);
+  assert.equal(h.calls.length, 0);
+});
+
+test("429 blocks automatic reads and Sign In and survives disconnect", async () => {
+  const h = harness();
+  h.set(async () => ({ status: 429, retryAfter: "3600", error: "Throttled" }));
   await assert.rejects(h.reader.read(account), /rate limiting/);
-  await assert.rejects(h.reader.openLogin(account), /rate limiting/);
-  assert.equal(h.windows.length, 1);
-  h.advance(60000);
-  const retry = h.reader.read(account);
-  h.complete(h.windows[1]);
-  await retry;
-});
-
-test("authentication errors, cached responses and mismatched organizations cannot produce fresh usage", async () => {
-  for (const response of [{ status: 401 }, { status: 403 }, { status: 500 }, { fromDiskCache: true }, { fromServiceWorker: true }]) {
-    const h = harness();
-    const pending = h.reader.read(account);
-    h.send(h.windows[0], usageUrl(), payload, response);
-    await assert.rejects(pending);
-    assert.equal(h.windows[0].destroyed, true);
-  }
-  const h = harness();
-  const pending = h.reader.read(account);
-  h.send(h.windows[0], bootstrapUrl(otherOrg), bootstrap);
-  h.send(h.windows[0], usageUrl(), payload);
-  await assert.rejects(pending, /organizations did not match/);
-});
-
-test("page-level 429 honors Retry-After even without a tracked API request", async () => {
-  const h = harness();
-  const pending = h.reader.read(account);
-  h.windows[0].webContents.debugger.emit("message", {}, "Network.responseReceived", {
-    requestId: "document", type: "Document", response: { url: "https://claude.ai/settings/usage", status: 429, headers: { "retry-after": "3600" } }
-  });
-  await assert.rejects(pending, /rate limiting/);
+  await h.reader.logout(account);
   h.advance(60000);
   await assert.rejects(h.reader.read(account), /3540s/);
-  assert.equal(h.windows.length, 1);
+  await assert.rejects(h.reader.openLogin(account), /3540s/);
+  assert.equal(h.calls.length, 1);
 });
 
-test("429 followed by logout preserves a usable error for subsequent read and sign-in", async () => {
+test("disconnect discards in-flight reads and never clears Chrome credentials", async () => {
   const h = harness();
+  let finish;
+  h.set(() => new Promise((resolve) => { finish = resolve; }));
   const pending = h.reader.read(account);
-  h.send(h.windows[0], usageUrl(), {}, { status: 429, headers: { "Retry-After": "3600" } });
-  await assert.rejects(pending, /rate limiting/);
   await h.reader.logout(account);
-  await assert.rejects(h.reader.read(account), /rate limiting/);
-  await assert.rejects(h.reader.openLogin(account), /rate limiting/);
-  assert.equal(h.windows.length, 1);
-});
-
-test("session clearing blocks concurrent reads and sign-in until storage is cleared", async () => {
-  const h = harness();
-  const pending = h.reader.read(account);
-  const rejected = assert.rejects(pending, /session changed/);
-  let clear;
-  h.windows[0].config.webPreferences.session.clearStorageData = () => new Promise((resolve) => { clear = resolve; });
-  const logout = h.reader.logout(account);
-  await assert.rejects(h.reader.read(account), /being cleared/);
-  await assert.rejects(h.reader.openLogin(account), /being cleared/);
-  assert.equal(h.windows.length, 1);
-  clear();
-  await logout;
-  await rejected;
-  assert.equal(h.windows[0].destroyed, true);
-});
-
-test("an edited account cannot reuse a pending or just-completed login for another identity", async () => {
-  const h = harness();
-  const pending = h.reader.read(account);
-  const rejected = assert.rejects(pending, /session changed/);
-  const changed = h.reader.read({ ...account, organization: otherOrg });
-  h.complete(h.windows[1]);
-  await assert.rejects(changed, /different account or organization/);
-  await rejected;
-  await h.reader.openLogin(account);
-  h.complete(h.windows[2]);
-  await new Promise(setImmediate);
-  await assert.rejects(h.reader.read({ ...account, email: "another@example.test" }), /different account or organization/);
-});
-
-test("logout cancels an in-flight read and clears only that account's browser session", async () => {
-  const h = harness();
-  const pending = h.reader.read(account);
-  const rejected = assert.rejects(pending, /session changed/);
-  await h.reader.logout(account);
-  h.complete(h.windows[0]);
-  await rejected;
-  assert.equal(h.windows[0].destroyed, true);
-  assert.equal(h.sessions.get(partitionForAccount(account.id)).cleared, true);
-  assert.equal(h.sessions.size, 1);
-  h.reader.close();
-  assert.throws(() => h.reader.read(account), /closed/);
-});
-
-test("new page navigation discards responses from the previous document", async () => {
-  const h = harness();
-  const pending = h.reader.read(account);
-  const window = h.windows[0];
-  h.send(window, bootstrapUrl(otherOrg), bootstrap);
-  window.webContents.emit("did-start-navigation", {}, "https://claude.ai/new", false, true);
-  h.complete(window);
-  assert.equal((await pending).organization, org);
-});
-
-test("login remains interactive, completes once, and makes its verified reading available", async () => {
-  let completions = 0;
-  const h = harness({ onSignedIn: () => { completions += 1; } });
-  await h.reader.openLogin(account);
-  await h.reader.openLogin(account);
-  assert.equal(h.windows.length, 1);
-  assert.equal(h.windows[0].config.show, true);
+  finish({ error: "old response" });
+  await assert.rejects(pending, /connection changed/);
   await assert.rejects(h.reader.read(account), /Sign in/);
-  h.complete(h.windows[0]);
-  await new Promise(setImmediate);
-  assert.equal(completions, 1);
-  const result = await h.reader.read(account);
-  assert.equal(result.source, "claude_web_usage");
-  assert.equal(h.windows.length, 1);
-  const next = h.reader.read(account);
-  h.complete(h.windows[1]);
-  await next;
+  assert.equal(h.calls.length, 1);
 });
 
-test("a hung page is bounded and its window is cleaned up", async () => {
-  const h = harness({ timeoutMs: 10 });
+test("disconnect during Sign In cannot restore the tab association", async () => {
+  const h = harness();
+  let finish;
+  h.set(() => new Promise((resolve) => { finish = resolve; }));
+  const pending = h.reader.openLogin(account);
+  await h.reader.logout(account);
+  finish({ tabId: "stale" });
+  await pending;
+  assert.equal(h.reader.tabs[account.id], undefined);
+});
+
+test("hung reads time out and wrong request IDs are rejected", async () => {
+  const h = harness({ timeoutMs: 500 });
+  h.set(async () => ({ pending: true }));
   await assert.rejects(h.reader.read(account), /timed out/);
-  assert.equal(h.windows[0].destroyed, true);
+  h.set(async () => ({ requestId: "old", identity: account, usage: payload }));
+  await assert.rejects(h.reader.read(account), /did not match/);
+});
+
+function pageHarness({ status = 200, identity = bootstrap, switchIdentity = false } = {}) {
+  const calls = [];
+  const context = {
+    window: {}, location: { origin: "https://claude.ai", pathname: "/new" },
+    performance: { getEntriesByType: () => [{ name: `https://claude.ai/edge-api/bootstrap/${org}/app_start` }] },
+    AbortSignal, Date,
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      const body = String(url).includes("/app_start") ? (switchIdentity && calls.length === 3 ? { account: { uuid: "switched", email_address: account.email } } : identity) : payload;
+      return { status, headers: { get: () => "3600" }, text: async () => JSON.stringify(body) };
+    }
+  };
+  vm.createContext(context);
+  return { calls, context, read: (id = "request") => JSON.parse(vm.runInContext(`(${pageRead.toString()})(${JSON.stringify(id)}, ${JSON.stringify(account)})`, context)) };
+}
+
+test("page collector reads only same-origin usage and rejects an account switch", async () => {
+  const h = pageHarness();
+  assert.equal(h.read().pending, true);
+  await new Promise(setImmediate);
+  const data = h.read();
+  assert.equal(data.identity.email, account.email);
+  assert.equal(data.usage.five_hour.utilization, 1.5);
+  assert.equal(h.calls.length, 3);
+  assert.ok(h.calls.every((call) => call.options.credentials === "same-origin" && call.options.cache === "no-store" && call.options.redirect === "error"));
+  const changed = pageHarness({ switchIdentity: true });
+  changed.read();
+  await new Promise(setImmediate);
+  assert.match(changed.read().error, /could not be read/);
+});
+
+test("wrong profile is rejected before fetching any usage", async () => {
+  const h = pageHarness({ identity: { account: { uuid: "other", email_address: account.email } } });
+  h.read();
+  await new Promise(setImmediate);
+  assert.match(h.read().error, /different Claude account/);
+  assert.equal(h.calls.length, 1);
+});
+
+test("page auth failures and rate limits retain status and never return windows", async () => {
+  for (const status of [401, 403, 429, 500]) {
+    const h = pageHarness({ status });
+    h.read();
+    await new Promise(setImmediate);
+    assert.equal(h.read().status, status);
+    assert.equal(h.read().usage, undefined);
+    assert.equal(h.calls.length, 1);
+  }
+});
+
+test("native bridge rejects closed or off-origin tabs without executing JavaScript", () => {
+  const context = { Application: () => ({ running: () => true, windows: () => [{ tabs: () => [{ id: () => "123", url: () => "https://claude.ai.example.test/" }] }] }) };
+  assert.throws(() => vm.runInNewContext(`(${chromeCommand.toString()})({action:'read',tabId:'123',script:'should not run'})`, context), /navigated away/);
+  assert.throws(() => vm.runInNewContext(`(${chromeCommand.toString()})({action:'read',tabId:'999'})`, context), /closed/);
 });
 
 test("Electron provider failures preserve cached values and timestamp with an immediate stale state", async () => {
@@ -344,4 +250,89 @@ test("manual refresh and login completion coalesce into one follow-up after an a
   complete();
   await Promise.all([first, ...requests]);
   assert.equal(reads, 2);
+});
+
+
+test("wrong profile clears the tab association so Sign In uses the front Chrome profile", async () => {
+  const h = harness();
+  h.set(async (command) => command.action === "open" ? { tabId: "correct-profile" } : { mismatch: true, error: "different Claude account" });
+  await assert.rejects(h.reader.read(account), /different Claude account/);
+  await h.reader.openLogin(account);
+  assert.equal(h.calls[1].tabId, undefined);
+  assert.equal(h.reader.tabs[account.id], "correct-profile");
+});
+
+test("page collector coalesces requests and retains upstream backoff across new IDs", async () => {
+  const h = pageHarness({ status: 429 });
+  h.read("one");
+  assert.equal(h.read("two").pending, true);
+  await new Promise(setImmediate);
+  assert.equal(h.read("two").status, 429);
+  assert.equal(h.calls.length, 1);
+});
+
+
+test("Chrome permission failure disconnects the inaccessible profile for Sign In recovery", async () => {
+  const h = harness();
+  h.set(async (command) => {
+    if (command.action === "open") return { tabId: "work-profile" };
+    const failure = new Error("Sign in to Claude again after enabling Chrome JavaScript access.");
+    failure.reconnect = true;
+    throw failure;
+  });
+  await assert.rejects(h.reader.read(account), /Sign in to Claude/);
+  await h.reader.openLogin(account);
+  assert.equal(h.calls[1].tabId, undefined);
+  assert.equal(h.reader.tabs[account.id], "work-profile");
+});
+
+
+test("saved organization keeps later polls working after Claude clears resource timings", async () => {
+  const h = pageHarness();
+  h.read("first");
+  await new Promise(setImmediate);
+  assert.equal(h.read("first").usage.five_hour.utilization, 1.5);
+  h.context.performance.getEntriesByType = () => [];
+  assert.equal(h.read("next").pending, true);
+  await new Promise(setImmediate);
+  assert.equal(h.read("next").usage.five_hour.utilization, 1.5);
+  assert.equal(h.calls.length, 6);
+});
+
+test("Sign In reloads an existing Claude tab to restore its page context", () => {
+  const tab = { id: () => "123", url: () => "https://claude.ai/new#settings/usage" };
+  const window = { tabs: () => [tab] };
+  const chrome = { running: () => true, launch() {}, activate() {}, windows: () => [window] };
+  const result = JSON.parse(vm.runInNewContext(`(${chromeCommand.toString()})({action:'open',tabId:'123',url:'https://claude.ai/settings/usage'})`, { Application: () => chrome }));
+  assert.equal(result.tabId, "123");
+  assert.equal(tab.url, "https://claude.ai/settings/usage");
+  assert.equal(window.activeTabIndex, 1);
+});
+
+
+test("saved account polls when resource timings were cleared before the first read", async () => {
+  const h = pageHarness();
+  h.context.performance.getEntriesByType = () => [];
+  h.read();
+  await new Promise(setImmediate);
+  assert.equal(h.read().identity.organization, org);
+  assert.equal(h.read().usage.five_hour.utilization, 1.5);
+  assert.equal(h.calls.length, 3);
+});
+
+
+test("saved organization auth failure reconnects through the front Chrome profile", async () => {
+  for (const status of [401, 403]) {
+    const page = pageHarness({ status });
+    page.read();
+    await new Promise(setImmediate);
+    const result = page.read();
+    assert.equal(result.reconnect, true);
+    const h = harness();
+    h.set(async (command) => command.action === "open" ? { tabId: "matching-profile" } : result);
+    await assert.rejects(h.reader.read(account), /Sign in to Claude/);
+    await h.reader.openLogin(account);
+    assert.equal(h.calls[1].tabId, undefined);
+    assert.equal(h.reader.tabs[account.id], "matching-profile");
+  }
 });
