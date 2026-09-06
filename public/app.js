@@ -521,6 +521,7 @@ function renderConnected(accountId, data, metadata = {}) {
   }
 
   const stale = metadata.stale === true;
+  const loginNeeded = stale && isLoginNeededError(metadata.error);
   const summary = buildSummary(data);
   setStalePresentation(accountId, elements, stale, metadata.error);
   renderLimitWindows(elements, data, { animate: !stale });
@@ -528,15 +529,15 @@ function renderConnected(accountId, data, metadata = {}) {
   elements.summary.title = buildResetTitle(data);
   elements.summary.className = "account-summary hidden";
   elements.row.classList.toggle("expanded", rowsExpanded);
-  elements.actions.classList.add("hidden");
-  elements.connectButton.classList.add("hidden");
+  elements.actions.classList.toggle("hidden", !loginNeeded);
+  elements.connectButton.classList.toggle("hidden", !loginNeeded);
   elements.deleteButton.classList.add("hidden");
   elements.connectButton.textContent = "Sign in";
-  elements.connectButton.title = "";
+  elements.connectButton.title = loginNeeded ? String(metadata.error) : "";
   elements.connectButton.dataset.action = "login";
   updateAccountState(accountId, {
-    kind: stale ? "stale" : "ok",
-    detail: stale ? "Cached data" : summary,
+    kind: loginNeeded ? "disconnected" : stale ? "stale" : "ok",
+    detail: loginNeeded ? "Sign in required" : stale ? "Cached data" : summary,
     data,
     stale,
     error: stale ? metadata.error || "Live refresh unavailable." : null
@@ -561,7 +562,7 @@ function renderDisconnected(accountId, error = null) {
   elements.actions.classList.remove("hidden");
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Sign in";
-  elements.connectButton.title = "Open sign-in in Google Chrome";
+  elements.connectButton.title = "Open account sign-in";
   elements.connectButton.dataset.action = "login";
   elements.deleteButton.classList.remove("hidden");
   elements.deleteButton.textContent = "Delete";

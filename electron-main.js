@@ -20,6 +20,7 @@ const {
   saveConfig,
   expandHome,
   refreshAllAccounts,
+  setClaudeWebProvider,
   processAutoStartSnapshot,
   onClaudeLoginCompleted,
   openLoginForAccountById,
@@ -28,6 +29,8 @@ const {
 } = require("./server");
 const { runIndexWorkerProcess } = require("./usage-history/index-worker-client");
 const { atomicWriteJson, atomicWriteJsonSync } = require("./atomic-file");
+const { ClaudeWebUsage, pollIntervalMs } = require("./claude-web-usage");
+let claudeWebUsage = null;
 
 const toggleShortcut = "Control+Option+L";
 const windowWidth = 276;
@@ -41,7 +44,7 @@ const maxWindowHeight = 620;
 const appDataDir = path.join(os.homedir(), ".rate-limit-tool");
 const windowStatePath = path.join(appDataDir, "window-state.json");
 const launchAtLoginStateFile = "launch-at-login-enabled.json";
-const backgroundRefreshMs = 60000;
+const backgroundRefreshMs = pollIntervalMs;
 const autoStartEnabled = process.env.RATE_LIMIT_TOOL_AUTOSTART_ENABLED === "1";
 const gotSingleInstanceLock = globalThis.__usageMeterSingleInstanceLockAcquired
   ?? app.requestSingleInstanceLock();
@@ -63,6 +66,7 @@ const popoverDock = {
 };
 let latestSnapshot = null;
 let refreshPromise = null;
+let followupRefreshPromise = null;
 let accountMutationGeneration = 0;
 let backgroundRefreshTimer = null;
 let autoStartPromise = null;
@@ -824,7 +828,12 @@ function logRefreshMetric(fields) {
 async function refreshSnapshot({ forceClaudeUsage = false } = {}) {
   if (refreshPromise) {
     if (!forceClaudeUsage) return refreshPromise;
-    return refreshPromise.then(() => refreshSnapshot({ forceClaudeUsage: true }));
+    if (!followupRefreshPromise) {
+      followupRefreshPromise = refreshPromise.then(() => refreshSnapshot()).finally(() => {
+        followupRefreshPromise = null;
+      });
+    }
+    return followupRefreshPromise;
   }
 
   refreshPromise = (async () => {
@@ -1020,6 +1029,11 @@ if (!gotSingleInstanceLock) {
 
     await loadPopoverPosition();
     await refreshScanRoots();
+    claudeWebUsage = new ClaudeWebUsage({
+      statePath: path.join(appDataDir, "claude-chrome-tabs.json"),
+      onSignedIn: () => refreshSnapshot({ forceClaudeUsage: true }).catch(() => {})
+    });
+    setClaudeWebProvider(claudeWebUsage);
     startClaudeLoginCompletionRefresh();
     registerIpcHandlers();
     createPopover();
@@ -1053,6 +1067,7 @@ if (!gotSingleInstanceLock) {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  claudeWebUsage?.close();
   clearInterval(popoverDock.timer);
   clearTimeout(popoverDock.hideTimer);
   stopClaudeLoginCompletionRefresh?.();

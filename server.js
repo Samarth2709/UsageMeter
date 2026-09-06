@@ -27,6 +27,12 @@ const removedIdentities = new Map();
 let activeClaudeLogin = null;
 let activeClaudeLoginRestart = null;
 const claudeLoginCompletionListeners = new Set();
+let claudeWebProvider = null;
+
+// Electron owns the web session; the standalone HTTP server retains its OAuth reader.
+function setClaudeWebProvider(provider) {
+  claudeWebProvider = provider;
+}
 
 function resolveExecutable(name, fallbacks = []) {
   const pathCandidates = (process.env.PATH || "")
@@ -1064,6 +1070,7 @@ function parseClaudeOAuthUsage(profile, payload, credentials = {}, now = new Dat
 }
 
 async function fetchClaudeUsage(account, options = {}) {
+  if (claudeWebProvider) return claudeWebProvider.read(account);
   const readCredentials = options.readCredentials || readClaudeOAuthCredentials;
   const requestJson = options.requestJson || fetchJsonWithTimeout;
   const now = options.now || new Date();
@@ -1903,14 +1910,14 @@ async function discoverCurrentClaudeIdentity(config, fetchUsage = fetchClaudeUsa
   }
 }
 
-function unavailableIdentityResult(identity, error, now = Date.now()) {
+function unavailableIdentityResult(identity, error, now = Date.now(), forceStale = false) {
   if (identity.lastUsage) {
     const fetchedAt = Date.parse(identity.lastUsage.fetchedAt || "");
     const aged = !Number.isFinite(fetchedAt) || now - fetchedAt > usageStaleAfterMs;
 
     // Still current: present it as the live reading it is, rather than greying
     // the row out because one poll was rate limited.
-    if (!aged) {
+    if (!aged && !forceStale) {
       return {
         accountId: identity.id,
         ok: true,
@@ -1968,7 +1975,7 @@ async function refreshIdentity(config, identity, cachedResult = null) {
       data
     };
   } catch (error) {
-    return unavailableIdentityResult(identity, error.message);
+    return unavailableIdentityResult(identity, error.message, Date.now(), identity.type === "claude" && Boolean(claudeWebProvider));
   }
 }
 
@@ -2058,6 +2065,7 @@ async function refreshAllAccounts(options = {}) {
   ));
   if (
     activeClaudeIdentities.length &&
+    !claudeWebProvider &&
     (!onlyTypes || onlyTypes.has("claude")) &&
     !skippedTypes.has("claude") &&
     !skippedDiscoveryTypes.has("claude")
@@ -2420,6 +2428,10 @@ async function startClaudeLoginInChrome(
 }
 
 async function openLoginForAccount(account) {
+  if (account.type === "claude" && claudeWebProvider) {
+    await claudeWebProvider.openLogin(account);
+    return;
+  }
   if (!existsSync(googleChromeBin)) {
     throw new Error("Google Chrome is required to sign in from Usage Meter.");
   }
@@ -2477,6 +2489,10 @@ async function runLogoutForAccount(
   options = {}
 ) {
   if (account.type === "claude") {
+    if (claudeWebProvider) {
+      await claudeWebProvider.logout(account, removeLogin);
+      return;
+    }
     const status = await getClaudeAuthStatus(account.workspace || defaultWorkspace, runCommand);
     if (!status.loggedIn) return;
     const expectedEmail = normalizeIdentityValue(account.email);
@@ -2600,6 +2616,9 @@ async function removeAccountById(accountId) {
     let saved;
 
     try {
+      if (account.type === "claude" && claudeWebProvider) {
+        await claudeWebProvider.remove(account);
+      }
       await removeManagedCodexIdentityHomes(account);
       saved = await writeConfig(removal.config);
     } catch (error) {
@@ -2709,6 +2728,7 @@ module.exports = {
   compactHome,
   refreshAccountById,
   refreshAllAccounts,
+  setClaudeWebProvider,
   saveUsageForAccount,
   findIdentityForUsage,
   getClaudeAuthStatus,

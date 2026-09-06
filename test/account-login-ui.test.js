@@ -34,6 +34,8 @@ test("Claude Keychain failures route to the explicit sign-in action", async () =
     true
   );
   assert.equal(context.isLoginNeededError("Claude usage request timed out."), false);
+  assert.equal(context.isLoginNeededError("Sign in to Claude again after allowing Usage Meter in macOS Privacy & Security > Automation and enabling Chrome View > Developer > Allow JavaScript from Apple Events."), true);
+  assert.equal(context.isLoginNeededError("This Chrome profile is signed in to a different Claude account or organization. Bring the matching Chrome profile forward, then Sign in to Claude again."), true);
 });
 
 test("healthy accounts hide the redundant overall status message", async () => {
@@ -175,7 +177,8 @@ test("stale usage stays visible in a grey cached state", async () => {
   assert.equal(elements.summary.className, "account-summary hidden");
   assert.equal(elements.limitGrid.classList.values.has("hidden"), false);
   assert.equal(elements.limitGrid["aria-label"], "Cached usage limits");
-  assert.equal(elements.actions.classList.values.has("hidden"), true);
+  assert.equal(elements.actions.classList.values.has("hidden"), false);
+  assert.equal(elements.connectButton.classList.values.has("hidden"), false);
   assert.equal(elements.typeTag.textContent, "Claude · Cached");
   assert.equal(elements.typeTag.title, "Cached data · Claude is not logged in on this machine.");
   assert.equal(elements.row.classList.values.has("is-stale"), true);
@@ -183,7 +186,7 @@ test("stale usage stays visible in a grey cached state", async () => {
   assert.equal(renderedWindows, 2);
   assert.equal(elements.limitGrid.children.length, 1);
   assert.equal(latestState.data, freshUsage);
-  assert.equal(latestState.kind, "stale");
+  assert.equal(latestState.kind, "disconnected");
   assert.equal(latestState.stale, true);
 
   context.renderConnected("claude-1", freshUsage, {
@@ -191,7 +194,7 @@ test("stale usage stays visible in a grey cached state", async () => {
     error: "Command failed: /Users/example/.local/bin/claude auth status --json"
   });
   assert.equal(elements.typeTag.textContent, "Claude · Cached");
-  assert.equal(latestState.kind, "stale");
+  assert.equal(latestState.kind, "disconnected");
 
   accountType = "codex";
   context.renderConnected("claude-1", freshUsage, { stale: false });
@@ -213,7 +216,7 @@ test("stale usage stays visible in a grey cached state", async () => {
 
   context.renderDisconnected("claude-1");
   assert.equal(elements.connectButton.textContent, "Sign in");
-  assert.equal(elements.connectButton.title, "Open sign-in in Google Chrome");
+  assert.equal(elements.connectButton.title, "Open account sign-in");
 
   context.renderDisconnected("claude-1", new Error("Google Chrome is required."));
   assert.equal(
