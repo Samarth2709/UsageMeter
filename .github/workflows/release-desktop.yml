@@ -12,6 +12,7 @@ on:
       - "preload.js"
       - "electron-main.js"
       - "server.js"
+      - "claude-web-usage.js"
       - "usage-windows.js"
       - "pricing.js"
       - "usage-history/**"

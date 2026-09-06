@@ -26,7 +26,7 @@ async function copy(relativePath) {
 async function main() {
   await fsp.rm(outDir, { recursive: true, force: true });
   await fsp.mkdir(outDir, { recursive: true });
-  for (const entry of ["assets", "public", "usage-history", "atomic-file.js", "electron-main.js", "server.js", "usage-windows.js", "pricing.js", "package-lock.json"]) {
+  for (const entry of ["assets", "public", "usage-history", "atomic-file.js", "electron-main.js", "server.js", "claude-web-usage.js", "usage-windows.js", "pricing.js", "package-lock.json"]) {
     await copy(entry);
   }
 

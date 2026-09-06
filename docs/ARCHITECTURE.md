@@ -8,7 +8,7 @@ Usage Meter has two local surfaces: an Electron menu-bar app and a static market
 | --- | --- | --- |
 | Fixed Electron shell | `bootstrap.js`, `bootstrap-updater.js`, `core-updater.js`, `atomic-file.js`, `preload.js` | Single-instance admission, Core selection, signed update verification, rollback, durable private state writes, stable update IPC, and manual shell-download fallback. |
 | Versioned Core | `electron-main.js`, `server.js`, `usage-windows.js`, `usage-history/`, `public/`, `assets/` | Tray icon, popover/history windows, live refresh, local analytics, and app UI. |
-| Live limits | `electron-main.js`, `server.js`, `usage-windows.js` | Read-only Claude and Codex usage requests, identity/config storage, window normalization, and caching. |
+| Live limits | `electron-main.js`, `server.js`, `claude-web-usage.js`, `usage-windows.js` | Claude web-page observations, Codex usage requests, identity/config storage, window normalization, and caching. |
 | Usage History | `usage-history/` | Incremental transcript indexing, aggregation, pricing, diagnostics, subscription value, and model insights. Index work runs in a short-lived Electron utility process. |
 | Corner dock | `electron-main.js`, `preload.js`, `public/spatial.js` | Native screen-edge detection, delayed reveal/retraction, interaction holds, click-through hiding and anchored resizing; the renderer slides the existing 3D stage. |
 | App renderer | `public/` | Compact menu-bar popover and Usage History; both windows share the CSS 3D material and input layer (`spatial.css`, `spatial.js`), with no decorative WebGL renderer. |
@@ -20,8 +20,9 @@ Usage Meter has two local surfaces: an Electron menu-bar app and a static market
 ## Runtime data flow
 
 ```text
-Existing Codex authentication + Claude Code OAuth access credential in macOS Keychain
-  -> server.js refreshes Codex and Claude allowance windows
+Existing Codex authentication + per-row Claude web sessions
+  -> claude-web-usage.js observes the normal Claude page's identity and usage responses
+  -> server.js refreshes and stores Codex and Claude allowance windows
   -> electron-main.js caches and broadcasts a snapshot
   -> public/app.js renders the menu-bar popover
 
@@ -60,11 +61,14 @@ The app's local state is under `~/.rate-limit-tool/`:
 
 Transcript parsing is read-only. The cache stores aggregate buckets plus normalized Claude message usage needed to prevent fork/resume double counting; it does not store raw transcript text or message content.
 
+Claude web sessions use isolated Chromium persistent partitions under Electron's user-data directory (`~/Library/Application Support/usage-meter/Partitions/`). Partition names hash the stable row ID. Cookie values and authentication headers are not read by the collector or stored in account JSON.
+
 ## Refresh and resilience
 
 - Main snapshots refresh every minute.
-- Reading Claude usage costs two requests (profile, then usage) and the endpoint rate-limits below that cadence, so a 429 is expected under a steady poll. One starts a backoff — `Retry-After` when the response carries it, otherwise 150 s — and the refresh serves the last reading until it lifts, which settles to a real read every three to four minutes and no wasted requests in between.
-- A failed poll is not stale data. A reading is presented as live until it passes `usageStaleAfterMs` (6 min); only then does the row turn grey and read "Cached". Rate limiting alone never greys a row.
+- Each Claude poll opens the normal usage page in a hidden sandboxed window, observes that document's bootstrap account and usage responses, then destroys the window. Session storage persists. Matching account IDs, email addresses, and organizations are required; navigation and lifecycle changes discard pending observations. Successful readings use `source: "claude_web_usage"`.
+- Concurrent refreshes share one operation. Reads time out after 25 seconds; interactive sign-in windows allow 10 minutes. A 429 honors the full `Retry-After` delay, with 150 seconds as fallback. No private endpoint is replayed outside the page.
+- A failed Claude web poll immediately shows the last reading as grey `Cached` data with its original timestamp. Sign-in failures retain the numbers and expose the Sign in action. Existing Codex and standalone OAuth fallback aging remains six minutes.
 - History refreshes start a short-lived utility process for index work, then retain only compact dashboard results in the Electron main process.
 - Index updates perform a metadata inventory, read only bytes appended after each file's saved offset, and rebuild a truncated, replaced, reclassified, or indexed-tail-modified file.
 - Missing-file reconciliation runs hourly. It retains already-indexed daily aggregates for the 90-day dashboard when a CLI cleans up a transcript, then prunes them after they age out. Unchanged transcript contents are never reread during that pass.
@@ -74,7 +78,7 @@ Transcript parsing is read-only. The cache stores aggregate buckets plus normali
 - A schema-version mismatch or corrupt canonical index rebuilds from transcripts instead of accepting potentially stale legacy cache data.
 - Diagnostics exposes an explicit full index rebuild for an in-place rewrite earlier in an already-indexed prefix, which append-only tail validation cannot detect without rereading the prefix on every refresh. The repair preserves retained 90-day aggregates for transcripts that are no longer present.
 - Private JSON state is written with unique temporary files, file and directory sync, restrictive permissions, and atomic rename. Incomplete trailing JSONL is left uncommitted until it becomes a complete valid record.
-- Claude allowance refresh reads Claude Code's saved OAuth access credential from macOS Keychain and calls the read-only profile and usage endpoints. Usage Meter never uses the refresh token or rewrites the credential; if access expires or is rejected, the user must explicitly sign in again. Cached values remain visible in a grey `Cached` state while the live source is unavailable.
+- The standalone browser/debug server has no Electron session and retains the read-only Claude Code Keychain/OAuth reader. It never uses the refresh token or rewrites the credential. The Electron app injects its web provider into refresh, sign-in, logout, and row deletion instead.
 - Usage History is recomputed only while its window is open. In-memory history data is released when the window closes.
 - Aggregate-bearing file entries use device/inode identity, CLI tag, size, byte offset, parser continuation state, and a tail hash. Duplicate entries retain only identity and file metadata. Append-only growth is incremental; replacement/truncation rebuilds only that file.
 - Calendar ranges use local dates, not fixed 24-hour jumps, so daylight-saving transitions stay correct.
@@ -85,7 +89,8 @@ Transcript parsing is read-only. The cache stores aggregate buckets plus normali
 - The static site never receives live account data; it renders the same dashboard structures with mock data.
 - The Electron renderer uses IPC rather than direct Node access.
 - The browser/debug server protects its API with a session token and is intended for local debugging.
-- Usage Meter never launches Claude Code from startup, background refresh, manual refresh, or reset automation. Claude CLI launches are limited to explicit Sign In and Log Out actions.
+- The Electron app never launches Claude Code for usage, sign-in, logout, or reset automation. The standalone debug server retains explicit CLI Sign In and Log Out actions.
+- Remote Claude windows have sandboxing and context isolation, no Node integration or app preload, denied permissions/downloads/popups, and bounded HTTPS navigation. Logout and deletion cancel pending observations and clear only the row's browser storage.
 - Model names and paths derived from transcripts are escaped before renderer insertion. Paths are tooltip-only in the Project Ledger.
 - On the first packaged launch from `/Applications`, the app enables the macOS login item once. Source-mode runs and later user opt-outs are left alone.
 - The fixed shell fetches a signed GitHub Release manifest. It validates the Ed25519 signature, archive SHA-256, path-safe archive contents, minimum shell version, and an exact signed per-file SHA-256 map before activation and before every later Core launch. Missing, modified, extra, or symlinked Core files are rejected.

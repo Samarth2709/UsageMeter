@@ -4,7 +4,7 @@
 
 - macOS on Apple Silicon for the packaged app.
 - Node.js 20 or newer. The site deployment workflow also uses Node 20.
-- An installed Codex and/or Claude Code CLI if you want live-limit or local-history data.
+- A Codex CLI login for Codex limits, a Claude web login for Claude limits, and local CLI transcripts for history.
 
 ## Setup and commands
 
@@ -18,6 +18,7 @@ npm test
 | --- | --- |
 | `npm start` / `npm run dev` | Launch Electron from source. |
 | `npm test` | Run all Node tests. |
+| `npx electron scripts/verify-claude-web-electron.js` | Run the offline Claude browser integration fixture with real Electron; all HTTPS responses are local fixtures. |
 | `npm run server` | Run the local browser/debug server at `http://localhost:4545`. |
 | `npm run build:core` | Assemble the versioned Core and its production dependencies in `build/core/`. |
 | `npm run dist:mac` | Build unsigned macOS DMG and ZIP artifacts in `dist/`. |
@@ -65,6 +66,7 @@ The packaged app enables macOS launch-at-login independently of `RATE_LIMIT_TOOL
 | Need | Start here |
 | --- | --- |
 | Codex/Claude account refresh or login | `server.js` |
+| Claude web sessions, account binding, or browser response parsing | `claude-web-usage.js` |
 | Window labels, resets, or merge behavior | `usage-windows.js`, `server.js` |
 | History file discovery and parsing | `usage-history/sources.js`, `parseClaude.js`, `parseCodex.js` |
 | Cost, cache savings, or pricing | `usage-history/pricing.js` |
