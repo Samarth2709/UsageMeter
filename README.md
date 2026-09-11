@@ -19,7 +19,7 @@ Usage Meter is a local macOS menu-bar app for understanding Codex and Claude Cod
 
 1. Download and install the DMG into `/Applications`.
 2. Open **Usage Meter** once. It adds a menu-bar icon and enables launch-at-login for the packaged app.
-3. Use the refresh control to load limits. For Claude, bring the matching Google Chrome profile forward and select **Sign in**. Usage Meter opens a Claude usage tab and reuses that profile's web login. Keep Chrome and this tab open. Allow Chrome automation when macOS asks, and enable Chrome **View > Developer > Allow JavaScript from Apple Events** if needed. Codex continues to use its existing CLI login.
+3. Use the refresh control to load limits. For Claude, select **Sign in**. Usage Meter selects the Chrome profile whose saved email uniquely matches the Claude account and reuses its web login. If no unique match exists, bring the matching profile forward before signing in. Keep Chrome open; the reader can replace a closed usage tab when it can identify the matching profile. Allow Chrome automation when macOS asks, and enable Chrome **View > Developer > Allow JavaScript from Apple Events** if needed. Codex continues to use its existing CLI login.
 4. Select **View usage history** for local transcript analytics. If history is empty, open **Diagnostics** and add the folder containing your `.jsonl` sessions.
 
 The packaged app supports Apple Silicon Macs. If macOS blocks an unsigned download, use the instructions on the [website](https://usage-meter-five.vercel.app).

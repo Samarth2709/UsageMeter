@@ -19,3 +19,7 @@ The packaged app needs the macOS Apple Events automation entitlement and a usage
 ## Completion
 
 Implemented, independently reviewed, packaged and installed as 0.2.13. Verified native Chrome Sign In, successive 60-second reads, restart persistence, closed-tab recovery, strict signatures, and preserved local UI. 301 tests and the offline Chromium fixture pass. PR #7 is updated without merging.
+
+## Follow-up: closed-tab recovery
+
+September 10: the old reader remained cached after its connected tab closed. See `docs/claude-tab-recovery-plan.md` for the recovery fix and current verification scope. No additional browser permissions are required.

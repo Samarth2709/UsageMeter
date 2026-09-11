@@ -1,13 +1,36 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { atomicWriteJsonSync } = require("./atomic-file");
 
 const usagePage = "https://claude.ai/settings/usage";
 const pollIntervalMs = 60000;
-const signInMessage = "Sign in to Claude in Chrome from Usage Meter and keep its usage tab open.";
+const signInMessage = "Sign in to Claude in Chrome from Usage Meter.";
 const runFile = promisify(execFile);
+
+function matchingChromeProfile(email, statePath = path.join(os.homedir(), "Library/Application Support/Google/Chrome/Local State")) {
+  if (!email) return null;
+  try {
+    const profiles = JSON.parse(fs.readFileSync(statePath, "utf8"))?.profile?.info_cache || {};
+    const matches = Object.entries(profiles).filter(([directory, profile]) =>
+      /^(Default|Profile \d+)$/.test(directory)
+      && typeof profile?.user_name === "string"
+      && profile.user_name.trim().toLowerCase() === email.trim().toLowerCase());
+    return matches.length === 1 ? matches[0][0] : null;
+  } catch { return null; }
+}
+
+function connectionUrl(account) {
+  const marker = crypto.createHash("sha256").update(`${account.id}:${accountBinding(account)}`).digest("hex").slice(0, 24);
+  return `https://claude.ai/new?usage_meter=${marker}#settings/usage`;
+}
+
+async function openChromeProfile(profileDirectory, url) {
+  await runFile("/usr/bin/open", ["-g", "-n", "-b", "com.google.Chrome", "--args", `--profile-directory=${profileDirectory}`, url], { timeout: 10000, maxBuffer: 65536 });
+}
 
 function retryDelay(value, now) {
   const text = String(value || "").trim();
@@ -124,11 +147,11 @@ function pageRead(requestId, expected) {
 }
 
 // JXA uses Chrome's supported Apple Events interface. Only the selected tab is
-// executed; polling neither opens Chrome nor switches the user's active tab.
+// executed. Ordinary polls do not switch the user's active tab.
 function chromeCommand(command) {
   const chrome = Application("Google Chrome");
-  if (!chrome.running() && command.action !== "open") throw new Error("Sign in to Claude in Chrome and keep Chrome open.");
-  if (command.action === "open") chrome.launch();
+  if (!chrome.running() && command.action !== "open" && !command.allowLaunch) throw new Error("Open Google Chrome to resume Claude usage updates.");
+  if (command.action === "open" || command.allowLaunch) chrome.launch();
   const windows = chrome.windows();
   let target = null;
   let targetWindow = null;
@@ -136,11 +159,14 @@ function chromeCommand(command) {
   for (const window of windows) {
     const tabs = window.tabs();
     for (let index = 0; index < tabs.length; index += 1) {
-      if (String(tabs[index].id()) === String(command.tabId)) {
+      if (command.action === "find"
+        ? tabs[index].url().split("#")[0] === command.url.split("#")[0]
+        : String(tabs[index].id()) === String(command.tabId)) {
         target = tabs[index]; targetWindow = window; targetIndex = index + 1;
       }
     }
   }
+  if (command.action === "find") return JSON.stringify({ tabId: target ? String(target.id()) : null });
   if (command.action === "open") {
     if (target && /^https:\/\/claude\.ai(?:\/|$)/.test(target.url())) {
       target.url = command.url;
@@ -162,8 +188,7 @@ function chromeCommand(command) {
     targetWindow.activeTabIndex = targetIndex;
     return JSON.stringify({ tabId: String(target.id()) });
   }
-  if (!target) throw new Error("Sign in to Claude in Chrome again; its usage tab was closed.");
-  if (!/^https:\/\/claude\.ai(?:\/|$)/.test(target.url())) throw new Error("Sign in to Claude in Chrome again; its usage tab has navigated away.");
+  if (!target || !/^https:\/\/claude\.ai(?:\/|$)/.test(target.url())) return JSON.stringify({ missingTab: true });
   return target.execute({ javascript: command.script });
 }
 
@@ -179,15 +204,18 @@ async function runChrome(command) {
       throw failure;
     }
     if (/Sign in to Claude[^\n]*/.test(message)) throw new Error(message.match(/Sign in to Claude[^\n]*/)[0].replace(/ \(-?\d+\)$/, ""));
+    if (/Open Google Chrome to resume/.test(message)) throw new Error("Open Google Chrome to resume Claude usage updates.");
     throw new Error("Could not read Claude in Google Chrome. Sign in to Claude again to check Chrome's automation permission.");
   }
 }
 
 class ClaudeWebUsage {
-  constructor({ statePath, onSignedIn = () => {}, run = runChrome, now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), timeoutMs = 25000 } = {}) {
+  constructor({ statePath, onSignedIn = () => {}, run = runChrome, profileForEmail = matchingChromeProfile, openProfile = openChromeProfile, now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), timeoutMs = 25000 } = {}) {
     this.statePath = statePath;
     this.onSignedIn = onSignedIn;
     this.run = run;
+    this.profileForEmail = profileForEmail;
+    this.openProfile = openProfile;
     this.now = now;
     this.wait = wait;
     this.timeoutMs = timeoutMs;
@@ -212,6 +240,42 @@ class ClaudeWebUsage {
     if (this.now() < entry.retryAt) throw new Error(`Claude is rate limiting web usage. Retrying in ${Math.max(1, Math.ceil((entry.retryAt - this.now()) / 1000))}s.`);
   }
 
+  async recoverTab(account, entry, generation, foreground = false) {
+    const profile = this.profileForEmail(account.email);
+    if (!profile) throw new Error("Sign in to Claude again with the matching Chrome profile; its usage tab was closed and no unique profile matches this account.");
+    const url = connectionUrl(account);
+    const check = () => {
+      if (generation !== entry.generation || this.closed) throw new Error("Claude Chrome connection changed during refresh.");
+    };
+    let found = await this.run({ action: "find", url, allowLaunch: foreground });
+    check();
+    if (!found.tabId) {
+      try {
+        await this.openProfile(profile, url);
+        check();
+        const deadline = this.now() + 10000;
+        while (!found.tabId && this.now() < deadline) {
+          await this.wait(250);
+          check();
+          found = await this.run({ action: "find", url });
+          check();
+        }
+        if (!found.tabId) throw new Error("Sign in to Claude again; Chrome did not open the matching profile's usage tab.");
+      } catch (error) {
+        // An unconfirmed opening may have redirected to login. Forget the old
+        // connection so background refresh cannot accumulate replacement tabs.
+        if (generation === entry.generation) {
+          delete this.tabs[account.id];
+          this.save();
+        }
+        throw error;
+      }
+    }
+    this.tabs[account.id] = found.tabId;
+    this.save();
+    return found.tabId;
+  }
+
   async openLogin(account) {
     const entry = this.entry(account);
     this.backoff(entry);
@@ -219,7 +283,9 @@ class ClaudeWebUsage {
     entry.generation += 1;
     const generation = entry.generation;
     entry.login = (async () => {
-      const result = await this.run({ action: "open", tabId: this.tabs[account.id], url: usagePage });
+      const profile = this.profileForEmail(account.email);
+      const tabId = profile ? await this.recoverTab(account, entry, generation, true) : this.tabs[account.id];
+      const result = await this.run({ action: "open", tabId, url: profile ? connectionUrl(account) : usagePage });
       if (generation !== entry.generation) return;
       this.tabs[account.id] = result.tabId;
       this.save();
@@ -249,7 +315,8 @@ class ClaudeWebUsage {
 
   async capture(account, entry, generation) {
     const requestId = crypto.randomUUID();
-    const tabId = this.tabs[account.id];
+    let tabId = this.tabs[account.id];
+    let recovered = false;
     const script = `(${pageRead.toString()})(${JSON.stringify(requestId)}, ${JSON.stringify({ providerAccountId: account.providerAccountId, email: account.email, organization: account.organization })})`;
     const deadline = this.now() + this.timeoutMs;
     let phase = "page loading";
@@ -266,6 +333,12 @@ class ClaudeWebUsage {
         throw error;
       }
       if (generation !== entry.generation) throw new Error("Claude Chrome connection changed during refresh.");
+      if (result.missingTab) {
+        if (recovered) throw new Error("Sign in to Claude again; its replacement usage tab was closed.");
+        recovered = true;
+        tabId = await this.recoverTab(account, entry, generation);
+        continue;
+      }
       if (result.status === 429) {
         entry.retryAt = this.now() + retryDelay(result.retryAfter, this.now());
         this.backoff(entry);
@@ -277,7 +350,8 @@ class ClaudeWebUsage {
       if (result.error) throw new Error(result.error);
       if (!result.pending) {
         if (result.requestId !== requestId) throw new Error("Claude Chrome usage response did not match this refresh.");
-        return parseWebUsage(account, { account: { uuid: result.identity?.providerAccountId, email_address: result.identity?.email } }, result.usage, result.identity?.organization, new Date(this.now()));
+        const usage = parseWebUsage(account, { account: { uuid: result.identity?.providerAccountId, email_address: result.identity?.email } }, result.usage, result.identity?.organization, new Date(this.now()));
+        return usage;
       }
       phase = result.phase || phase;
       await this.wait(250);
@@ -301,4 +375,4 @@ class ClaudeWebUsage {
   }
 }
 
-module.exports = { ClaudeWebUsage, parseWebUsage, retryDelay, pollIntervalMs, pageRead, chromeCommand };
+module.exports = { ClaudeWebUsage, parseWebUsage, retryDelay, pollIntervalMs, pageRead, chromeCommand, matchingChromeProfile, connectionUrl };

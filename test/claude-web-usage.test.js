@@ -4,7 +4,7 @@ const vm = require("node:vm");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { ClaudeWebUsage, parseWebUsage, retryDelay, pageRead, chromeCommand } = require("../claude-web-usage");
+const { ClaudeWebUsage, parseWebUsage, retryDelay, pageRead, chromeCommand, matchingChromeProfile, connectionUrl } = require("../claude-web-usage");
 const server = require("../server");
 const org = "11111111-1111-4111-8111-111111111111";
 const otherOrg = "22222222-2222-4222-8222-222222222222";
@@ -19,7 +19,7 @@ function harness(options = {}) {
     const requestId = command.script.match(/\)\("([^"]+)"/)[1];
     return { requestId, identity: account, usage: payload };
   };
-  const reader = new ClaudeWebUsage({ now: () => clock, wait: async (ms) => { clock += ms; }, run: async (command) => { calls.push(command); return handle(command); }, ...options });
+  const reader = new ClaudeWebUsage({ profileForEmail: () => null, now: () => clock, wait: async (ms) => { clock += ms; }, run: async (command) => { calls.push(command); return handle(command); }, ...options });
   reader.tabs[account.id] = "123";
   return { reader, calls, set: (handler) => { handle = handler; }, advance: (ms) => { clock += ms; } };
 }
@@ -191,8 +191,127 @@ test("page auth failures and rate limits retain status and never return windows"
 
 test("native bridge rejects closed or off-origin tabs without executing JavaScript", () => {
   const context = { Application: () => ({ running: () => true, windows: () => [{ tabs: () => [{ id: () => "123", url: () => "https://claude.ai.example.test/" }] }] }) };
-  assert.throws(() => vm.runInNewContext(`(${chromeCommand.toString()})({action:'read',tabId:'123',script:'should not run'})`, context), /navigated away/);
-  assert.throws(() => vm.runInNewContext(`(${chromeCommand.toString()})({action:'read',tabId:'999'})`, context), /closed/);
+  assert.equal(JSON.parse(vm.runInNewContext(`(${chromeCommand.toString()})({action:'read',tabId:'123',script:'should not run'})`, context)).missingTab, true);
+  assert.equal(JSON.parse(vm.runInNewContext(`(${chromeCommand.toString()})({action:'read',tabId:'999'})`, context)).missingTab, true);
+});
+
+test("Chrome profile matching requires one exact email and a standard profile directory", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "chrome-profile-test-"));
+  const statePath = path.join(directory, "Local State");
+  const save = (profiles) => fs.writeFileSync(statePath, JSON.stringify({ profile: { info_cache: profiles } }));
+  try {
+    save({ Default: { user_name: " ONE@example.test " }, "Profile 2": { user_name: "personal@example.test" } });
+    assert.equal(matchingChromeProfile(account.email, statePath), "Default");
+    assert.equal(matchingChromeProfile("missing@example.test", statePath), null);
+    assert.equal(matchingChromeProfile("", statePath), null);
+    save({ Default: { user_name: account.email }, "Profile 2": { user_name: account.email } });
+    assert.equal(matchingChromeProfile(account.email, statePath), null);
+    save({ "../other": { user_name: account.email } });
+    assert.equal(matchingChromeProfile(account.email, statePath), null);
+    fs.writeFileSync(statePath, "invalid");
+    assert.equal(matchingChromeProfile(account.email, statePath), null);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+function recoveryHarness(options = {}) {
+  const opened = [];
+  let tab = null;
+  const h = harness({ profileForEmail: () => "Default", openProfile: async (profile, url) => { opened.push({ profile, url }); tab = "recovered"; }, ...options });
+  h.set(async (command) => {
+    if (command.action === "find") return { tabId: tab };
+    if (command.action === "open") return { tabId: tab };
+    if (command.tabId !== tab) return { missingTab: true };
+    return { requestId: command.script.match(/\)\("([^"]+)"/)[1], identity: account, usage: payload };
+  });
+  return { ...h, opened, setTab: (value) => { tab = value; } };
+}
+
+test("closed tab recovers the matching profile once and resumes successive usage polls", async () => {
+  const h = recoveryHarness();
+  const first = h.reader.read(account);
+  assert.equal(first, h.reader.read(account));
+  assert.equal((await first).email, account.email);
+  assert.deepEqual(h.opened, [{ profile: "Default", url: connectionUrl(account) }]);
+  assert.equal(h.reader.tabs[account.id], "recovered");
+  h.advance(60000);
+  assert.equal((await h.reader.read(account)).source, "claude_web_usage");
+  assert.equal(h.opened.length, 1);
+});
+
+test("a restored marked tab with a new native ID is reused without opening another tab", async () => {
+  const h = recoveryHarness();
+  h.setTab("restored-after-restart");
+  await h.reader.read(account);
+  assert.equal(h.reader.tabs[account.id], "restored-after-restart");
+  assert.equal(h.opened.length, 0);
+});
+
+test("Sign In targets the exact matching Chrome profile instead of the foreground profile", async () => {
+  const h = recoveryHarness();
+  await h.reader.openLogin(account);
+  assert.equal(h.opened[0].profile, "Default");
+  assert.deepEqual(h.calls.at(-1), { action: "open", tabId: "recovered", url: connectionUrl(account) });
+});
+
+test("disconnect during recovery cannot save or accept the replacement tab", async () => {
+  let finish;
+  const h = recoveryHarness({ openProfile: () => new Promise((resolve) => { finish = resolve; }) });
+  const pending = h.reader.read(account);
+  await new Promise(setImmediate);
+  await h.reader.logout(account);
+  finish();
+  await assert.rejects(pending, /connection changed/);
+  assert.equal(h.reader.tabs[account.id], undefined);
+  await assert.rejects(h.reader.read(account), /Sign in/);
+});
+
+test("missing or ambiguous profile never reopens in whichever profile is foreground", async () => {
+  const h = recoveryHarness({ profileForEmail: () => null });
+  await assert.rejects(h.reader.read(account), /no unique profile/);
+  assert.equal(h.opened.length, 0);
+});
+
+test("a replacement tab still must match the provider account and organization", async () => {
+  const h = recoveryHarness();
+  h.set(async (command) => {
+    if (command.action === "find") return { tabId: "other-profile" };
+    if (command.tabId === "123") return { missingTab: true };
+    return { requestId: command.script.match(/\)\("([^"]+)"/)[1], identity: { ...account, providerAccountId: "other" }, usage: payload };
+  });
+  await assert.rejects(h.reader.read(account), /different account/);
+});
+
+test("failed recovery disconnects after one attempt and explicit Sign In can retry immediately", async () => {
+  let opens = 0;
+  const h = recoveryHarness({ openProfile: async () => { opens += 1; } });
+  await assert.rejects(h.reader.read(account), /did not open/);
+  for (let minute = 0; minute < 8; minute += 1) {
+    h.advance(60000);
+    await assert.rejects(h.reader.read(account), /Sign in/);
+  }
+  assert.equal(h.reader.tabs[account.id], undefined);
+  assert.equal(opens, 1);
+  await assert.rejects(h.reader.openLogin(account), /did not open/);
+  assert.equal(opens, 2);
+});
+
+test("a failed profile launch forgets the stale association rather than retrying automatically", async () => {
+  const h = recoveryHarness({ openProfile: async () => { throw new Error("launch failed"); } });
+  await assert.rejects(h.reader.read(account), /launch failed/);
+  assert.equal(h.reader.tabs[account.id], undefined);
+  await assert.rejects(h.reader.read(account), /Sign in/);
+});
+
+test("native recovery lookup never launches a closed Chrome and requires the exact marker URL", () => {
+  const url = connectionUrl(account);
+  const closed = { Application: () => ({ running: () => false, launch: () => assert.fail("must not launch") }) };
+  assert.throws(() => vm.runInNewContext(`(${chromeCommand.toString()})(${JSON.stringify({ action: "find", url })})`, closed), /Open Google Chrome/);
+  const tabs = [{ id: () => "spoof", url: () => url.replace("claude.ai", "claude.ai.example.test") }, { id: () => "restored", url: () => url }];
+  const context = { Application: () => ({ running: () => true, windows: () => [{ tabs: () => tabs }] }) };
+  const result = JSON.parse(vm.runInNewContext(`(${chromeCommand.toString()})(${JSON.stringify({ action: "find", url })})`, context));
+  assert.equal(result.tabId, "restored");
+  assert.notEqual(connectionUrl({ ...account, email: "other@example.test" }), url);
+  assert.ok(!url.includes(account.email));
 });
 
 test("Electron provider failures preserve cached values and timestamp with an immediate stale state", async () => {
