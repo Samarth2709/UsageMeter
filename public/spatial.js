@@ -142,6 +142,9 @@ function startSpin(velocity) {
 }
 
 function paintChassis(pitch, yaw, roll) {
+  // The resting face must land on the CSS pixel grid, without perspective
+  // resampling. Deliberate rotation still uses the complete physical volume.
+  chassis.classList.toggle("is-facing-front", [pitch, yaw, roll].every(angle => Math.abs(wrapAngle(angle)) < 0.001));
   const matrix = new DOMMatrix().rotateAxisAngle(1, 0, 0, pitch)
     .rotateAxisAngle(0, 1, 0, yaw).rotateAxisAngle(0, 0, 1, roll);
   const halfWidth = chassis.offsetWidth / 2, halfHeight = chassis.offsetHeight / 2;
@@ -358,14 +361,16 @@ if (stage && window.rateLimitAPI?.resizePopover) {
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
-      resize = { edge: handle.dataset.resizeEdge, x: event.screenX, y: event.screenY,
+      resize = { handle, id: event.pointerId, edge: handle.dataset.resizeEdge, x: event.screenX, y: event.screenY,
         width: innerWidth, height: innerHeight };
       holding = true;
       target = [...current];
       handle.setPointerCapture(event.pointerId);
     });
-    handle.addEventListener("pointermove", (event) => {
-      if (!resize || !handle.hasPointerCapture(event.pointerId)) return;
+    // Track the gesture even if native window movement prevents capture from
+    // becoming active before the next event reaches the renderer.
+    window.addEventListener("pointermove", (event) => {
+      if (!resize || resize.handle !== handle || resize.id !== event.pointerId) return;
       const { edge, x, y, width, height } = resize;
       const dx = event.screenX - x;
       const dy = event.screenY - y;
@@ -374,19 +379,25 @@ if (stage && window.rateLimitAPI?.resizePopover) {
         height + (edge.includes("n") ? -dy : edge.includes("s") ? dy : 0), edge);
     });
     const endResize = (event) => {
+      if (!resize || resize.handle !== handle || (event.pointerId != null && resize.id !== event.pointerId)) return;
+      const { id } = resize;
       resize = null;
       holding = false;
-      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
       aim();
     };
-    handle.addEventListener("pointerup", endResize);
-    handle.addEventListener("pointercancel", endResize);
+    window.addEventListener("pointerup", endResize);
+    window.addEventListener("pointercancel", endResize);
+    window.addEventListener("blur", endResize);
+    document.addEventListener("visibilitychange", (event) => { if (document.hidden) endResize(event); });
     handle.addEventListener("lostpointercapture", endResize);
     handle.addEventListener("keydown", (event) => {
-      const delta = { ArrowLeft: [-8, 0], ArrowRight: [8, 0], ArrowUp: [0, -8], ArrowDown: [0, 8] }[event.key];
+      const edge = handle.dataset.resizeEdge;
+      const horizontal = edge.includes("w") ? -8 : 8;
+      const delta = { ArrowLeft: [-horizontal, 0], ArrowRight: [horizontal, 0], ArrowUp: [0, -8], ArrowDown: [0, 8] }[event.key];
       if (!delta) return;
       event.preventDefault();
-      window.rateLimitAPI.resizePopover(innerWidth + delta[0], innerHeight + delta[1], "se");
+      window.rateLimitAPI.resizePopover(innerWidth + delta[0], innerHeight + delta[1], edge);
     });
   }
 }

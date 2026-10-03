@@ -850,6 +850,23 @@ test("Claude OAuth credentials are read from Keychain without exposing a refresh
   assert.equal(calls[0].options.timeout, 10000);
 });
 
+test("Claude distinguishes a missing login from a Keychain read failure", async () => {
+  for (const [code, message] of [[44, /No saved Claude Code login/], [51, /macOS Keychain could not read/], [36, /macOS Keychain could not read/]]) {
+    await assert.rejects(_test.readClaudeOAuthCredentials(async () => {
+      throw Object.assign(new Error("Keychain command failed"), { code });
+    }), message);
+  }
+});
+
+test("Claude authentication failures mark even recent cached usage stale", () => {
+  const now = Date.parse("2026-09-04T12:00:00.000Z");
+  const identity = { id: "claude", lastUsage: { fetchedAt: new Date(now - 1000).toISOString(), windows: [{ label: "weekly", remainingPercent: 55 }] } };
+  const failed = _test.unavailableIdentityResult(identity, "The saved Claude Code login was rejected. Sign in to Claude again.", now);
+  assert.equal(failed.stale, true);
+  assert.equal(failed.data.windows[0].remainingPercent, 55);
+  assert.equal(_test.unavailableIdentityResult(identity, "Claude usage request failed with 429.", now).stale, undefined);
+});
+
 test("Claude OAuth credential expiry requires explicit sign-in instead of token refresh", async () => {
   let calls = 0;
   await assert.rejects(

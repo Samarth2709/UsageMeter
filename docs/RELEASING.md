@@ -58,3 +58,13 @@ Confirm both stable URLs redirect to the new public release. Manually install th
 ## Website deployment
 
 The Vercel workflow runs for `site/**` changes. It does not need or inspect the Core signing secret. The marketing Download links use GitHub’s `releases/latest/download/UsageMeter-arm64.dmg` URL, so they always resolve to the newest published desktop release.
+
+## Personal Mac installations
+
+Keep these three installations on the same published arm64 release:
+
+- Work Mac: current local machine, `/Applications/Usage Meter.app`.
+- Home Mac: `samarths-macbook-pro-2.tail239537.ts.net`, user `samarthkumbla`.
+- Mac mini: `samarths-mac-mini.tail239537.ts.net`, user `samarthkumbla`.
+
+Resolve each remote identity and online status through live Tailscale before connecting. Install only the release app bundle; preserve each Mac’s own `~/.rate-limit-tool/`, CLI logins and browser profile. Quit Usage Meter before replacing its bundle, keep a recoverable backup outside `/Applications`, and relaunch in the logged-in GUI session. Verify the bundle version, strict code signature, Core file hashes, running process and initialized renderer independently on each host. A running app with no provider login still needs local Sign In; never transfer another Mac’s authentication to make a new installation look connected.

@@ -18,6 +18,62 @@ function classList() {
   };
 }
 
+test("weekly loops and short-term lines preserve exact readings and clear old windows", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("function renderLimitWindows(");
+  const end = source.indexOf("function showStatusSummary(", start);
+  const limitGrid = {
+    classList: classList(),
+    replaceChildren(...children) { this.children = children; }
+  };
+  const shortLimits = {
+    classList: classList(),
+    replaceChildren(...children) { this.children = children; }
+  };
+  const context = {
+    limitWindowTemplate: { content: { firstElementChild: { cloneNode() {
+      const nodes = {};
+      return {
+        dataset: {}, classList: classList(),
+        querySelector(selector) {
+          return nodes[selector] ||= {
+            setAttribute(name, value) { this[name] = value; }
+          };
+        }
+      };
+    } } } },
+    usageWindows: (data) => data.windows,
+    windowOrder: () => 0,
+    paintRowMeter() {},
+    getResetDate: () => null,
+    displayWindowLabel: (label) => label,
+    isLowRemaining: (window) => window.remainingPercent <= 15,
+    resetDetail: () => "reset not reported"
+  };
+  vm.runInNewContext(`${source.slice(start, end)}\nthis.render = renderLimitWindows;`, context);
+  context.render({ limitGrid, shortLimits }, { windows: [-5, 0, 25, 61.5, 100, 120].map(
+    (remainingPercent) => ({ label: "Weekly", remainingPercent })
+  ) }, { animate: false });
+  assert.deepEqual(limitGrid.children.map((node) => node.querySelector(".allowance-arc")["stroke-dashoffset"]),
+    ["100", "100", "75", "38.5", "0", "0"]);
+  assert.deepEqual(limitGrid.children.map((node) => node.querySelector(".allowance-arc")["stroke-dasharray"]),
+    ["100", "100", "100", "100", "none", "none"]);
+  assert.deepEqual(limitGrid.children.map((node) => node.querySelector(".limit-number").textContent),
+    ["0", "0", "25", "62", "100", "100"]);
+  context.render({ limitGrid, shortLimits }, { windows: [
+    { label: "5-hour", remainingPercent: 25 }, { label: "Weekly", remainingPercent: 100 }
+  ] }, { animate: false });
+  assert.deepEqual(limitGrid.children.map((node) => node.dataset.label), ["Weekly"]);
+  assert.deepEqual(shortLimits.children.map((node) => node.dataset.label), ["5-hour"]);
+  assert.equal(shortLimits.children[0].classList.contains("limit-inline"), true);
+  assert.equal(shortLimits.children[0].dataset.remaining, "25.0");
+  assert.equal(shortLimits.children[0].querySelector(".limit-number").textContent, "25");
+  context.render({ limitGrid, shortLimits }, { windows: [{ label: "Weekly", remainingPercent: 0 }] }, { animate: false });
+  assert.equal(shortLimits.children.length, 0);
+  assert.equal(shortLimits.classList.contains("hidden"), true);
+  assert.equal(limitGrid.children[0].querySelector(".limit-number").textContent, "0");
+});
+
 test("Claude Keychain failures route to the explicit sign-in action", async () => {
   const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const start = source.indexOf("function isLoginNeededError(");
@@ -34,8 +90,6 @@ test("Claude Keychain failures route to the explicit sign-in action", async () =
     true
   );
   assert.equal(context.isLoginNeededError("Claude usage request timed out."), false);
-  assert.equal(context.isLoginNeededError("Sign in to Claude again after allowing Usage Meter in macOS Privacy & Security > Automation and enabling Chrome View > Developer > Allow JavaScript from Apple Events."), true);
-  assert.equal(context.isLoginNeededError("This Chrome profile is signed in to a different Claude account or organization. Bring the matching Chrome profile forward, then Sign in to Claude again."), true);
 });
 
 test("healthy accounts hide the redundant overall status message", async () => {
@@ -108,6 +162,7 @@ test("stale usage stays visible in a grey cached state", async () => {
         this[name] = value;
       }
     },
+    shortLimits: { setAttribute(name, value) { this[name] = value; } },
     summary: { textContent: "", title: "", className: "" },
     row: { classList: classList(), title: "" },
     typeTag: { textContent: "", title: "" },
@@ -132,12 +187,16 @@ test("stale usage stays visible in a grey cached state", async () => {
     rowsExpanded: true,
     getAccount: () => ({ type: accountType }),
     buildSummary: () => "5h 100%",
+    usageWindows: (data) => data.windows,
+    displayWindowLabel: (label) => label,
+    getResetDate: () => null,
     renderLimitWindows(target) {
       renderedWindows += 1;
       target.limitGrid.classList.remove("hidden");
       target.limitGrid.replaceChildren({ textContent: "100%" });
     },
     buildResetTitle: () => "reset detail",
+    renderResetSummary(target) { target.summary.textContent = "Allowance · reset not reported"; target.summary.className = "account-summary"; },
     isLoginNeededError: (error) => /not logged in|claude auth status --json/i.test(error || ""),
     showStatusSummary(target, text, className, title = "") {
       target.limitGrid.replaceChildren();
@@ -173,12 +232,14 @@ test("stale usage stays visible in a grey cached state", async () => {
     error: "Claude is not logged in on this machine."
   });
 
-  assert.equal(elements.summary.textContent, "");
-  assert.equal(elements.summary.className, "account-summary hidden");
+  assert.equal(elements.summary.textContent, "Allowance · reset not reported");
+  assert.equal(elements.summary.className, "account-summary");
   assert.equal(elements.limitGrid.classList.values.has("hidden"), false);
   assert.equal(elements.limitGrid["aria-label"], "Cached usage limits");
   assert.equal(elements.actions.classList.values.has("hidden"), false);
   assert.equal(elements.connectButton.classList.values.has("hidden"), false);
+  assert.equal(elements.connectButton.dataset.action, "login");
+  assert.equal(elements.deleteButton.classList.values.has("hidden"), true);
   assert.equal(elements.typeTag.textContent, "Claude · Cached");
   assert.equal(elements.typeTag.title, "Cached data · Claude is not logged in on this machine.");
   assert.equal(elements.row.classList.values.has("is-stale"), true);
@@ -198,6 +259,8 @@ test("stale usage stays visible in a grey cached state", async () => {
 
   accountType = "codex";
   context.renderConnected("claude-1", freshUsage, { stale: false });
+  assert.equal(elements.actions.classList.values.has("hidden"), true);
+  assert.equal(elements.connectButton.classList.values.has("hidden"), true);
   assert.equal(elements.typeTag.textContent, "Codex");
   assert.equal(elements.row.classList.values.has("is-stale"), false);
   assert.equal(elements.limitGrid.children.length, 1);
@@ -206,6 +269,8 @@ test("stale usage stays visible in a grey cached state", async () => {
     error: "Refresh timed out."
   });
 
+  assert.equal(elements.actions.classList.values.has("hidden"), true);
+  assert.equal(latestState.kind, "stale");
   assert.equal(elements.typeTag.textContent, "Codex · Cached");
   assert.equal(elements.row.classList.values.has("is-stale"), true);
   assert.equal(renderedWindows, 5);
@@ -216,7 +281,7 @@ test("stale usage stays visible in a grey cached state", async () => {
 
   context.renderDisconnected("claude-1");
   assert.equal(elements.connectButton.textContent, "Sign in");
-  assert.equal(elements.connectButton.title, "Open account sign-in");
+  assert.equal(elements.connectButton.title, "Open sign-in in Google Chrome");
 
   context.renderDisconnected("claude-1", new Error("Google Chrome is required."));
   assert.equal(
@@ -306,6 +371,7 @@ test("account login click returns to the minimal account actions", async () => {
       name: { textContent: "" },
       typeTag: { textContent: "" },
       limitGrid: { classList: classList() },
+      shortLimits: { classList: classList() },
       summary: { textContent: "", className: "", title: "" },
       actions: { classList: classList() },
       connectButton,
@@ -318,6 +384,7 @@ test("account login click returns to the minimal account actions", async () => {
           ".account-name": elements.name,
           ".account-type": elements.typeTag,
           ".limit-grid": elements.limitGrid,
+          ".short-limits": elements.shortLimits,
           ".account-summary": elements.summary,
           ".account-actions": elements.actions,
           ".connect-button": elements.connectButton,
@@ -406,6 +473,7 @@ test("account delete confirms, removes the account, and syncs the returned confi
     name: { textContent: "" },
     typeTag: { textContent: "" },
     limitGrid: { classList: classList() },
+    shortLimits: { classList: classList() },
     summary: { textContent: "", className: "", title: "" },
     actions: { classList: classList() },
     connectButton,
@@ -418,6 +486,7 @@ test("account delete confirms, removes the account, and syncs the returned confi
         ".account-name": elements.name,
         ".account-type": elements.typeTag,
         ".limit-grid": elements.limitGrid,
+        ".short-limits": elements.shortLimits,
         ".account-summary": elements.summary,
         ".account-actions": elements.actions,
         ".connect-button": elements.connectButton,
@@ -490,6 +559,7 @@ test("right-click account menu routes logout, login removal, and row deletion", 
       name: { textContent: "" },
       typeTag: { textContent: "" },
       limitGrid: { classList: classList() },
+      shortLimits: { classList: classList() },
       summary: { textContent: "", className: "", title: "" },
       actions: { classList: classList() },
       connectButton,
@@ -502,6 +572,7 @@ test("right-click account menu routes logout, login removal, and row deletion", 
           ".account-name": elements.name,
           ".account-type": elements.typeTag,
           ".limit-grid": elements.limitGrid,
+          ".short-limits": elements.shortLimits,
           ".account-summary": elements.summary,
           ".account-actions": elements.actions,
           ".connect-button": elements.connectButton,

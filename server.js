@@ -923,8 +923,11 @@ async function readClaudeOAuthCredentials(
       ["find-generic-password", "-s", claudeCredentialsService, "-w"],
       { timeout: 10000, maxBuffer: 1024 * 1024, encoding: "utf8" }
     ));
-  } catch {
-    throw new Error("No saved Claude Code login was found. Sign in to Claude again.");
+  } catch (error) {
+    if (error.code === 44) {
+      throw new Error("No saved Claude Code login was found. Sign in to Claude again.");
+    }
+    throw new Error("macOS Keychain could not read the saved Claude Code login. Unlock your login keychain or sign in to Claude again.");
   }
 
   let credentials;
@@ -1917,7 +1920,7 @@ function unavailableIdentityResult(identity, error, now = Date.now(), forceStale
 
     // Still current: present it as the live reading it is, rather than greying
     // the row out because one poll was rate limited.
-    if (!aged && !forceStale) {
+    if (!aged && !forceStale && !/sign in to Claude again/i.test(error || "")) {
       return {
         accountId: identity.id,
         ok: true,

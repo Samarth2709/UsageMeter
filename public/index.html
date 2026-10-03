@@ -11,7 +11,7 @@
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="styles.css?v=20260902s" />
     <link rel="stylesheet" href="sculpture.css?v=20260904a" />
-    <link rel="stylesheet" href="spatial.css?v=20260904g" />
+    <link rel="stylesheet" href="spatial.css?v=20261003a" />
   </head>
   <body>
     <div class="spatial-stage dock-enabled is-docked" tabindex="0" role="region" aria-label="3D usage meter" aria-description="Drag to turn, flick to spin, double-click or press Escape to face forward. Arrow keys rotate when this region is focused.">
@@ -59,9 +59,9 @@
       <span class="resize-edge" data-resize-edge="w" aria-hidden="true"></span>
       <span class="resize-edge" data-resize-edge="ne" aria-hidden="true"></span>
       <span class="resize-edge" data-resize-edge="nw" aria-hidden="true"></span>
-      <span class="resize-edge" data-resize-edge="sw" aria-hidden="true"></span>
-      <button class="resize-edge resize-grip" data-resize-edge="se" aria-label="Resize window" title="Drag to resize. Arrow keys resize when focused.">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><path d="m5 12 7-7M9 12l3-3"/></svg>
+      <span class="resize-edge" data-resize-edge="se" aria-hidden="true"></span>
+      <button class="resize-edge resize-grip" data-resize-edge="sw" aria-label="Resize window" title="Drag the bottom-left corner to resize. Arrow keys move this corner when focused.">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><path d="m4 5 7 7M4 9l3 3"/></svg>
       </button>
     </div>
 
@@ -70,25 +70,30 @@
         <div class="account-meta">
           <span class="account-type"></span>
           <p class="account-name"></p>
-        </div>
-        <div class="account-right">
-          <div class="limit-grid" aria-label="Usage limits"></div>
+          <div class="short-limits hidden" aria-label="Short-term usage limits"></div>
           <p class="account-summary"></p>
           <div class="account-actions hidden">
             <button class="connect-button">Sign in</button>
             <button class="delete-button">Delete</button>
           </div>
         </div>
+        <div class="account-right">
+          <div class="limit-grid" aria-label="Usage limits"></div>
+        </div>
       </article>
     </template>
 
     <template id="limit-window-template">
       <div class="limit-window">
-        <div class="limit-topline">
-          <span class="limit-label"></span>
-          <span class="limit-value"></span>
+        <div class="limit-dial">
+          <svg class="allowance-loop" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="allowance-track" cx="50" cy="50" r="44" />
+            <circle class="allowance-arc" cx="50" cy="50" r="44" pathLength="100" />
+          </svg>
+          <span class="limit-value"><span class="limit-number"></span><span class="limit-unit">%</span></span>
         </div>
-        <div class="allowance-track" aria-hidden="true"><div class="allowance-fill"></div></div>
+        <span class="limit-label"></span>
+        <div class="allowance-line" aria-hidden="true"></div>
         <p class="limit-reset">
           <span class="limit-countdown"></span>
           <span class="limit-time"></span>
@@ -97,7 +102,7 @@
     </template>
 
     <script src="update-state.js?v=20260718a"></script>
-    <script src="spatial.js?v=20260904g" type="module"></script>
-    <script src="app.js?v=20260904c" type="module"></script>
+    <script src="spatial.js?v=20260905c" type="module"></script>
+    <script src="app.js?v=20261003a" type="module"></script>
   </body>
 </html>

@@ -142,7 +142,7 @@ const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 // Count the displayed percent from its previous value to the new one.
 function animatePercent(node, from, to) {
   if (from === to || reducedMotion?.matches || typeof requestAnimationFrame !== "function") {
-    node.textContent = `${Math.round(to)}%`;
+    node.textContent = String(Math.round(to));
     return;
   }
 
@@ -151,7 +151,7 @@ function animatePercent(node, from, to) {
   const step = (now) => {
     const t = Math.min(1, (now - start) / duration);
     const eased = 1 - Math.pow(1 - t, 3);
-    node.textContent = `${Math.round(from + (to - from) * eased)}%`;
+    node.textContent = String(Math.round(from + (to - from) * eased));
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -209,7 +209,8 @@ function formatResetTime(value, includeDate = false) {
 }
 
 function getWindowReset(window, includeDate = false) {
-  return formatResetTime(window?.resetAt || window?.resetText, includeDate);
+  const date = getResetDate(window);
+  return formatResetTime(date?.toISOString() || window?.resetText, includeDate);
 }
 
 function getResetDate(window) {
@@ -242,13 +243,13 @@ function formatResetCountdown(targetDate) {
   if (hours > 0) {
     return `${hours}h ${minutes}m`;
   }
-  return `${minutes}m ${seconds}s`;
+  return totalSeconds === 0 ? "due" : `${minutes}m ${seconds}s`;
 }
 
 function resetDetail(window) {
   const countdown = formatResetCountdown(getResetDate(window));
   if (countdown) {
-    return `resets in ${countdown}`;
+    return countdown === "due" ? "reset due" : `resets in ${countdown}`;
   }
   const reset = getWindowReset(window, true);
   return reset ? `resets ${reset}` : "reset not reported";
@@ -276,54 +277,68 @@ function buildSummary(data) {
 }
 
 function buildResetTitle(data) {
-  const windows = usageWindows(data);
+  return usageWindows(data).map((window) => {
+    const exact = getWindowReset(window, true);
+    return `${compactWindowLabel(window.label)} · ${resetDetail(window)}${exact ? `\nResets ${exact}` : ""}`;
+  }).join("\n");
+}
 
-  if (!windows.length) {
-    return "";
-  }
-
-  return windows
-    .map((window) => {
-      const reset = resetDetail(window);
-      return reset ? `${compactWindowLabel(window.label)} ${reset}` : null;
-    })
-    .filter(Boolean)
-    .join("\n");
+function renderResetSummary(elements, data) {
+  const text = usageWindows(data).map((window) => {
+    const label = displayWindowLabel(window.label) === "Weekly" ? "Week" : compactWindowLabel(window.label);
+    const countdown = formatResetCountdown(getResetDate(window));
+    const reset = countdown === "due" ? "reset due" : countdown || getWindowReset(window, true) || "reset not reported";
+    return `${label} · ${reset}`;
+  }).join("\n");
+  elements.summary.textContent = text;
+  elements.summary.title = buildResetTitle(data);
+  elements.summary.className = `account-summary${text ? "" : " hidden"}`;
 }
 
 function renderLimitWindows(elements, data, options = {}) {
   const animate = options.animate !== false;
   const displayWindows = usageWindows(data).slice().sort((a, b) => windowOrder(a) - windowOrder(b));
   const previous = new Map(
-    [...elements.limitGrid.querySelectorAll?.(".limit-window") ?? []].map((node) => [node.dataset.label, Number(node.dataset.remaining)])
+    [elements.limitGrid, elements.shortLimits].flatMap((grid) => [...grid.querySelectorAll?.(".limit-window") ?? []]).map((node) => [node.dataset.label, Number(node.dataset.remaining)])
   );
   paintRowMeter(elements, displayWindows);
-  elements.limitGrid.replaceChildren(...displayWindows.map((window) => {
+  const nodes = displayWindows.map((window) => {
     const root = limitWindowTemplate.content.firstElementChild.cloneNode(true);
     const resetDate = getResetDate(window);
     const label = displayWindowLabel(window.label);
     const remaining = Math.min(100, Math.max(0, Number(window.remainingPercent) || 0));
     const before = previous.has(label) ? previous.get(label) : 0;
     root.dataset.label = label;
+    root.classList.toggle("limit-inline", label !== "Weekly");
     root.dataset.remaining = remaining.toFixed(1);
     root.style?.setProperty("--remaining", `${remaining}%`);
+    root.querySelector(".allowance-arc").setAttribute("stroke-dashoffset", String(100 - remaining));
+    root.querySelector(".allowance-arc").setAttribute("stroke-dasharray", remaining === 100 ? "none" : "100");
     root.querySelector(".limit-label").textContent = label;
-    const value = root.querySelector(".limit-value");
+    const value = root.querySelector(".limit-number");
     if (animate) animatePercent(value, before, remaining);
-    else value.textContent = `${Math.round(remaining)}%`;
+    else value.textContent = String(Math.round(remaining));
     root.classList.toggle("low", isLowRemaining(window));
     const reset = root.querySelector(".limit-reset");
     reset.textContent = resetDetail(window);
     reset.title = resetDate ? `Resets ${formatResetTime(resetDate.toISOString(), true)}` : "Reset time not reported.";
+    root.title = `${label} · ${reset.textContent}\n${reset.title}`;
     return root;
-  }));
-  elements.limitGrid.classList.toggle("hidden", !displayWindows.length);
+  });
+  const weekly = nodes.filter((node) => node.dataset.label === "Weekly");
+  const shortTerm = nodes.filter((node) => node.dataset.label !== "Weekly");
+  elements.limitGrid.replaceChildren(...weekly);
+  elements.shortLimits.replaceChildren(...shortTerm);
+  elements.limitGrid.classList.toggle("hidden", !weekly.length);
+  elements.shortLimits.classList.toggle("hidden", !shortTerm.length);
 }
 
 function showStatusSummary(elements, text, className, title = "") {
   paintRowMeter(elements, []);
   elements.limitGrid.replaceChildren();
   elements.limitGrid.classList.add("hidden");
+  elements.shortLimits.replaceChildren();
+  elements.shortLimits.classList.add("hidden");
   elements.summary.textContent = text;
   elements.summary.title = title;
   elements.summary.className = `account-summary ${className}`.trim();
@@ -454,10 +469,11 @@ function updateAccountState(accountId, patch = {}) {
 
   if (elements) {
     elements.name.textContent = nextState.name;
-    // The identity is not drawn; it is available as the tooltip of the name block.
-    // (The row's own tooltip is reserved for the cached-data detail.)
+    // The short layout hides the identity line, so keep its full text on the
+    // visible provider as well as the name block. Retain cached-data detail.
     const meta = elements.name?.parentElement;
     if (meta) meta.title = nextState.name;
+    elements.typeTag.title = [nextState.name, elements.row.title].filter(Boolean).join("\n");
   }
 
   syncOverallStatus();
@@ -512,6 +528,7 @@ function setStalePresentation(accountId, elements, stale, error = null) {
   elements.typeTag.textContent = stale ? `${type} · Cached` : type;
   elements.typeTag.title = detail;
   elements.limitGrid.setAttribute("aria-label", stale ? "Cached usage limits" : "Usage limits");
+  elements.shortLimits.setAttribute("aria-label", stale ? "Cached short-term usage limits" : "Short-term usage limits");
 }
 
 function renderConnected(accountId, data, metadata = {}) {
@@ -525,9 +542,7 @@ function renderConnected(accountId, data, metadata = {}) {
   const summary = buildSummary(data);
   setStalePresentation(accountId, elements, stale, metadata.error);
   renderLimitWindows(elements, data, { animate: !stale });
-  elements.summary.textContent = "";
-  elements.summary.title = buildResetTitle(data);
-  elements.summary.className = "account-summary hidden";
+  renderResetSummary(elements, data);
   elements.row.classList.toggle("expanded", rowsExpanded);
   elements.actions.classList.toggle("hidden", !loginNeeded);
   elements.connectButton.classList.toggle("hidden", !loginNeeded);
@@ -562,7 +577,7 @@ function renderDisconnected(accountId, error = null) {
   elements.actions.classList.remove("hidden");
   elements.connectButton.classList.remove("hidden");
   elements.connectButton.textContent = "Sign in";
-  elements.connectButton.title = "Open account sign-in";
+  elements.connectButton.title = "Open sign-in in Google Chrome";
   elements.connectButton.dataset.action = "login";
   elements.deleteButton.classList.remove("hidden");
   elements.deleteButton.textContent = "Delete";
@@ -681,6 +696,7 @@ function createAccountRow(account) {
   const name = node.querySelector(".account-name");
   const typeTag = node.querySelector(".account-type");
   const limitGrid = node.querySelector(".limit-grid");
+  const shortLimits = node.querySelector(".short-limits");
   const summary = node.querySelector(".account-summary");
   const actions = node.querySelector(".account-actions");
   const connectButton = node.querySelector(".connect-button");
@@ -693,6 +709,7 @@ function createAccountRow(account) {
     {
       row: node,
       limitGrid,
+      shortLimits,
       summary
     },
     "Loading…",
@@ -741,8 +758,9 @@ function createAccountRow(account) {
 
     connectButton.disabled = true;
     deleteButton.disabled = true;
+    updateAccountState(account.id, { kind: "pending", data: null, detail: removeLogin ? "Removing login…" : "Logging out…" });
     showStatusSummary(
-      { row: node, limitGrid, summary },
+      { row: node, limitGrid, shortLimits, summary },
       removeLogin ? "Removing login…" : "Logging out…",
       "pending"
     );
@@ -781,7 +799,7 @@ function createAccountRow(account) {
     } catch (error) {
       renderDisconnected(account.id);
       showStatusSummary(
-        { row: node, limitGrid, summary },
+        { row: node, limitGrid, shortLimits, summary },
         "Couldn’t delete",
         "error",
         error?.message || "Account deletion failed."
@@ -798,6 +816,7 @@ function createAccountRow(account) {
     typeTag,
     name,
     limitGrid,
+    shortLimits,
     summary,
     actions,
     connectButton,
@@ -822,7 +841,22 @@ function renderCurrentRows() {
 }
 
 function updateCountdowns() {
-  renderCurrentRows();
+  for (const [accountId, elements] of accountElements) {
+    const existing = accountStates.get(accountId);
+    if (!existing?.data || !["ok", "stale", "disconnected"].includes(existing.kind)) continue;
+    renderResetSummary(elements, existing.data);
+    const windows = usageWindows(existing.data).slice().sort((a, b) => windowOrder(a) - windowOrder(b));
+    const nodes = [...elements.limitGrid.querySelectorAll(".limit-window"), ...elements.shortLimits.querySelectorAll(".limit-window")];
+    for (const node of nodes) {
+      const window = windows.find((window) => displayWindowLabel(window.label) === node.dataset.label);
+      if (!window) continue;
+      const reset = node.querySelector(".limit-reset");
+      reset.textContent = resetDetail(window);
+      const exact = getWindowReset(window, true);
+      reset.title = exact ? `Resets ${exact}` : "Reset time not reported.";
+      node.title = `${node.dataset.label} · ${reset.textContent}\n${reset.title}`;
+    }
+  }
 }
 
 function measureContentHeight() {
@@ -840,19 +874,27 @@ function measureContentHeight() {
   const paddingY = (style) => style
     ? (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
     : 0;
-  const rowsHeight = [...accountsRoot.children].reduce(
-    (height, row) => height + row.offsetHeight, 0
-  );
-  const gaps = Math.max(0, accountsRoot.children.length - 1) * (parseFloat(listStyle.rowGap) || 0);
+  // Measure intrinsic row heights before sharing spare space between accounts.
+  // Otherwise a manually enlarged view would become the next automatic minimum.
+  accountsRoot.classList.add("is-measuring");
+  const lines = new Map();
+  for (const row of accountsRoot.children) {
+    lines.set(row.offsetTop, Math.max(lines.get(row.offsetTop) || 0, row.offsetHeight));
+  }
+  const rowsHeight = [...lines.values()].reduce((height, line) => height + line, 0);
+  accountsRoot.classList.remove("is-measuring");
+  const gaps = Math.max(0, lines.size - 1) * (parseFloat(listStyle.rowGap) || 0);
+  accountsRoot.classList.toggle("is-scrollable", rowsHeight + gaps + paddingY(listStyle) > accountsRoot.clientHeight + 1);
   return Math.ceil(rowsHeight + gaps + paddingY(listStyle) + paddingY(stageStyle) +
     (header?.offsetHeight || 0) + (footer?.offsetHeight || 0));
 }
 
 function syncViewSize(expanded = rowsExpanded) {
+  const contentHeight = measureContentHeight();
   nativeApi?.setExpandedView?.(
     expanded,
     state?.config?.accounts?.length || 1,
-    measureContentHeight()
+    contentHeight
   );
 }
 
@@ -1004,11 +1046,12 @@ if (nativeApi?.onUpdateState) {
 
 await loadState();
 syncViewSize();
-countdownTimer = window.setInterval(updateCountdowns, 60000);
+countdownTimer = window.setInterval(updateCountdowns, 1000);
 // Re-evaluate live health independently of incoming snapshots so the dot flips
 // to "down" when fresh data stops arriving.
 statusHeartbeat = window.setInterval(syncOverallStatus, 15000);
 document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) updateCountdowns();
   if (!document.hidden) {
     syncOverallStatus();
     // Re-assert the fit on show. Content changes move the window on their own;

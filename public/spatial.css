@@ -1,4 +1,8 @@
 /* The whole interface is a physical object: back, face, inset, raised layer. */
+/* A sliding no-drag child cannot cancel a window-wide native drag region while
+   tucked offscreen. The corner dock has no native window-drag surface. */
+body:has(.spatial-stage) { -webkit-app-region: no-drag; }
+
 .spatial-stage {
   position: relative;
   height: 100%;
@@ -13,8 +17,6 @@
   transition: transform 320ms cubic-bezier(.22, 1, .36, 1);
 }
 .dock-enabled.is-docked { transform: translateX(calc(100% + 16px)); }
-.dock-enabled.is-docked .allowance-fill::before,
-.dock-enabled.is-docked .allowance-fill::after { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) {
   .dock-enabled { transition: none; }
 }
@@ -31,6 +33,12 @@
   transform-style: preserve-3d;
   transform: translateZ(-18px) scale3d(var(--fit), var(--fit), var(--fit)) rotateX(var(--pitch)) rotateY(var(--yaw)) rotateZ(var(--roll));
 }
+
+.spatial-chassis.is-facing-front { transform: none; }
+.spatial-chassis.is-facing-front .widget-shell .sculpture-header,
+.spatial-chassis.is-facing-front .widget-shell .account-row .account-meta,
+.spatial-chassis.is-facing-front .widget-shell .account-right,
+.spatial-chassis.is-facing-front .widget-shell .widget-bar { transform: none; }
 
 .chassis-back {
   position: absolute;
@@ -89,7 +97,7 @@
 }
 
 .spatial-chassis .sculpture-header {
-  flex-basis: 24px;
+  flex-basis: 18px;
   padding: 4px 18px 0;
   transform: translateZ(5px);
   text-shadow: 0 1px 0 #000;
@@ -104,32 +112,37 @@
 .spatial-chassis .account-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 4px 6px;
+  gap: 4px;
+  padding: 3px 12px;
   scrollbar-width: thin;
-  border-radius: 16px;
-  background: #080d0a61;
-  box-shadow: inset 0 2px 6px #0009, inset 0 -1px 0 #bedbc114;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  transform-style: preserve-3d;
 }
 
+/* A scroll container flattens its descendants in Chromium. Only flatten when
+   the chosen window is actually too small to show all of the rows. */
+.spatial-chassis .account-list.is-scrollable { overflow: auto; transform-style: flat; }
+
 .spatial-chassis .account-row {
-  flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 18px 1fr;
-  min-height: 76px;
-  padding: 6px 10px 12px;
+  flex: 1 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(56px, 30%);
+  grid-template-rows: minmax(0, 1fr);
+  column-gap: 12px;
+  min-height: 70px;
+  padding: 0;
   isolation: auto;
-  border: 1px solid #919b9322;
-  border-radius: 14px;
-  background:
-    radial-gradient(ellipse at var(--light-x) var(--light-y), #c1c7c11c, transparent 80%),
-    linear-gradient(155deg, #343b37, #202823 60%, #1a211d);
-  box-shadow: inset 0 1px 0 #cbd6cb40, inset 0 -1px 0 #050b0780,
-    0 2px 0 #0a100c, 0 3px 0 #242e28, 0 5px 8px #0008;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
   transform-style: preserve-3d;
   animation: none;
 }
 
+.spatial-chassis .account-list.is-measuring .account-row { flex-grow: 0; }
 .spatial-chassis .account-row:hover { background-color: transparent; }
 .spatial-chassis .account-row + .account-row::after { display: none; }
 
@@ -137,95 +150,164 @@
 .spatial-chassis .account-row[data-bands="2"] .account-meta,
 .spatial-chassis .widget-shell.bar-open .account-row:last-child .account-meta {
   grid-column: 1;
+  grid-row: 1;
   display: flex;
-  justify-content: space-between;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
   transform: translateZ(9px);
 }
 
-.spatial-chassis .account-right { grid-column: 1; padding-top: 2px; transform: translateZ(12px); }
-.spatial-chassis .account-name { flex: 1; text-align: right; }
-.spatial-chassis .account-row-claude .account-type { font-size: 14px; }
+.spatial-chassis .account-right {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-top: 0;
+  transform: translateZ(12px);
+}
+.spatial-chassis .account-meta,
+.spatial-chassis .limit-window,
+.spatial-chassis .widget-bar { transition: none; }
+.spatial-chassis .account-name {
+  flex: none;
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  font-size: clamp(9px, 2.4vw, 12px);
+  color: #96a29a;
+}
+.spatial-chassis .account-row-claude .account-type { font-size: clamp(14px, 3.8vw, 21px); }
 .spatial-chassis .account-type {
-  font-size: 13px;
-  text-shadow: 0 1px 0 #2e3e32, 0 2px 1px #0009;
+  max-width: 100%;
+  white-space: normal;
+  font-size: clamp(14px, 3.8vw, 21px);
+  line-height: 1.3;
+  text-shadow: none;
 }
 
-.spatial-chassis .account-name,
-.spatial-chassis .limit-label { text-shadow: 0 -1px 0 #060b07; }
+.spatial-chassis .account-row.is-stale .account-type {
+  font-family: var(--font);
+  font-size: clamp(12px, 3.4vw, 18px);
+  letter-spacing: 0;
+  color: #b6bfba;
+}
+
+.spatial-chassis .account-name { text-shadow: none; }
+/* Footer hover must not reflow readings or move resting text off its pixel plane. */
+.spatial-chassis .widget-shell.bar-open .account-row:last-child .limit-window { display: grid; }
+.spatial-chassis.is-facing-front .widget-shell.bar-open .account-row:last-child .account-meta { transform: none; }
+.spatial-chassis .limit-grid { flex: 1; grid-template-columns: minmax(0, 1fr); gap: 4px; min-height: 70px; }
+.spatial-chassis .widget-shell .limit-window {
+  --dial-size: max(56px, min(100cqw, 100cqh - 14px));
+  --dial-top: max(0px, (100cqh - var(--dial-size) - 14px) / 2);
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-items: start;
+  min-height: 70px;
+  container-type: size;
+}
+
+.limit-dial {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--dial-size);
+  height: var(--dial-size);
+  margin-top: var(--dial-top);
+}
+.allowance-loop { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.allowance-loop circle { fill: none; stroke-width: 4.5; }
+.allowance-track { stroke: #cbdad51c; }
+.allowance-arc { stroke: var(--tint); stroke-linecap: butt; }
+
 .spatial-chassis .limit-value,
 .spatial-chassis .account-row[data-thin-top="1"] .limit-window:first-child .limit-value {
-  font-size: 20px;
-  text-shadow: 0 1px 0 #67756b, 0 2px 0 #303e35, 1px 3px 2px #0008;
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  font-size: clamp(18px, var(--dial-size) * 0.29, 48px);
+  line-height: 1;
+  letter-spacing: -0.05em;
+  text-shadow: none;
 }
-
-.spatial-chassis .limit-grid { gap: 12px; }
-.spatial-chassis .limit-topline { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 6px; }
-.spatial-chassis .limit-label { align-self: center; }
-.spatial-chassis .limit-grid:has(> .limit-window:only-child) { grid-template-columns: 1fr; }
-
-.spatial-chassis .limit-topline::after { display: none; }
-
-.allowance-track {
-  height: 6px;
-  margin-top: 4px;
+.spatial-chassis .limit-unit { font-size: 0.62em; letter-spacing: 0; }
+.spatial-chassis .limit-label {
+  position: absolute;
+  top: calc(var(--dial-top) + var(--dial-size) + 2px);
+  left: 0;
+  width: 100%;
+  color: #b5bfb8;
+  text-align: center;
+  font-size: clamp(10px, 2.6vw, 13px);
+  line-height: 12px;
+  text-shadow: none;
+}
+/* Reset details remain available to assistive technology and on the loop's
+   native tooltip; they never compete with the reading in the compact layout. */
+.spatial-chassis .limit-reset {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
   overflow: hidden;
-  border-radius: 3px;
-  background: #060e08;
-  box-shadow: inset 0 1px 2px #000c, 0 1px 0 #bfdfbd38, 0 -1px 0 #030805;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
-
-.allowance-fill {
-  position: relative;
-  height: 100%;
+.spatial-chassis .account-summary { margin: 1px 0 0; font-size: clamp(10px, 2.6vw, 13px); line-height: 1.2; }
+.spatial-chassis .account-actions { flex-direction: row; flex-wrap: wrap; align-items: center; margin-top: 3px; }
+.spatial-chassis .account-row.is-stale .account-actions { margin-top: 3px; }
+.spatial-chassis .short-limits { display: grid; gap: 5px; width: 100%; margin-top: 4px; }
+.spatial-chassis .widget-shell .limit-window.limit-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  min-height: 0;
+  container-type: normal;
+}
+.spatial-chassis .limit-inline .limit-dial {
+  grid-column: 2;
+  grid-row: 1;
+  width: auto;
+  height: auto;
+  margin: 0;
+}
+.spatial-chassis .limit-inline .allowance-loop { display: none; }
+.spatial-chassis .widget-shell .limit-window.limit-inline .limit-value { font-size: clamp(12px, 3.4vw, 18px); letter-spacing: -0.02em; }
+.spatial-chassis .limit-inline .limit-unit { font-size: 0.8em; }
+.spatial-chassis .limit-inline .limit-label {
+  position: static;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  justify-self: start;
+  text-align: left;
+}
+.allowance-line { display: none; }
+.spatial-chassis .limit-inline .allowance-line {
+  display: block;
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  background: #cbdad51c;
+  overflow: hidden;
+}
+.spatial-chassis .allowance-line::before {
+  content: "";
+  display: block;
   width: var(--remaining);
-  overflow: hidden;
-  border-radius: inherit;
-  background: linear-gradient(180deg, #ffffff80, transparent 42%, #0007), var(--tint);
-  transition: width 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+  height: 100%;
+  background: var(--tint);
 }
-
-/* Light moves inside the fixed data boundary, never changing the reading. */
-.allowance-fill::before {
-  content: "";
-  position: absolute;
-  inset: -3px -60%;
-  background: repeating-linear-gradient(115deg, transparent 0 22px, #efffff75 28px, transparent 40px 65px);
-  filter: blur(1px);
-  animation: allowance-flow 4.8s ease-in-out infinite alternate;
-}
-
-.allowance-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0 0 0 auto;
-  width: 3px;
-  background: #ddfff3;
-  box-shadow: -2px 0 7px 2px #d6fff7aa;
-  animation: allowance-pulse 2.4s ease-in-out infinite alternate;
-}
-
-.limit-window:nth-child(2) .allowance-fill::before { animation-delay: -2.1s; }
-.account-row:nth-child(even) .allowance-fill::before { animation-delay: -3.3s; }
-.account-row.is-stale .allowance-fill::before,
-.account-row.is-stale .allowance-fill::after { display: none; }
-.page-hidden .allowance-fill::before,
-.page-hidden .allowance-fill::after { animation-play-state: paused; }
-
-@keyframes allowance-flow {
-  from { transform: translateX(-12%) translateY(-1px); }
-  to { transform: translateX(12%) translateY(1px); }
-}
-@keyframes allowance-pulse {
-  from { opacity: 0.3; }
-  to { opacity: 0.85; }
-}
-
-.spatial-chassis .limit-window { position: relative; }
-.spatial-chassis .limit-reset { position: absolute; top: 100%; width: 100%; margin-top: 2px; font-size: 8px; }
+.spatial-chassis .account-row.is-stale .limit-value { color: #b2bcb5; }
 .spatial-chassis .widget-bar {
-  flex-basis: 28px;
-  height: 28px;
+  flex-basis: 24px;
+  height: 24px;
   padding: 0 16px 0 12px;
   transform: translateZ(6px);
 }
@@ -234,6 +316,7 @@
 .spatial-chassis .icon-button { width: 24px; height: 24px; }
 .spatial-chassis .status-text { font-size: 8px; }
 .spatial-chassis .widget-shell.bar-open .widget-bar { transform: translateZ(6px); }
+.spatial-chassis.is-facing-front .widget-shell.bar-open .widget-bar { transform: none; }
 
 .spatial-chassis .icon-button,
 .spatial-chassis .connect-button,
@@ -267,6 +350,14 @@
   box-shadow: inset 0 1px 1px #fffa, 0 0 0 2px #071009, 0 1px 0 2px #6c896c50;
 }
 
+.spatial-chassis .widget-bar .icon-button {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #a6b3aa;
+}
+.spatial-chassis .widget-bar .icon-button:hover { background: #d9f5e512; color: #e9f5ed; }
+
 /* Hit zones live outside perspective, keeping the resize origin stationary. */
 .resize-edge { display: none; position: absolute; z-index: 5; touch-action: none; -webkit-app-region: no-drag; }
 .can-resize .resize-edge { display: block; }
@@ -276,10 +367,10 @@
 .resize-edge[data-resize-edge="w"] { left: 0; top: 18px; bottom: 18px; width: 8px; cursor: ew-resize; }
 .resize-edge[data-resize-edge="nw"] { top: 0; left: 0; width: 18px; height: 18px; cursor: nwse-resize; }
 .resize-edge[data-resize-edge="ne"] { top: 0; right: 0; width: 18px; height: 18px; cursor: nesw-resize; }
-.resize-edge[data-resize-edge="sw"] { bottom: 0; left: 0; width: 18px; height: 18px; cursor: nesw-resize; }
+.resize-edge[data-resize-edge="se"] { bottom: 0; right: 0; width: 18px; height: 18px; cursor: nwse-resize; }
 .resize-grip {
-  bottom: 1px; right: 2px; width: 20px; height: 20px; padding: 2px;
-  border: 0; background: transparent; color: #92a397; cursor: nwse-resize;
+  bottom: 1px; left: 2px; width: 20px; height: 20px; padding: 2px;
+  border: 0; background: transparent; color: #92a397; cursor: nesw-resize;
   filter: drop-shadow(0 1px 0 #000);
 }
 .resize-grip svg { width: 16px; height: 16px; }
@@ -287,9 +378,43 @@
 .resize-grip:focus-visible { outline: 1px solid #bcddd0; outline-offset: -3px; border-radius: 4px; }
 
 @media (max-width: 250px) {
-  .spatial-chassis .account-row { padding-inline: 8px; }
-  .spatial-chassis .limit-grid { gap: 9px; }
-  .spatial-chassis .limit-label { font-size: 8px; }
+  .spatial-chassis .account-list { padding-inline: 10px; }
+}
+
+/* Very short windows put the two accounts side by side so both weeks remain visible. */
+@media (max-height: 240px) {
+  .spatial-chassis .sculpture-header { display: none; }
+  .spatial-chassis .account-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(min-content, 1fr);
+    align-content: start;
+    gap: 8px;
+    padding: 6px 12px;
+  }
+  .spatial-chassis .account-list.is-measuring { grid-auto-rows: max-content; }
+  .spatial-chassis .account-row { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 16px minmax(68px, 1fr) minmax(18px, max-content); align-items: stretch; gap: 2px; min-height: max-content; }
+  .spatial-chassis .account-row:only-child { grid-column: 1 / -1; }
+  .spatial-chassis .widget-shell .account-row .account-meta,
+  .spatial-chassis .widget-shell.bar-open .account-row:last-child .account-meta { display: contents; }
+  .spatial-chassis .account-type,
+  .spatial-chassis .account-row-claude .account-type { grid-column: 1; grid-row: 1; font-size: 14px; line-height: 16px; }
+  .spatial-chassis .account-row.is-stale .account-type { font-size: 10px; line-height: 16px; white-space: nowrap; }
+  .spatial-chassis .account-name { display: none; }
+  .spatial-chassis .account-right { grid-column: 1; grid-row: 2; min-height: 68px; }
+  .spatial-chassis .limit-grid,
+  .spatial-chassis .widget-shell .limit-window { min-height: 68px; }
+  .spatial-chassis .limit-grid .limit-window {
+    --dial-size: max(56px, min(100cqw, 100cqh - 12px));
+    --dial-top: max(0px, (100cqh - var(--dial-size) - 12px) / 2);
+  }
+  .spatial-chassis .limit-grid .limit-label { top: calc(var(--dial-top) + var(--dial-size) + 1px); line-height: 11px; font-size: 10px; }
+  .spatial-chassis .short-limits { grid-column: 1; grid-row: 3; margin: 0; }
+  .spatial-chassis .widget-shell .limit-window.limit-inline { min-height: 0; gap: 2px 4px; }
+  .spatial-chassis .limit-inline .limit-label { font-size: 9px; line-height: 11px; }
+  .spatial-chassis .widget-shell .limit-window.limit-inline .limit-value { font-size: 11px; }
+  .spatial-chassis .account-summary { grid-column: 1; grid-row: 3; margin: 0; font-size: 9px; line-height: 12px; }
+  .spatial-chassis .account-actions { grid-column: 1; grid-row: 4; justify-content: center; }
 }
 
 /* History uses the same milled frame, raised tiles and sunken data surfaces. */
@@ -378,5 +503,28 @@
 @media (prefers-reduced-motion: reduce) {
   .history-body .panel, .history-body .stat, .history-body .empty-state { transform: none; }
   .spatial-stage *, .history-body * { transition: none !important; animation: none !important; }
-  .allowance-fill::before, .allowance-fill::after { animation: none !important; }
+}
+
+/* Every reported allowance has a visible countdown, including cached readings. */
+.spatial-chassis .account-summary {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  color: #b5bfb8;
+}
+@media (max-height: 240px) {
+  .spatial-chassis .account-summary { grid-row: 4; font-size: 10px; line-height: 13px; }
+  .spatial-chassis .account-actions { grid-row: 5; }
+}
+
+/* Reserve two reset lines even at the smallest supported height. */
+@media (max-height: 175px) {
+  .spatial-chassis .account-list { padding-block: 4px; }
+  .spatial-chassis .account-row { grid-template-rows: 14px 48px minmax(18px, max-content) minmax(24px, max-content); }
+  .spatial-chassis .account-type { font-size: 13px; line-height: 14px; }
+  .spatial-chassis .account-right,
+  .spatial-chassis .limit-grid,
+  .spatial-chassis .widget-shell .limit-window { min-height: 48px; }
+  .spatial-chassis .limit-grid .limit-window { --dial-size: 48px; --dial-top: 0px; }
+  .spatial-chassis .limit-grid .limit-label { display: none; }
+  .spatial-chassis .account-summary { line-height: 12px; }
 }
