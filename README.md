@@ -79,6 +79,7 @@ Use `RATE_LIMIT_TOOL_AUTOSTART_DRY_RUN=1` to inspect eligible actions without ru
 - [Architecture](docs/ARCHITECTURE.md) — components, data paths, storage, and UI mirrors.
 - [Development](docs/DEVELOPMENT.md) — setup, commands, tests, and environment variables.
 - [Releasing](docs/RELEASING.md) — build, release, website deployment, and verification.
+- [Mac installation status](docs/INSTALLATION-STATUS.md) — verified versions and per-device login requirements.
 - [Project history](docs/HISTORY.md) — shipped milestones and historical references.
 
 Historical plans and review material live under [docs/archive](docs/archive/README.md). They are retained for context and are not current operating instructions.
