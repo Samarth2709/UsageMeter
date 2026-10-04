@@ -650,6 +650,7 @@ function applySnapshot(snapshot) {
   }
 
   syncViewSize();
+  queueViewSizeSync();
 }
 
 function syncAccountsFromConfig(config) {
@@ -904,7 +905,8 @@ let viewSizeFrame = 0;
 
 function queueViewSizeSync() {
   if (viewSizeFrame) return;
-  viewSizeFrame = requestAnimationFrame(() => {
+  viewSizeFrame = 1;
+  queueMicrotask(() => {
     viewSizeFrame = 0;
     syncViewSize();
   });

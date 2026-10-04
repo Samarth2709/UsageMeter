@@ -116,3 +116,18 @@ test("malformed sizes cannot corrupt window bounds or disable auto-fit", async (
   assert.equal(bounded.bounds().width, 320);
   assert.equal(bounded.bounds().height, 620);
 });
+
+test("popover fit is coalesced without waiting for animation frames in a hidden renderer", async () => {
+  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const start = source.indexOf("let viewSizeFrame = 0;");
+  const end = source.indexOf("new ResizeObserver", start);
+  const pending = []; let fits = 0;
+  const context = { queueMicrotask: callback => pending.push(callback), syncViewSize: () => fits++ };
+  vm.runInNewContext(source.slice(start, end) + "\nthis.queueFit = queueViewSizeSync;", context);
+  context.queueFit(); context.queueFit();
+  assert.equal(pending.length, 1);
+  pending.shift()();
+  assert.equal(fits, 1);
+  context.queueFit(); pending.shift()();
+  assert.equal(fits, 2);
+});
