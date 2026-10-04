@@ -30,7 +30,7 @@ test('both providers display every reported reset with the exact local time on h
     const elements = { summary: {} };
     c.renderResetSummary(elements, { windows });
     assert.equal(elements.summary.className, 'account-summary');
-    assert.equal(elements.summary.textContent.split('\n').length, windows.length * 2);
+    assert.equal(elements.summary.textContent.split('\n').length, windows.length);
     for (const window of windows) {
       assert.ok(elements.summary.title.includes(c.getWindowReset(window, true)));
       assert.ok(elements.summary.textContent.includes(c.formatResetCountdown(c.getResetDate(window))));

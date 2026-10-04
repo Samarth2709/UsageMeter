@@ -288,8 +288,7 @@ function renderResetSummary(elements, data) {
     const label = displayWindowLabel(window.label) === "Weekly" ? "Week" : compactWindowLabel(window.label);
     const countdown = formatResetCountdown(getResetDate(window));
     const reset = countdown === "due" ? "reset due" : countdown || getWindowReset(window, true) || "reset not reported";
-    const exact = getWindowReset(window, true);
-    return `${label} · ${reset}${exact && countdown ? `\n${exact}` : ""}`;
+    return `${label} · ${reset}`;
   }).join("\n");
   elements.summary.textContent = text;
   elements.summary.title = buildResetTitle(data);

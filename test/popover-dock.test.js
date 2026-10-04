@@ -134,7 +134,7 @@ test("secondary display origin and fixed-corner resizing are respected", () => {
   assert.equal(after.y, before.y);
   f.hidePopover(); f.tick(400); f.move(-500, 500); f.move(-1, 30);
   assert.equal(f.state.open, true);
-  assert.equal(f.latest().bounds.width, 320); assert.equal(f.latest().bounds.height, 280);
+  assert.equal(f.latest().bounds.width, 312); assert.equal(f.latest().bounds.height, 280);
 });
 
 test("smaller work areas constrain the visible bounds without losing the selected size", () => {

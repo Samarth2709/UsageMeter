@@ -33,8 +33,8 @@ const { ClaudeWebUsage, pollIntervalMs } = require("./claude-web-usage");
 let claudeWebUsage = null;
 
 const toggleShortcut = "Control+Option+L";
-const windowWidth = 340;
-const minWindowWidth = 320;
+const windowWidth = 276;
+const minWindowWidth = 236;
 const maxWindowWidth = 520;
 const minCustomWindowHeight = 160;
 let minimumContentHeight = minCustomWindowHeight;

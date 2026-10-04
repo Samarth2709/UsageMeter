@@ -52,7 +52,7 @@ async function lifecycle(saved = {}) {
 test("legacy position restores with compact auto-fit and no native background", async () => {
   const { api, windows, writes } = await lifecycle({ x: 100, y: 80 });
   api.setExpandedView(true, 2, 236);
-  assert.equal(api.bounds().width, 340);
+  assert.equal(api.bounds().width, 276);
   assert.equal(api.bounds().height, 236);
   assert.equal(windows[0].options.transparent, true);
   assert.equal(windows[0].options.frame, false);
@@ -65,7 +65,7 @@ test("legacy position restores with compact auto-fit and no native background", 
 
 test("small selected sizes grow to fit content and persist without scrolling", async () => {
   const { api, writes } = await lifecycle({ x: 100, y: 80, width: 236, height: 190 });
-  assert.equal(api.bounds().width, 320);
+  assert.equal(api.bounds().width, 236);
   api.setExpandedView(true, 2, 370);
   assert.equal(api.bounds().height, 370);
   api.resizePopover(320, 160, "sw");
@@ -93,7 +93,7 @@ test("all resize handles retain the top-right attachment and keep dimensions bou
   }
   const { api, area } = await lifecycle({ x: 0, y: 25 });
   api.resizePopover(-10, 0, "se");
-  assert.equal(api.bounds().width, 320);
+  assert.equal(api.bounds().width, 236);
   assert.equal(api.bounds().height, 160);
   api.resizePopover(100000, 100000, "se");
   assert.equal(api.bounds().width, 520);
@@ -113,7 +113,7 @@ test("malformed sizes cannot corrupt window bounds or disable auto-fit", async (
   api.setExpandedView(true, 2, 236);
   assert.equal(api.bounds().height, 236);
   const { api: bounded } = await lifecycle({ x: 0, y: 25, width: -1, height: 9000 });
-  assert.equal(bounded.bounds().width, 320);
+  assert.equal(bounded.bounds().width, 236);
   assert.equal(bounded.bounds().height, 620);
 });
 
