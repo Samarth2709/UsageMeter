@@ -52,7 +52,7 @@ async function lifecycle(saved = {}) {
 test("legacy position restores with compact auto-fit and no native background", async () => {
   const { api, windows, writes } = await lifecycle({ x: 100, y: 80 });
   api.setExpandedView(true, 2, 236);
-  assert.equal(api.bounds().width, 276);
+  assert.equal(api.bounds().width, 340);
   assert.equal(api.bounds().height, 236);
   assert.equal(windows[0].options.transparent, true);
   assert.equal(windows[0].options.frame, false);
@@ -63,21 +63,23 @@ test("legacy position restores with compact auto-fit and no native background", 
   assert.equal(writes[0].width, undefined, "auto-fit must not become a saved manual size");
 });
 
-test("cursor-selected size survives content changes, hide/show, recreation and state reload", async () => {
-  const { api, writes } = await lifecycle({ x: 100, y: 80 });
-  api.resizePopover(250, 180, "se");
-  const chosen = api.bounds();
-  api.setExpandedView(true, 9, 600);
-  api.togglePopover(); api.togglePopover(); api.togglePopover();
-  assert.deepEqual(api.bounds(), chosen);
+test("small selected sizes grow to fit content and persist without scrolling", async () => {
+  const { api, writes } = await lifecycle({ x: 100, y: 80, width: 236, height: 190 });
+  assert.equal(api.bounds().width, 320);
+  api.setExpandedView(true, 2, 370);
+  assert.equal(api.bounds().height, 370);
+  api.resizePopover(320, 160, "sw");
+  assert.equal(api.bounds().height, 370, "resize cannot cut off current content");
+  api.resizePopover(420, 500, "sw");
+  api.setExpandedView(true, 2, 300);
+  assert.equal(api.bounds().height, 500, "a larger chosen window stays selected");
+  api.togglePopover(); api.togglePopover();
   await api.save();
-  assert.equal(writes[0].width, 250);
-  assert.equal(writes[0].height, 180);
   const restored = await lifecycle(writes[0]);
-  restored.api.setExpandedView(true, 2, 236);
-  assert.deepEqual(restored.api.bounds(), chosen);
-  restored.api.createPopover();
-  assert.deepEqual(restored.api.bounds(), chosen);
+  restored.api.setExpandedView(true, 2, 330);
+  assert.deepEqual(restored.api.bounds(), api.bounds());
+  api.setExpandedView(true, 3, 680);
+  assert.equal(api.bounds().height, 680, "content can grow beyond the manual resize maximum");
 });
 
 test("all resize handles retain the top-right attachment and keep dimensions bounded", async () => {
@@ -91,7 +93,7 @@ test("all resize handles retain the top-right attachment and keep dimensions bou
   }
   const { api, area } = await lifecycle({ x: 0, y: 25 });
   api.resizePopover(-10, 0, "se");
-  assert.equal(api.bounds().width, 236);
+  assert.equal(api.bounds().width, 320);
   assert.equal(api.bounds().height, 160);
   api.resizePopover(100000, 100000, "se");
   assert.equal(api.bounds().width, 520);
@@ -111,6 +113,6 @@ test("malformed sizes cannot corrupt window bounds or disable auto-fit", async (
   api.setExpandedView(true, 2, 236);
   assert.equal(api.bounds().height, 236);
   const { api: bounded } = await lifecycle({ x: 0, y: 25, width: -1, height: 9000 });
-  assert.equal(bounded.bounds().width, 236);
+  assert.equal(bounded.bounds().width, 320);
   assert.equal(bounded.bounds().height, 620);
 });

@@ -30,7 +30,7 @@ test('both providers display every reported reset with the exact local time on h
     const elements = { summary: {} };
     c.renderResetSummary(elements, { windows });
     assert.equal(elements.summary.className, 'account-summary');
-    assert.equal(elements.summary.textContent.split('\n').length, windows.length);
+    assert.equal(elements.summary.textContent.split('\n').length, windows.length * 2);
     for (const window of windows) {
       assert.ok(elements.summary.title.includes(c.getWindowReset(window, true)));
       assert.ok(elements.summary.textContent.includes(c.formatResetCountdown(c.getResetDate(window))));
@@ -46,12 +46,12 @@ test('cached, stale and sign-in-required readings tick without rebuilding allowa
     c.accountElements.set('account', elements);
     c.accountStates.set('account', { kind, data: { windows: [{ label: '5-hour', resetAt: new Date(c.Date.now() + 65000).toISOString() }] } });
     c.updateCountdowns();
-    assert.equal(elements.summary.textContent, '5h · 1m 5s');
+    assert.equal(elements.summary.textContent.split("\n")[0], '5h · 1m 5s');
     f.advance(1000); c.updateCountdowns();
-    assert.equal(elements.summary.textContent, '5h · 1m 4s');
+    assert.equal(elements.summary.textContent.split("\n")[0], '5h · 1m 4s');
     assert.equal(reset.textContent, 'resets in 1m 4s');
     f.advance(70000); c.updateCountdowns();
-    assert.equal(elements.summary.textContent, '5h · reset due');
+    assert.equal(elements.summary.textContent.split("\n")[0], '5h · reset due');
     assert.equal(reset.textContent, 'reset due');
   }
 });

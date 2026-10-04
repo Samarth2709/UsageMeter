@@ -288,7 +288,8 @@ function renderResetSummary(elements, data) {
     const label = displayWindowLabel(window.label) === "Weekly" ? "Week" : compactWindowLabel(window.label);
     const countdown = formatResetCountdown(getResetDate(window));
     const reset = countdown === "due" ? "reset due" : countdown || getWindowReset(window, true) || "reset not reported";
-    return `${label} · ${reset}`;
+    const exact = getWindowReset(window, true);
+    return `${label} · ${reset}${exact && countdown ? `\n${exact}` : ""}`;
   }).join("\n");
   elements.summary.textContent = text;
   elements.summary.title = buildResetTitle(data);
@@ -884,7 +885,7 @@ function measureContentHeight() {
   const rowsHeight = [...lines.values()].reduce((height, line) => height + line, 0);
   accountsRoot.classList.remove("is-measuring");
   const gaps = Math.max(0, lines.size - 1) * (parseFloat(listStyle.rowGap) || 0);
-  accountsRoot.classList.toggle("is-scrollable", rowsHeight + gaps + paddingY(listStyle) > accountsRoot.clientHeight + 1);
+  accountsRoot.scrollTop = 0;
   return Math.ceil(rowsHeight + gaps + paddingY(listStyle) + paddingY(stageStyle) +
     (header?.offsetHeight || 0) + (footer?.offsetHeight || 0));
 }
@@ -898,10 +899,7 @@ function syncViewSize(expanded = rowsExpanded) {
   );
 }
 
-// Rows change height whenever an account changes state — connected, refreshing,
-// cached, signed out — and each of those has to move the window with it. Left to
-// explicit calls the two drift apart, and a window shorter than its rows scrolls
-// the top of the meter out of sight.
+// Fit every state change without introducing a scroll container.
 let viewSizeFrame = 0;
 
 function queueViewSizeSync() {
