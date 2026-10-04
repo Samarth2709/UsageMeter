@@ -1,17 +1,21 @@
-# Mac installation status — October 3, 2026
+# Mac installation status — October 4, 2026
 
-All three Macs have the public **v0.2.15** arm64 release installed at `/Applications/Usage Meter.app`, with matching countdown source hashes and valid strict code signatures. The initialized installed renderer was checked independently on each device, then each app was relaunched without debugging arguments.
+All three Macs have the public **v0.2.17** arm64 release installed at `/Applications/Usage Meter.app`, with matching renderer/native sizing source hashes and valid strict code signatures. Each installed renderer was inspected, then each app was relaunched normally without debugging arguments and its running process rechecked.
 
-| Device | Installed app | Provider data verified |
+The meter has stacked, readable account rows, no account-list scrolling, and a native window that grows to fit account details, usage, reset countdowns, exact local reset dates, and controls. Manual sizing cannot shrink below the current content height. Reset times that the provider does not report are labeled explicitly.
+
+| Device | Installed app and layout | Provider data verified |
 | --- | --- | --- |
-| Work Mac (local) | 0.2.15 | Live Claude 5-hour/weekly and Codex weekly readings; visible countdowns and exact local reset tooltips match provider timestamps. |
-| Home Mac (`samarths-macbook-pro-2`) | 0.2.15 | Cached readings only: Claude needs Chrome Sign In, and saved Codex authentication is rejected. Expired known resets display `reset due`; new live reset times require Sign In for both providers. |
-| Mac mini (`samarths-mac-mini`) | 0.2.15, first installation | Codex weekly reading is live. Claude needs Chrome Sign In before it can report usage or a reset time. |
+| Work Mac (local) | 0.2.17; 320×317; native screenshot confirms all details and controls visible. | Live Claude and Codex readings. Claude weekly and Codex weekly countdowns match provider timestamps; Claude currently reports no 5-hour reset timestamp. |
+| Home Mac (`samarths-macbook-pro-2`) | 0.2.17; native bounds 340×362 match measured intrinsic content height, including cached-data/sign-in messages. | Cached readings only: Claude needs Chrome Sign In, and saved Codex authentication is rejected. Expired known resets show `reset due`; fresh usage/reset times require Sign In for both providers. |
+| Mac mini (`samarths-mac-mini`) | 0.2.17; 340×292; initialized renderer confirms every displayed detail fits without scrolling. | Codex weekly reading is live. Claude needs Chrome Sign In before it can report usage or a reset time. |
 
-The source and public release are on GitHub main, release commit `cb11e92`. The release ZIP SHA-256 is `3650fa0c1d2edce1f370204a597f818661777f9742e13c17fcafdc16e5ca3cb6`; the same archive hash was verified on both remote Macs. No logins or browser credentials were transferred.
+On the Home Mac, Chromium reports an old 340×292 viewport while the popover is hidden. Read-only CoreGraphics inspection independently confirms that the native window is already 340×362 before it opens. Its intrinsic row/header/footer/padding total is also 362. The fit is dispatched without waiting for animation frames, which pause in hidden renderers. Remote visible screenshots were not captured.
 
-Validation: 319 Node tests, independent review (86 targeted tests), local DMG checksum/build, GitHub release workflow, and browser layout checks at 236×160/190/212 and larger sizes. Every reported window now has visible reset text; cached values tick once a second, pending actions retain their status, and elapsed known timestamps are labeled due.
+The source and public release are on GitHub main, release commit `f5a66ab`. The release ZIP SHA-256 is `b62b125f8057e4f5425aef2e6c061df7d89a480e9cb3fb744366dc82657ef84b`; this exact archive hash was verified on all three Macs. No logins or browser credentials were transferred.
 
-Local runtime evidence, test logs, screenshots and previous app/source backups are under `/Users/samarthkumbla/Documents/UsageMeterBackups/2026-10-03-reset-fix/`. Each previously installed remote app has its own backup at that same path on its host. Earlier local tracked edits are also preserved in a named Git stash; their installed UI/auth fixes are incorporated into this release. The previous long local plan is preserved as `prior-plan.md` in the backup directory.
+Validation: 320 Node tests, independent source/layout review, six browser fixture states at 320px and 420px widths, native sizing regressions, local packaging preflight, and the successful GitHub release workflow. Installed source hashes match the final source on every host. Normal app and renderer/helper processes were rechecked after debugging.
 
-For the pending logins, open Usage Meter on the corresponding Mac and choose **Sign in** on the affected row. Complete that Mac’s browser login; the app resumes automatic one-minute provider refreshes afterward. Authentication status is time-sensitive: this table records this verification session, not a permanent guarantee.
+Evidence, test logs, screenshots, official archive, and previous app backups are under `/Users/samarthkumbla/Documents/UsageMeterBackups/2026-10-04-no-scroll/`. Each remote host retains its previous installed app in that same directory on the host. Earlier source backups remain in the October 3 backup directory and named Git stash.
+
+For the pending logins, open Usage Meter on the corresponding Mac and choose **Sign in** on the affected row. Complete that Mac's browser login; automatic one-minute provider refreshes resume afterward. This table records this verification session; provider authentication can change later.
