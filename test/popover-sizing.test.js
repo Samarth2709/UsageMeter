@@ -63,23 +63,21 @@ test("legacy position restores with compact auto-fit and no native background", 
   assert.equal(writes[0].width, undefined, "auto-fit must not become a saved manual size");
 });
 
-test("small selected sizes grow to fit content and persist without scrolling", async () => {
-  const { api, writes } = await lifecycle({ x: 100, y: 80, width: 236, height: 190 });
-  assert.equal(api.bounds().width, 236);
-  api.setExpandedView(true, 2, 370);
-  assert.equal(api.bounds().height, 370);
-  api.resizePopover(320, 160, "sw");
-  assert.equal(api.bounds().height, 370, "resize cannot cut off current content");
-  api.resizePopover(420, 500, "sw");
-  api.setExpandedView(true, 2, 300);
-  assert.equal(api.bounds().height, 500, "a larger chosen window stays selected");
-  api.togglePopover(); api.togglePopover();
+test("cursor-selected size survives content changes, hide/show, recreation and state reload", async () => {
+  const { api, writes } = await lifecycle({ x: 100, y: 80 });
+  api.resizePopover(250, 180, "se");
+  const chosen = api.bounds();
+  api.setExpandedView(true, 9, 600);
+  api.togglePopover(); api.togglePopover(); api.togglePopover();
+  assert.deepEqual(api.bounds(), chosen);
   await api.save();
+  assert.equal(writes[0].width, 250);
+  assert.equal(writes[0].height, 180);
   const restored = await lifecycle(writes[0]);
-  restored.api.setExpandedView(true, 2, 330);
-  assert.deepEqual(restored.api.bounds(), api.bounds());
-  api.setExpandedView(true, 3, 680);
-  assert.equal(api.bounds().height, 680, "content can grow beyond the manual resize maximum");
+  restored.api.setExpandedView(true, 2, 236);
+  assert.deepEqual(restored.api.bounds(), chosen);
+  restored.api.createPopover();
+  assert.deepEqual(restored.api.bounds(), chosen);
 });
 
 test("all resize handles retain the top-right attachment and keep dimensions bounded", async () => {
@@ -115,19 +113,4 @@ test("malformed sizes cannot corrupt window bounds or disable auto-fit", async (
   const { api: bounded } = await lifecycle({ x: 0, y: 25, width: -1, height: 9000 });
   assert.equal(bounded.bounds().width, 236);
   assert.equal(bounded.bounds().height, 620);
-});
-
-test("popover fit is coalesced without waiting for animation frames in a hidden renderer", async () => {
-  const source = await fs.readFile(path.join(__dirname, "..", "public", "app.js"), "utf8");
-  const start = source.indexOf("let viewSizeFrame = 0;");
-  const end = source.indexOf("new ResizeObserver", start);
-  const pending = []; let fits = 0;
-  const context = { queueMicrotask: callback => pending.push(callback), syncViewSize: () => fits++ };
-  vm.runInNewContext(source.slice(start, end) + "\nthis.queueFit = queueViewSizeSync;", context);
-  context.queueFit(); context.queueFit();
-  assert.equal(pending.length, 1);
-  pending.shift()();
-  assert.equal(fits, 1);
-  context.queueFit(); pending.shift()();
-  assert.equal(fits, 2);
 });

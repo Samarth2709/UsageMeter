@@ -37,7 +37,6 @@ const windowWidth = 276;
 const minWindowWidth = 236;
 const maxWindowWidth = 520;
 const minCustomWindowHeight = 160;
-let minimumContentHeight = minCustomWindowHeight;
 const compactWindowHeight = 170;
 const expandedWindowHeight = 220;
 const minWindowHeight = 70;
@@ -283,7 +282,7 @@ function getWindowHeight(expanded, rowCount = currentRowCount, contentHeight = n
   // content with no dead space; fall back to the row-count estimate.
   const measured = Number(contentHeight);
   if (Number.isFinite(measured) && measured > 0) {
-    return Math.max(minWindowHeight, Math.ceil(measured));
+    return Math.min(maxWindowHeight, Math.max(minWindowHeight, Math.ceil(measured)));
   }
 
   const count = Math.max(1, Number(rowCount) || 1);
@@ -295,16 +294,16 @@ function getWindowHeight(expanded, rowCount = currentRowCount, contentHeight = n
 
 function setExpandedView(expanded, rowCount = currentRowCount, contentHeight = null) {
   currentRowCount = Math.max(1, Number(rowCount) || 1);
-  minimumContentHeight = getWindowHeight(expanded, currentRowCount, contentHeight);
-  // Keep a chosen larger size, but expand a small selection to expose all content.
-  const height = popoverSize ? Math.max(currentWindowHeight, minimumContentHeight) : minimumContentHeight;
-  if (popoverSize) popoverSize.height = height;
-  currentWindowHeight = height;
-  if (!popover || popover.isDestroyed()) return;
-  const bounds = getPopoverBounds();
-  const previous = popover.getBounds();
-  if (previous.width === bounds.width && previous.height === bounds.height && previous.x === bounds.x && previous.y === bounds.y) return;
-  popover.setBounds(bounds);
+  // A chosen size belongs to the user. New data scrolls inside it instead of
+  // undoing the resize on refresh, renderer initialization, or hide/show.
+  if (popoverSize) return;
+  currentWindowHeight = getWindowHeight(expanded, currentRowCount, contentHeight);
+
+  if (!popover || popover.isDestroyed()) {
+    return;
+  }
+
+  popover.setBounds(getPopoverBounds());
   queueSavePopoverPosition();
 }
 
@@ -314,7 +313,7 @@ function resizePopover(width, height, edge = "se") {
   const display = getPreferredDisplay();
   const area = display.workArea;
   currentWindowWidth = Math.round(Math.min(maxWindowWidth, (display.bounds || area).width - 12, Math.max(minWindowWidth, width)));
-  currentWindowHeight = Math.round(Math.min(Math.max(maxWindowHeight, minimumContentHeight), area.height - 24, Math.max(minCustomWindowHeight, minimumContentHeight, height)));
+  currentWindowHeight = Math.round(Math.min(maxWindowHeight, area.height - 24, Math.max(minCustomWindowHeight, height)));
   popoverSize = { width: currentWindowWidth, height: currentWindowHeight };
   // Resize inward from the corner without changing its screen attachment.
   popover.setBounds(getPopoverBounds());
