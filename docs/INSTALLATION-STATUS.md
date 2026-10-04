@@ -1,21 +1,15 @@
 # Mac installation status — October 4, 2026
 
-All three Macs have public **v0.2.18** installed at `/Applications/Usage Meter.app`, with valid strict signatures, matching source hashes, and normal app/renderer processes after verification.
+The user requested a full return to the version before scrolling removal. All implementation, design, and test files are restored exactly from `13b9828` (the v0.2.15 implementation). Only release-version metadata and this installation record differ. The restored implementation is published as **v0.2.19** so the latest release also contains the rollback. The original scrolling, compact layouts, proportions, sizing behavior, reset presentation, and tooltips are restored; no redesign is retained.
 
-The original small proportions are restored: default width **276 px**, minimum **236 px**, side-by-side accounts at widths up to 320 px, 56 px rings, small labels, and one visible countdown line per allowance. Exact reset dates/times and full account names remain available on hover. The account list never scrolls; native height fits the content. The larger saved dimensions from the previous rollout were backed up and reset to automatic fitting on each Mac.
-
-| Device | Verified compact layout | Provider state |
+| Device | Installed app and restored dimensions | Provider state |
 | --- | --- | --- |
-| Work Mac | 276×202; native screenshot and initialized renderer confirm visible usage/countdowns/controls without scrolling. | Live Claude and Codex. Claude currently reports no 5-hour reset timestamp; the UI explicitly says so. |
-| Home Mac (`samarths-macbook-pro-2`) | Native bounds 276×233 exactly fit measured intrinsic content, including cached labels and Sign in controls. | Cached readings; both Claude and Codex need Sign in for fresh values. |
-| Mac mini (`samarths-mac-mini`) | Native bounds 276×173 exactly fit measured intrinsic content. | Codex is live; Claude needs Sign in. |
+| Work Mac | 0.2.19; 236×190 | Live Claude and Codex readings. Claude currently does not report a 5-hour reset timestamp. |
+| Home Mac (`samarths-macbook-pro-2`) | 0.2.19; 276×175 | Cached readings; both providers need Sign in for fresh values. |
+| Mac mini (`samarths-mac-mini`) | 0.2.19; 276×175 | Codex is live; Claude needs Sign in. |
 
-Hidden Chromium renderers can report their old viewport size until shown. Read-only CoreGraphics inspection independently confirms the current native dimensions on both remote Macs; these match intrinsic rows/padding/footer measurements. Remote visible screenshots were not captured. No credentials were transferred.
+Dimensions match the installed-renderer evidence captured before the scrolling changes in `/Users/samarthkumbla/Documents/UsageMeterBackups/2026-10-03-reset-fix/`. Each current installed renderer was independently inspected, and the local native UI was visually checked. Every host was then relaunched normally without debugging arguments and its app/renderer processes checked. Installed app, stylesheet, and native sizing hashes match the original v0.2.15 source. Strict code signatures pass on all three Macs.
 
-Release commit: `8a21a1c`. Official ZIP SHA-256, verified on all three Macs: `70133ea89fe3d3d2f91cd7638b0ca197f5ba6d91260186f602c295c0afaa8707`.
+Release commit: `26eea72`. Official ZIP SHA-256, verified on all three Macs: `754a0e1b5453f571bad35d03f9eb474acef88b90888a045650ab96bfe066b1df`. Validation: all 319 original Node tests; independent exact-source rollback review and 18 targeted tests; successful GitHub release build/signature/archive validation.
 
-Validation: 320 Node tests; independent review with 19 targeted tests and 20 browser layout cases covering three accounts, multiple states, and widths 236/276/320/321; local browser fixtures; successful GitHub build/signature/archive validation. Layout fitting converges without resize loops across the width breakpoint. Installed app, stylesheet and native sizing source hashes match the final source on every host.
-
-Evidence, tests, previews, official archive, previous apps, and previous window settings are under `/Users/samarthkumbla/Documents/UsageMeterBackups/2026-10-04-compact/`. Remote hosts retain their own previous app and window settings in that directory.
-
-For fresh remote readings, choose **Sign in** on each affected row on that Mac. This table records this verification session; authentication can change later.
+Evidence, tests, official archive, previous apps, and previous window settings are under `/Users/samarthkumbla/Documents/UsageMeterBackups/2026-10-04-full-rollback/`. Remote hosts retain their own previous app/window settings in that directory. Provider credentials were preserved and were not transferred. For fresh remote readings, choose **Sign in** on each affected row on that Mac.
