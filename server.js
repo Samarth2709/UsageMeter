@@ -1083,14 +1083,21 @@ function claudeOAuthUsageMatchesAccount(account, usage) {
 
 // All Claude rows in one refresh share a single CLI-login read, so the
 // fallback costs at most one profile and one usage request per poll.
+// A success is reused for two minutes: Anthropic's OAuth usage endpoint
+// rate-limits quickly and Claude Code shares the same token.
 let claudeOAuthFallback = null;
-const claudeOAuthFallbackReuseMs = 30000;
+let claudeOAuthProfileCache = null;
+const claudeOAuthFallbackReuseMs = 120000;
+const claudeOAuthFallbackRetryMs = 30000;
 
 function readClaudeOAuthFallback(account, options) {
   const now = Date.now();
-  if (!claudeOAuthFallback || now - claudeOAuthFallback.at >= claudeOAuthFallbackReuseMs) {
-    claudeOAuthFallback = { at: now, promise: fetchClaudeUsage(account, { ...options, skipWebProvider: true }) };
-    claudeOAuthFallback.promise.catch(() => {});
+  const reuseMs = claudeOAuthFallback?.ok ? claudeOAuthFallbackReuseMs : claudeOAuthFallbackRetryMs;
+  if (!claudeOAuthFallback || now - claudeOAuthFallback.at >= reuseMs) {
+    const entry = { at: now, ok: false };
+    entry.promise = fetchClaudeUsage(account, { ...options, skipWebProvider: true });
+    entry.promise.then(() => { entry.ok = true; }, () => {});
+    claudeOAuthFallback = entry;
   }
   return claudeOAuthFallback.promise;
 }
@@ -1104,7 +1111,8 @@ async function fetchClaudeUsage(account, options = {}) {
       let usage = null;
       try {
         usage = await readClaudeOAuthFallback(account, options);
-      } catch {
+      } catch (fallbackError) {
+        console.warn(`[claude-fallback] ${fallbackError.message}`);
         throw webError;
       }
       if (!claudeOAuthUsageMatchesAccount(account, usage)) throw webError;
@@ -1121,11 +1129,17 @@ async function fetchClaudeUsage(account, options = {}) {
   }
 
   const credentials = await readCredentials();
-  const profile = await requestClaudeOAuthJson(
-    claudeOAuthProfileEndpoint,
-    credentials.accessToken,
-    requestJson
-  );
+  // The profile only changes with a new login, so fetch it once per token and
+  // spend the endpoint's small rate allowance on usage.
+  let profile = claudeOAuthProfileCache?.accessToken === credentials.accessToken ? claudeOAuthProfileCache.profile : null;
+  if (!profile) {
+    profile = await requestClaudeOAuthJson(
+      claudeOAuthProfileEndpoint,
+      credentials.accessToken,
+      requestJson
+    );
+    claudeOAuthProfileCache = { accessToken: credentials.accessToken, profile };
+  }
   const usage = await requestClaudeOAuthJson(
     claudeOAuthUsageEndpoint,
     credentials.accessToken,
@@ -2015,7 +2029,7 @@ async function refreshIdentity(config, identity, cachedResult = null) {
       data
     };
   } catch (error) {
-    return unavailableIdentityResult(identity, error.message, Date.now(), identity.type === "claude" && Boolean(claudeWebProvider));
+    return unavailableIdentityResult(identity, error.message, Date.now());
   }
 }
 
@@ -2817,7 +2831,8 @@ module.exports = {
     parseClaudeOAuthUsage,
     fetchClaudeUsage,
     claudeOAuthUsageMatchesAccount,
-    resetClaudeOAuthFallback: () => { claudeOAuthFallback = null; },
+    resetClaudeOAuthFallback: () => { claudeOAuthFallback = null; claudeOAuthProfileCache = null; },
+    primeClaudeOAuthFallback: (promise) => { promise.catch(() => {}); claudeOAuthFallback = { at: Date.now(), ok: false, promise }; },
     claudeUsageRequestTimeoutMs,
     claudeUsageBackoffMs,
     claudeUsageBackoffMaxMs,

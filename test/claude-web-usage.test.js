@@ -334,9 +334,9 @@ test("native recovery lookup never launches a closed Chrome and requires the exa
   assert.ok(!url.includes(account.email));
 });
 
-test("Electron provider failures preserve cached values and timestamp with an immediate stale state", async () => {
-  const previous = parseWebUsage(account, bootstrap, payload, org);
-  const identity = { ...account, lastUsage: previous };
+test("Electron provider failures keep a recent reading live, then preserve it as stale", async () => {
+  const recent = parseWebUsage(account, bootstrap, payload, org);
+  const old = parseWebUsage(account, bootstrap, payload, org, new Date(Date.now() - 7 * 60 * 1000));
   let reads = 0;
   server.setClaudeWebProvider({ read: async (requested) => {
     assert.equal(requested.id, account.id);
@@ -344,13 +344,18 @@ test("Electron provider failures preserve cached values and timestamp with an im
     throw new Error("Sign in to Claude in Usage Meter.");
   } });
   try {
+    server._test.primeClaudeOAuthFallback(Promise.reject(new Error("No Claude Code login in tests.")));
+    const live = await server._test.refreshIdentity({ identities: [{ ...account, lastUsage: recent }] }, { ...account, lastUsage: recent });
+    assert.equal(live.stale, undefined);
+    assert.equal(live.data.fetchedAt, recent.fetchedAt);
+    const identity = { ...account, lastUsage: old };
     const result = await server._test.refreshIdentity({ identities: [identity] }, identity);
-    assert.equal(reads, 1);
+    assert.equal(reads, 2);
     assert.equal(result.stale, true);
-    assert.equal(result.data.fetchedAt, previous.fetchedAt);
-    assert.equal(result.data.windows[0].usedPercent, previous.windows[0].usedPercent);
+    assert.equal(result.data.fetchedAt, old.fetchedAt);
+    assert.equal(result.data.windows[0].usedPercent, old.windows[0].usedPercent);
     assert.match(result.error, /Sign in/);
-  } finally { server.setClaudeWebProvider(null); }
+  } finally { server._test.resetClaudeOAuthFallback(); server.setClaudeWebProvider(null); }
 });
 
 test("Electron logout calls the web provider without launching Claude Code", async () => {
