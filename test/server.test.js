@@ -1686,3 +1686,62 @@ test("a failed poll keeps a recent reading live and only ages into cached", () =
   assert.equal(empty.ok, false);
   assert.equal(empty.error, "boom");
 });
+
+test("an unavailable Chrome reading falls back only to the same account's Claude Code login", async () => {
+  const { setClaudeWebProvider } = require("../server");
+  const row = { type: "claude", providerAccountId: "acct-claude", email: "samarthk@cantina.security", organization: "org-cantina" };
+  const options = (accountId) => ({
+    now: new Date("2026-09-02T12:00:00.000Z"),
+    readCredentials: async () => ({ accessToken: "saved-access-token" }),
+    requestJson: async (url) => ({
+      response: { ok: true, status: 200 },
+      payload: url.endsWith("/profile")
+        ? { account: { uuid: accountId, email: "samarthk@cantina.security" }, organization: { uuid: "org-cantina" } }
+        : { seven_day: { utilization: 31, resets_at: "2026-09-08T12:00:00.000Z" } }
+    })
+  });
+  _test.resetClaudeUsageBackoff();
+  setClaudeWebProvider({ read: async () => { throw new Error("Sign in to Claude in Chrome from Usage Meter."); } });
+  try {
+    _test.resetClaudeOAuthFallback();
+    const data = await _test.fetchClaudeUsage(row, options("acct-claude"));
+    assert.equal(data.source, "claude_oauth_usage");
+    assert.equal(data.windows[0].remainingPercent, 69);
+    for (const changed of [{ email: "other@example.test" }, { organization: "org-personal" }, { organization: undefined }, { providerAccountId: undefined }]) {
+      _test.resetClaudeOAuthFallback();
+      await assert.rejects(_test.fetchClaudeUsage({ ...row, ...changed }, options("acct-claude")), /Sign in to Claude in Chrome/);
+    }
+    _test.resetClaudeOAuthFallback();
+    await assert.rejects(_test.fetchClaudeUsage(row, options("someone-else")), /Sign in to Claude in Chrome/);
+    assert.equal(_test.claudeOAuthUsageMatchesAccount({}, data), false);
+  } finally {
+    _test.resetClaudeOAuthFallback();
+    setClaudeWebProvider(null);
+  }
+});
+
+test("Claude rows refreshing together share one Claude Code login read", async () => {
+  const { setClaudeWebProvider } = require("../server");
+  const row = { type: "claude", providerAccountId: "acct-claude", email: "samarthk@cantina.security", organization: "org-cantina" };
+  let requests = 0;
+  const options = {
+    readCredentials: async () => ({ accessToken: "saved-access-token" }),
+    requestJson: async (url) => {
+      requests += 1;
+      return { response: { ok: true, status: 200 }, payload: url.endsWith("/profile")
+        ? { account: { uuid: "acct-claude", email: row.email }, organization: { uuid: "org-cantina" } }
+        : { seven_day: { utilization: 31, resets_at: "2026-09-08T12:00:00.000Z" } } };
+    }
+  };
+  _test.resetClaudeUsageBackoff();
+  _test.resetClaudeOAuthFallback();
+  setClaudeWebProvider({ read: async () => { throw new Error("Open Google Chrome to resume Claude usage updates."); } });
+  try {
+    const results = await Promise.allSettled([row, { ...row, providerAccountId: "acct-other" }, row].map((account) => _test.fetchClaudeUsage(account, options)));
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "rejected", "fulfilled"]);
+    assert.equal(requests, 2);
+  } finally {
+    _test.resetClaudeOAuthFallback();
+    setClaudeWebProvider(null);
+  }
+});

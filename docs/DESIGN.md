@@ -8,11 +8,11 @@ Usage Meter is a compact 3D instrument. The frame, readings and controls have ph
 | --- | --- |
 | Account section | Provider and identity group each account directly on the chassis, without separate boxes. Sections share spare vertical space. |
 | Provider and identity | The wide left column identifies the account. The service is prominent; identity is smaller, with ellipsis and a full tooltip. Short-term usage and reconnect actions sit below it. |
-| Window label | Weekly captions sit below the right-hand circles. The 5-hour caption sits beside its inline percentage on the left. Tiny compact layouts use 9 px short-term captions; the Week reset label identifies the weekly ring. |
+| Window label | Weekly captions sit below the right-hand circles in stacked rows. The 5-hour caption sits beside its inline percentage on the left. Side-by-side compact layouts drop the Weekly ring caption; the Week reset label identifies the ring. |
 | Percentage | Centered in the loop, from 18 to 48 px, with a smaller percent mark. Tabular numerals keep updates steady. |
 | Allowance loop | The colored arc gives the exact remaining share. Zero is empty and 100% is a seamless complete ring. Only weekly limits use rings, 56 px or wider (48 px at heights up to 175 px), in one aligned right-hand column. |
 | Short-term allowance | A thin, exact line below the identity shows 5-hour allowance with its label and percentage. It uses the same provider, low and cached colors as weekly usage. |
-| Reset details | Every reported window shows a labeled reset countdown below the account. Tooltips show the exact local reset date and time. |
+| Reset details | Every reported window shows a labeled reset countdown; the weekly countdown adds its local reset day and time on the next line. Tooltips add the date. |
 | Refresh and History | Quiet icon controls stay visible in the footer, with 24 px hit targets and clear hover/focus states. |
 | Status and updates | Appear only when useful. Cached and failure states remain explicit. |
 | Chassis and lighting | A back plane, bevels, shallow perspective, and shared light make the entire interface a physical object. They add no content or extra controls. |
@@ -63,6 +63,6 @@ The 3D surface layer is local to the two desktop windows. The marketing site and
 
 ## Reset countdowns
 
-Each reported allowance has a visible labeled countdown beneath its account, including weekly-only and cached readings. Hover the summary or allowance for the exact reset date and time in the Mac’s local timezone. Countdown text updates every second without rebuilding allowance nodes or restarting percentage animations; waking or showing the app recalculates from the provider timestamp. Elapsed timestamps say `reset due` until the provider supplies a new window. Missing timestamps are explicitly labeled rather than guessed. Compact rows place reset summaries below short-term usage and above account actions.
+Each reported allowance has a visible labeled countdown beneath its account, including weekly-only and cached readings, and the weekly countdown is followed by its reset day and time in the Mac’s local timezone (for example `Week · 9h 35m` / `Mon 2:00 AM`). The 5-hour window shows only its countdown. Hover the summary or allowance for the full date. An unused Claude 5-hour window (0% used, no reset reported) adds no reset line; its full allowance line already shows it has not started. Countdown text updates every second without rebuilding allowance nodes or restarting percentage animations; waking or showing the app recalculates from the provider timestamp. Elapsed timestamps say `reset due` until the provider supplies a new window. Missing timestamps are explicitly labeled rather than guessed. Compact rows place reset summaries below short-term usage and above account actions. Weekly-only accounts place the summary directly under the ring, and any height borrowed from a taller neighbouring account collects below the summary instead of around the ring.
 
 At heights up to 175 px the compact view uses 48 px rings and folds the Weekly caption into the reset summary, reserving space for both countdown lines. Taller compact views retain 56 px minimum rings. Both accounts use the side-by-side view through 240 px height.

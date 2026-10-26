@@ -514,6 +514,27 @@ body:has(.spatial-stage) { -webkit-app-region: no-drag; }
 @media (max-height: 240px) {
   .spatial-chassis .account-summary { grid-row: 4; font-size: 10px; line-height: 13px; }
   .spatial-chassis .account-actions { grid-row: 5; }
+  /* The reset summary names the week, so the ring caption would only add a gap. */
+  .spatial-chassis .limit-grid .limit-label { display: none; }
+  .spatial-chassis .account-row { grid-template-rows: 16px minmax(56px, 1fr) minmax(18px, max-content); }
+  .spatial-chassis .account-right,
+  .spatial-chassis .limit-grid,
+  .spatial-chassis .widget-shell .limit-grid .limit-window { min-height: 56px; }
+  .spatial-chassis .limit-grid .limit-window {
+    --dial-size: max(56px, min(100cqw, 100cqh));
+    --dial-top: max(0px, (100cqh - var(--dial-size)) / 2);
+  }
+  /* Weekly-only accounts have no short-term line: keep resets directly under the ring. */
+  .spatial-chassis .account-row:has(.short-limits.hidden) { grid-template-rows: 16px max-content max-content; align-content: start; }
+  .spatial-chassis .account-row:has(.short-limits.hidden) .limit-grid .limit-window {
+    /* Width-sized ring, capped so the header, summary and footer still fit. */
+    aspect-ratio: 1;
+    max-height: max(56px, 100vh - 110px);
+    --dial-size: min(100cqw, 100cqh);
+    --dial-top: 0px;
+  }
+  .spatial-chassis .short-limits.hidden + .account-summary { grid-row: 3; }
+  .spatial-chassis .short-limits.hidden + .account-summary + .account-actions { grid-row: 4; }
 }
 
 /* Reserve two reset lines even at the smallest supported height. */
@@ -527,4 +548,6 @@ body:has(.spatial-stage) { -webkit-app-region: no-drag; }
   .spatial-chassis .limit-grid .limit-window { --dial-size: 48px; --dial-top: 0px; }
   .spatial-chassis .limit-grid .limit-label { display: none; }
   .spatial-chassis .account-summary { line-height: 12px; }
+  .spatial-chassis .account-row:has(.short-limits.hidden) { grid-template-rows: 14px 48px max-content; }
+  .spatial-chassis .account-row:has(.short-limits.hidden) .limit-grid .limit-window { aspect-ratio: auto; --dial-size: 48px; }
 }

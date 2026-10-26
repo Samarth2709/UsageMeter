@@ -1072,8 +1072,45 @@ function parseClaudeOAuthUsage(profile, payload, credentials = {}, now = new Dat
   };
 }
 
+// The CLI login can stand in for an unavailable Chrome reading, but only when
+// it is provably the same Claude account and organization as the row.
+function claudeOAuthUsageMatchesAccount(account, usage) {
+  const same = (expected, actual) => Boolean(expected) && Boolean(actual) && String(expected).trim().toLowerCase() === String(actual).trim().toLowerCase();
+  return same(account?.providerAccountId, usage?.providerAccountId)
+    && same(account?.organization, usage?.organization)
+    && (!account?.email || same(account.email, usage?.email));
+}
+
+// All Claude rows in one refresh share a single CLI-login read, so the
+// fallback costs at most one profile and one usage request per poll.
+let claudeOAuthFallback = null;
+const claudeOAuthFallbackReuseMs = 30000;
+
+function readClaudeOAuthFallback(account, options) {
+  const now = Date.now();
+  if (!claudeOAuthFallback || now - claudeOAuthFallback.at >= claudeOAuthFallbackReuseMs) {
+    claudeOAuthFallback = { at: now, promise: fetchClaudeUsage(account, { ...options, skipWebProvider: true }) };
+    claudeOAuthFallback.promise.catch(() => {});
+  }
+  return claudeOAuthFallback.promise;
+}
+
 async function fetchClaudeUsage(account, options = {}) {
-  if (claudeWebProvider) return claudeWebProvider.read(account);
+  if (claudeWebProvider && !options.skipWebProvider) {
+    try {
+      return await claudeWebProvider.read(account);
+    } catch (webError) {
+      if (!account?.providerAccountId || !account?.organization) throw webError;
+      let usage = null;
+      try {
+        usage = await readClaudeOAuthFallback(account, options);
+      } catch {
+        throw webError;
+      }
+      if (!claudeOAuthUsageMatchesAccount(account, usage)) throw webError;
+      return usage;
+    }
+  }
   const readCredentials = options.readCredentials || readClaudeOAuthCredentials;
   const requestJson = options.requestJson || fetchJsonWithTimeout;
   const now = options.now || new Date();
@@ -2779,6 +2816,8 @@ module.exports = {
     requestClaudeOAuthJson,
     parseClaudeOAuthUsage,
     fetchClaudeUsage,
+    claudeOAuthUsageMatchesAccount,
+    resetClaudeOAuthFallback: () => { claudeOAuthFallback = null; },
     claudeUsageRequestTimeoutMs,
     claudeUsageBackoffMs,
     claudeUsageBackoffMaxMs,

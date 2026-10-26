@@ -149,7 +149,9 @@ function pageRead(requestId, expected) {
 // JXA uses Chrome's supported Apple Events interface. Only the selected tab is
 // executed. Ordinary polls do not switch the user's active tab.
 function chromeCommand(command) {
-  const chrome = Application("Google Chrome");
+  // Address the user's Chrome by process ID. Automation-launched Chrome
+  // instances share the bundle ID, and Apple Events by name may reach one.
+  const chrome = Application(command.pid || "Google Chrome");
   if (!chrome.running() && command.action !== "open" && !command.allowLaunch) throw new Error("Open Google Chrome to resume Claude usage updates.");
   if (command.action === "open" || command.allowLaunch) chrome.launch();
   const windows = chrome.windows();
@@ -192,9 +194,48 @@ function chromeCommand(command) {
   return target.execute({ javascript: command.script });
 }
 
+// The user's own Chrome is launched without automation or alternate-profile
+// flags. Playwright, Puppeteer and other agents start extra instances with them.
+function userChromePid(processList) {
+  const pids = String(processList || "").split("\n").map((line) => line.trim().match(/^(\d+)\s+(.*)$/)).filter((match) => {
+    if (!match) return false;
+    const launch = match[2].match(/^(.*?\/Google Chrome\.app\/Contents\/MacOS\/Google Chrome)(?:\s+(.*))?$/);
+    return Boolean(launch)
+      && !String(launch[2] || "").split(/\s+/).some((arg) => /^--(?:enable-automation|remote-debugging-(?:port|pipe)|user-data-dir|headless|test-type)\b/.test(arg));
+  }).map((match) => Number(match[1]));
+  return pids.length ? Math.min(...pids) : null;
+}
+
+// Only the current macOS user's processes: another logged-in user's Chrome
+// cannot receive this user's Apple Events.
+let cachedChromePid = { pid: null, at: 0 };
+
+async function findUserChromePid(fresh = false) {
+  if (!fresh && cachedChromePid.pid && Date.now() - cachedChromePid.at < 5000) return cachedChromePid.pid;
+  const { stdout } = await runFile("/bin/ps", ["-x", "-ww", "-U", String(process.getuid()), "-o", "pid=,command="], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
+  cachedChromePid = { pid: userChromePid(stdout), at: Date.now() };
+  return cachedChromePid.pid;
+}
+
+// Never fall back to addressing Chrome by name: with the user's Chrome closed,
+// that reaches an automation instance. Sign In launches Chrome explicitly.
+async function resolveUserChrome(command, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+  let pid = null;
+  try { pid = await findUserChromePid(); } catch { /* unavailable process list */ }
+  if (pid || (command.action !== "open" && !command.allowLaunch)) return pid;
+  await runFile("/usr/bin/open", ["-g", "-b", "com.google.Chrome"], { timeout: 10000, maxBuffer: 65536 });
+  for (let attempt = 0; attempt < 20 && !pid; attempt += 1) {
+    await wait(250);
+    try { pid = await findUserChromePid(true); } catch { /* retry */ }
+  }
+  return pid;
+}
+
 async function runChrome(command) {
   try {
-    const { stdout } = await runFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", `(${chromeCommand.toString()})(${JSON.stringify(command)})`], { timeout: 10000, maxBuffer: 65536 });
+    const pid = await resolveUserChrome(command);
+    if (!pid) throw new Error("Open Google Chrome to resume Claude usage updates.");
+    const { stdout } = await runFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", `(${chromeCommand.toString()})(${JSON.stringify({ ...command, pid })})`], { timeout: 10000, maxBuffer: 65536 });
     return JSON.parse(stdout.trim());
   } catch (error) {
     const message = String(error.stderr || error.message);
@@ -241,14 +282,16 @@ class ClaudeWebUsage {
   }
 
   async recoverTab(account, entry, generation, foreground = false) {
-    const profile = this.profileForEmail(account.email);
-    if (!profile) throw new Error("Sign in to Claude again with the matching Chrome profile; its usage tab was closed and no unique profile matches this account.");
     const url = connectionUrl(account);
     const check = () => {
       if (generation !== entry.generation || this.closed) throw new Error("Claude Chrome connection changed during refresh.");
     };
+    // An open marked tab is reusable in any profile; the page still verifies
+    // the account. Only opening a replacement needs the matching profile.
     let found = await this.run({ action: "find", url, allowLaunch: foreground });
     check();
+    const profile = found.tabId ? null : this.profileForEmail(account.email);
+    if (!found.tabId && !profile) throw new Error("Sign in to Claude again with the matching Chrome profile; its usage tab was closed and no unique profile matches this account.");
     if (!found.tabId) {
       try {
         await this.openProfile(profile, url);
@@ -301,7 +344,9 @@ class ClaudeWebUsage {
     const entry = this.entry(account);
     try { this.backoff(entry); } catch (error) { return Promise.reject(error); }
     if (entry.login) return Promise.reject(new Error(signInMessage));
-    if (!this.tabs[account.id]) return Promise.reject(new Error(signInMessage));
+    // An explicit Log Out stores null and stays disconnected. A connection lost
+    // to a transient failure may still have its marked tab open in Chrome.
+    if (this.tabs[account.id] === null) return Promise.reject(new Error(signInMessage));
     if (entry.operation?.binding === accountBinding(account)) return entry.operation.promise;
     if (entry.operation) entry.generation += 1;
     const generation = entry.generation;
@@ -316,6 +361,16 @@ class ClaudeWebUsage {
   async capture(account, entry, generation) {
     const requestId = crypto.randomUUID();
     let tabId = this.tabs[account.id];
+    if (!tabId) {
+      // Rediscover only; background polls never open a tab.
+      let found = {};
+      try { found = await this.run({ action: "find", url: connectionUrl(account) }); } catch { /* keep the Sign in prompt */ }
+      if (generation !== entry.generation) throw new Error("Claude Chrome connection changed during refresh.");
+      if (!found.tabId) throw new Error(signInMessage);
+      tabId = found.tabId;
+      this.tabs[account.id] = tabId;
+      this.save();
+    }
     let recovered = false;
     const script = `(${pageRead.toString()})(${JSON.stringify(requestId)}, ${JSON.stringify({ providerAccountId: account.providerAccountId, email: account.email, organization: account.organization })})`;
     const deadline = this.now() + this.timeoutMs;
@@ -344,7 +399,10 @@ class ClaudeWebUsage {
         this.backoff(entry);
       }
       if (result.mismatch || result.reconnect) {
-        delete this.tabs[account.id];
+        // A wrong-account tab stays disconnected until Sign In; an expired
+        // login may recover in place, so its marked tab can be rediscovered.
+        if (result.mismatch) this.tabs[account.id] = null;
+        else delete this.tabs[account.id];
         this.save();
       }
       if (result.error) throw new Error(result.error);
@@ -362,12 +420,16 @@ class ClaudeWebUsage {
   async logout(account) {
     const entry = this.entry(account);
     entry.generation += 1;
-    delete this.tabs[account.id];
+    this.tabs[account.id] = null;
     this.save();
     // Disconnect only this row. Chrome's shared login belongs to the user.
   }
 
-  remove(account) { return this.logout(account); }
+  async remove(account) {
+    await this.logout(account);
+    delete this.tabs[account.id];
+    this.save();
+  }
 
   close() {
     for (const entry of this.entries.values()) entry.generation += 1;
@@ -375,4 +437,4 @@ class ClaudeWebUsage {
   }
 }
 
-module.exports = { ClaudeWebUsage, parseWebUsage, retryDelay, pollIntervalMs, pageRead, chromeCommand, matchingChromeProfile, connectionUrl };
+module.exports = { ClaudeWebUsage, parseWebUsage, retryDelay, pollIntervalMs, pageRead, chromeCommand, userChromePid, matchingChromeProfile, connectionUrl };

@@ -283,12 +283,25 @@ function buildResetTitle(data) {
   }).join("\n");
 }
 
+// Local wall-clock reset, e.g. "Sun 2:00 AM", shown under each countdown.
+function formatResetClock(date) {
+  return date.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
 function renderResetSummary(elements, data) {
-  const text = usageWindows(data).map((window) => {
+  // Claude omits the 5-hour reset until the first message opens that window;
+  // its full allowance line already says so.
+  // The smallest layout reserves two lines per account, so it keeps countdowns only.
+  const showClock = !globalThis.matchMedia?.("(max-height: 175px)").matches;
+  const text = usageWindows(data).filter((window) => !(
+    displayWindowLabel(window.label) !== "Weekly" && !getResetDate(window) && !window.resetText && window.usedPercent === 0
+  )).map((window) => {
     const label = displayWindowLabel(window.label) === "Weekly" ? "Week" : compactWindowLabel(window.label);
-    const countdown = formatResetCountdown(getResetDate(window));
+    const date = getResetDate(window);
+    const countdown = formatResetCountdown(date);
     const reset = countdown === "due" ? "reset due" : countdown || getWindowReset(window, true) || "reset not reported";
-    return `${label} · ${reset}`;
+    // Only the weekly reset is far enough away to need its wall-clock time.
+    return showClock && label === "Week" && date && countdown !== "due" ? `${label} · ${reset}\n${formatResetClock(date)}` : `${label} · ${reset}`;
   }).join("\n");
   elements.summary.textContent = text;
   elements.summary.title = buildResetTitle(data);

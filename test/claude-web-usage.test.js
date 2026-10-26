@@ -4,7 +4,7 @@ const vm = require("node:vm");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { ClaudeWebUsage, parseWebUsage, retryDelay, pageRead, chromeCommand, matchingChromeProfile, connectionUrl } = require("../claude-web-usage");
+const { ClaudeWebUsage, parseWebUsage, retryDelay, pageRead, chromeCommand, userChromePid, matchingChromeProfile, connectionUrl } = require("../claude-web-usage");
 const server = require("../server");
 const org = "11111111-1111-4111-8111-111111111111";
 const otherOrg = "22222222-2222-4222-8222-222222222222";
@@ -86,6 +86,8 @@ test("Sign In opens Chrome and persists only its tab association", async () => {
     const restarted = new ClaudeWebUsage({ statePath });
     assert.equal(restarted.tabs[account.id], "123");
     await restarted.logout(account);
+    assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), { [account.id]: null });
+    await restarted.remove(account);
     assert.deepEqual(JSON.parse(fs.readFileSync(statePath)), {});
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
@@ -93,6 +95,24 @@ test("Sign In opens Chrome and persists only its tab association", async () => {
 test("missing association never launches Chrome in the background", async () => {
   const h = harness();
   delete h.reader.tabs[account.id];
+  h.set(async () => ({ tabId: null }));
+  await assert.rejects(h.reader.read(account), /Sign in/);
+  assert.deepEqual(h.calls, [{ action: "find", url: connectionUrl(account) }]);
+});
+
+test("a lost association reconnects to the still-open marked tab without opening one", async () => {
+  const h = harness();
+  delete h.reader.tabs[account.id];
+  h.set(async (command) => command.action === "find" ? { tabId: "marked" } : { requestId: JSON.parse(command.script.match(/\)\((".*?")/)[1]), identity: account, usage: payload });
+  const usage = await h.reader.read(account);
+  assert.equal(usage.source, "claude_web_usage");
+  assert.equal(h.reader.tabs[account.id], "marked");
+  assert.ok(h.calls.every((command) => command.action !== "open" && !command.allowLaunch));
+});
+
+test("Log Out stays disconnected without searching Chrome", async () => {
+  const h = harness();
+  await h.reader.logout(account);
   await assert.rejects(h.reader.read(account), /Sign in/);
   assert.equal(h.calls.length, 0);
 });
@@ -128,7 +148,7 @@ test("disconnect during Sign In cannot restore the tab association", async () =>
   await h.reader.logout(account);
   finish({ tabId: "stale" });
   await pending;
-  assert.equal(h.reader.tabs[account.id], undefined);
+  assert.equal(h.reader.tabs[account.id], null);
 });
 
 test("hung reads time out and wrong request IDs are rejected", async () => {
@@ -261,7 +281,7 @@ test("disconnect during recovery cannot save or accept the replacement tab", asy
   await h.reader.logout(account);
   finish();
   await assert.rejects(pending, /connection changed/);
-  assert.equal(h.reader.tabs[account.id], undefined);
+  assert.equal(h.reader.tabs[account.id], null);
   await assert.rejects(h.reader.read(account), /Sign in/);
 });
 
@@ -376,9 +396,20 @@ test("wrong profile clears the tab association so Sign In uses the front Chrome 
   const h = harness();
   h.set(async (command) => command.action === "open" ? { tabId: "correct-profile" } : { mismatch: true, error: "different Claude account" });
   await assert.rejects(h.reader.read(account), /different Claude account/);
+  assert.equal(h.reader.tabs[account.id], null);
+  const callsBeforeSignIn = h.calls.length;
+  await assert.rejects(h.reader.read(account), /Sign in/);
+  assert.equal(h.calls.length, callsBeforeSignIn, "a wrong-account tab is not re-read every poll");
   await h.reader.openLogin(account);
-  assert.equal(h.calls[1].tabId, undefined);
+  assert.equal(h.calls.at(-1).tabId, null);
   assert.equal(h.reader.tabs[account.id], "correct-profile");
+});
+
+test("a never-connected row keeps its Sign in prompt when Chrome cannot be searched", async () => {
+  const h = harness();
+  delete h.reader.tabs[account.id];
+  h.set(async () => { throw new Error("Open Google Chrome to resume Claude usage updates."); });
+  await assert.rejects(h.reader.read(account), /Sign in to Claude in Chrome/);
 });
 
 test("page collector coalesces requests and retains upstream backoff across new IDs", async () => {
@@ -454,4 +485,31 @@ test("saved organization auth failure reconnects through the front Chrome profil
     assert.equal(h.calls[1].tabId, undefined);
     assert.equal(h.reader.tabs[account.id], "matching-profile");
   }
+});
+
+test('Chrome commands target the user Chrome instead of automation instances', () => {
+  const app = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  assert.equal(userChromePid([
+    `25296 ${app} --disable-field-trial-config --user-data-dir=/tmp/pw --remote-debugging-pipe about:blank`,
+    `3201 ${app}/../Helpers/x --type=renderer`,
+    `3107 ${app}`,
+    `40000 ${app} --enable-automation`
+  ].join('\n')), 3107);
+  assert.equal(userChromePid(`25296 ${app} --user-data-dir=/tmp/pw`), null);
+  assert.equal(userChromePid(`25296 ${app} --user-data-dir=/tmp/pw\n5100 ${app} https://claude.ai/new`), 5100);
+  assert.equal(userChromePid(`25296 ${app} https://example.test --headless`), null);
+  assert.equal(userChromePid(""), null);
+  let target;
+  const chrome = { running: () => true, windows: () => [] };
+  vm.runInNewContext(`(${chromeCommand.toString()})({action:'find',url:'https://claude.ai/x',pid:3107})`, { Application: (id) => { target = id; return chrome; } });
+  assert.equal(target, 3107);
+});
+
+test("a closed tab reuses an open marked tab even without a unique Chrome profile", async () => {
+  const h = recoveryHarness({ profileForEmail: () => null });
+  h.setTab("marked-elsewhere");
+  const usage = await h.reader.read(account);
+  assert.equal(usage.source, "claude_web_usage");
+  assert.equal(h.reader.tabs[account.id], "marked-elsewhere");
+  assert.equal(h.opened.length, 0);
 });
