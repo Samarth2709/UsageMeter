@@ -1102,12 +1102,146 @@ function readClaudeOAuthFallback(account, options) {
   return claudeOAuthFallback.promise;
 }
 
+// The profile only changes with a new login, so fetch it once per token and
+// leave the usage endpoint's small rate allowance for usage.
+async function readClaudeOAuthProfile(credentials, requestJson = fetchJsonWithTimeout) {
+  if (claudeOAuthProfileCache?.accessToken === credentials.accessToken) return claudeOAuthProfileCache.profile;
+  const profile = await requestClaudeOAuthJson(claudeOAuthProfileEndpoint, credentials.accessToken, requestJson);
+  claudeOAuthProfileCache = { accessToken: credentials.accessToken, profile };
+  return profile;
+}
+
+// Claude Code reports the account's 5-hour and weekly utilization on every
+// turn: to its terminal status line, and as stream-json `rate_limit_event`
+// messages that T3 Code records in its provider logs. Reading those local
+// observations keeps the meter current without another request to the
+// rate-limited usage endpoint that every Claude Code session shares.
+let claudeStatuslineLimitsPath = process.env.RATE_LIMIT_TOOL_CLAUDE_STATUSLINE_PATH || path.join(appDataDir, "claude-statusline-limits.json");
+let t3ProviderLogDir = process.env.RATE_LIMIT_TOOL_T3_LOG_DIR || path.join(os.homedir(), ".t3", "userdata", "logs", "provider");
+const claudeLocalUsageMaxAgeMs = 10 * 60 * 1000;
+const t3LogTailBytes = 1024 * 1024;
+
+function localClaudeWindow(label, usedPercent, resetsAt) {
+  const used = Number(usedPercent);
+  if (usedPercent === null || usedPercent === undefined || !Number.isFinite(used)) return null;
+  const clamped = Math.min(100, Math.max(0, used));
+  return { label, usedPercent: clamped, remainingPercent: Math.max(0, 100 - clamped), resetAt: coerceResetAt(resetsAt), source: "claude_code_local" };
+}
+
+async function readClaudeStatuslineObservation(filePath) {
+  try {
+    const saved = JSON.parse(await fs.readFile(filePath, "utf8"));
+    const limits = saved?.rate_limits;
+    return {
+      observedAt: Number(saved?.observedAt) * 1000,
+      source: "claude_code_statusline",
+      windows: [
+        localClaudeWindow("5-hour", limits?.five_hour?.used_percentage, limits?.five_hour?.resets_at),
+        localClaudeWindow("weekly", limits?.seven_day?.used_percentage, limits?.seven_day?.resets_at)
+      ].filter(Boolean)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findNestedKey(value, key, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) return null;
+  if (Object.prototype.hasOwnProperty.call(value, key)) return value[key];
+  for (const child of Object.values(value)) {
+    const found = findNestedKey(child, key, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function readT3RateLimitObservation(directory, nowMs) {
+  let names;
+  try { names = await fs.readdir(directory); } catch { return null; }
+  const files = (await Promise.all(names.filter((name) => /^events\..+\.log$/.test(name)).map(async (name) => {
+    const filePath = path.join(directory, name);
+    try {
+      const stat = await fs.stat(filePath);
+      return { filePath, mtimeMs: stat.mtimeMs, size: stat.size };
+    } catch { return null; }
+  }))).filter((file) => file && nowMs - file.mtimeMs <= claudeLocalUsageMaxAgeMs)
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    .slice(0, 5);
+  let newest = null;
+  for (const file of files) {
+    let text = "";
+    const handle = await fs.open(file.filePath, "r");
+    try {
+      const length = Math.min(file.size, t3LogTailBytes);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, file.size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      await handle.close();
+    }
+    const lines = text.split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (!line.includes('"unifiedWindows"') || !line.includes("rate_limit_event")) continue;
+      let parsed;
+      try { parsed = JSON.parse(line.slice(line.indexOf("{"))); } catch { continue; }
+      const windows = findNestedKey(parsed, "unifiedWindows");
+      const observedAt = Date.parse(parsed?.observedAt || line.slice(1, line.indexOf("]")));
+      if (!windows || !Number.isFinite(observedAt)) continue;
+      const fraction = (raw) => raw?.utilization === null || raw?.utilization === undefined ? null : Number(raw.utilization) * 100;
+      const observation = {
+        observedAt,
+        source: "t3_claude_rate_limit_event",
+        windows: [
+          localClaudeWindow("5-hour", fraction(windows.five_hour), windows.five_hour?.resetsAt),
+          localClaudeWindow("weekly", fraction(windows.seven_day), windows.seven_day?.resetsAt)
+        ].filter(Boolean)
+      };
+      if (observation.windows.length && (!newest || observation.observedAt > newest.observedAt)) newest = observation;
+      break;
+    }
+  }
+  return newest;
+}
+
+async function readClaudeLocalUsage(options = {}) {
+  const now = (options.now || new Date()).getTime();
+  const observations = (await Promise.all([
+    readClaudeStatuslineObservation(options.statuslinePath || claudeStatuslineLimitsPath),
+    readT3RateLimitObservation(options.t3LogDir || t3ProviderLogDir, now)
+  ])).filter((observation) => observation?.windows.length
+    && Number.isFinite(observation.observedAt)
+    && now - observation.observedAt <= claudeLocalUsageMaxAgeMs
+    && observation.observedAt - now <= 60000);
+  if (!observations.length) throw new Error("No current Claude Code usage observation was found.");
+  const newest = observations.sort((left, right) => right.observedAt - left.observedAt)[0];
+  // These observations carry no identity: bind them to the CLI login that
+  // produced them, and the caller only accepts a login matching the row.
+  const credentials = await (options.readCredentials || readClaudeOAuthCredentials)();
+  const profile = await readClaudeOAuthProfile(credentials, options.requestJson || fetchJsonWithTimeout);
+  return {
+    service: "claude",
+    source: newest.source,
+    providerAccountId: firstString(profile?.account?.uuid, profile?.account?.id),
+    email: firstString(profile?.account?.email, profile?.email),
+    organization: firstString(profile?.organization?.uuid, profile?.organization?.id),
+    windows: newest.windows,
+    fetchedAt: new Date(newest.observedAt).toISOString()
+  };
+}
+
 async function fetchClaudeUsage(account, options = {}) {
   if (claudeWebProvider && !options.skipWebProvider) {
     try {
       return await claudeWebProvider.read(account);
     } catch (webError) {
       if (!account?.providerAccountId || !account?.organization) throw webError;
+      try {
+        const local = await readClaudeLocalUsage(options);
+        if (claudeOAuthUsageMatchesAccount(account, local)) return local;
+      } catch (localError) {
+        if (!/No current Claude Code usage observation/.test(localError.message)) console.warn(`[claude-local] ${localError.message}`);
+      }
       let usage = null;
       try {
         usage = await readClaudeOAuthFallback(account, options);
@@ -1129,17 +1263,7 @@ async function fetchClaudeUsage(account, options = {}) {
   }
 
   const credentials = await readCredentials();
-  // The profile only changes with a new login, so fetch it once per token and
-  // spend the endpoint's small rate allowance on usage.
-  let profile = claudeOAuthProfileCache?.accessToken === credentials.accessToken ? claudeOAuthProfileCache.profile : null;
-  if (!profile) {
-    profile = await requestClaudeOAuthJson(
-      claudeOAuthProfileEndpoint,
-      credentials.accessToken,
-      requestJson
-    );
-    claudeOAuthProfileCache = { accessToken: credentials.accessToken, profile };
-  }
+  const profile = await readClaudeOAuthProfile(credentials, requestJson);
   const usage = await requestClaudeOAuthJson(
     claudeOAuthUsageEndpoint,
     credentials.accessToken,
@@ -2831,6 +2955,8 @@ module.exports = {
     parseClaudeOAuthUsage,
     fetchClaudeUsage,
     claudeOAuthUsageMatchesAccount,
+    readClaudeLocalUsage,
+    setClaudeLocalUsagePaths: ({ statuslinePath, t3LogDir }) => { claudeStatuslineLimitsPath = statuslinePath; t3ProviderLogDir = t3LogDir; },
     resetClaudeOAuthFallback: () => { claudeOAuthFallback = null; claudeOAuthProfileCache = null; },
     primeClaudeOAuthFallback: (promise) => { promise.catch(() => {}); claudeOAuthFallback = { at: Date.now(), ok: false, promise }; },
     claudeUsageRequestTimeoutMs,

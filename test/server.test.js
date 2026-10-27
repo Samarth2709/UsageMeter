@@ -6,6 +6,8 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 
 const { getClaudeAuthStatus, _test } = require("../server");
+// Never read the real Claude Code status line file from tests.
+_test.setClaudeLocalUsagePaths({ statuslinePath: path.join(os.tmpdir(), "usage-meter-test-no-statusline.json"), t3LogDir: path.join(os.tmpdir(), "usage-meter-test-no-t3-logs") });
 const packageJson = require("../package.json");
 
 function base64UrlJson(value) {
@@ -1743,5 +1745,59 @@ test("Claude rows refreshing together share one Claude Code login read", async (
   } finally {
     _test.resetClaudeOAuthFallback();
     setClaudeWebProvider(null);
+  }
+});
+
+test("current local Claude Code observations stand in for Chrome without calling the usage endpoint", async () => {
+  const { setClaudeWebProvider } = require("../server");
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "claude-local-test-"));
+  const statuslinePath = path.join(directory, "limits.json");
+  const t3LogDir = path.join(directory, "provider");
+  await fs.mkdir(t3LogDir);
+  const now = new Date();
+  const row = { type: "claude", providerAccountId: "acct-claude", email: "samarthk@cantina.security", organization: "org-cantina" };
+  const urls = [];
+  const options = (accountId = "acct-claude") => ({
+    now,
+    statuslinePath,
+    t3LogDir,
+    readCredentials: async () => ({ accessToken: `token-${accountId}` }),
+    requestJson: async (url) => {
+      urls.push(url);
+      if (url.endsWith("/profile")) return { response: { ok: true, status: 200 }, payload: { account: { uuid: accountId, email: row.email }, organization: { uuid: "org-cantina" } } };
+      return { response: { ok: false, status: 429, headers: { get: () => null } }, payload: {} };
+    }
+  });
+  const t3Line = (at, five, week) => `[${at.toISOString()}] NTIVE: ${JSON.stringify({ observedAt: at.toISOString(), event: { method: "claude/rate_limit_event", payload: { type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: 1788368400 }, seven_day: { utilization: week, resetsAt: 1788800000 } } } } } })}\n`;
+  _test.resetClaudeUsageBackoff();
+  _test.resetClaudeOAuthFallback();
+  setClaudeWebProvider({ read: async () => { throw new Error("Sign in to Claude in Chrome from Usage Meter."); } });
+  try {
+    await fs.writeFile(path.join(t3LogDir, "events.thread.log"), "noise\n" + t3Line(new Date(now - 120000), 0.25, 0.2) + "other line\n");
+    let data = await _test.fetchClaudeUsage(row, options());
+    assert.equal(data.source, "t3_claude_rate_limit_event");
+    assert.deepEqual(data.windows.map((window) => [window.label, window.remainingPercent]), [["5-hour", 75], ["weekly", 80]]);
+    assert.equal(data.windows[0].resetAt, new Date(1788368400 * 1000).toISOString());
+    assert.equal(data.fetchedAt, new Date(now - 120000).toISOString());
+
+    _test.resetClaudeOAuthFallback();
+    await fs.writeFile(statuslinePath, JSON.stringify({ observedAt: (now.getTime() - 30000) / 1000, rate_limits: { five_hour: { used_percentage: 42, resets_at: 1788368400 }, seven_day: { used_percentage: 10.5, resets_at: 1788800000 } } }));
+    data = await _test.fetchClaudeUsage(row, options());
+    assert.equal(data.source, "claude_code_statusline", "the newest observation wins");
+    assert.deepEqual(data.windows.map((window) => [window.label, window.remainingPercent]), [["5-hour", 58], ["weekly", 89.5]]);
+    assert.equal(urls.filter((url) => !url.endsWith("/profile")).length, 0);
+
+    _test.resetClaudeOAuthFallback();
+    await assert.rejects(_test.fetchClaudeUsage(row, options("someone-else")), /Sign in to Claude in Chrome/);
+
+    _test.resetClaudeOAuthFallback();
+    await fs.writeFile(statuslinePath, JSON.stringify({ observedAt: (now.getTime() - 11 * 60 * 1000) / 1000, rate_limits: { seven_day: { used_percentage: 10 } } }));
+    await fs.writeFile(path.join(t3LogDir, "events.thread.log"), t3Line(new Date(now - 11 * 60 * 1000), 0.1, 0.1));
+    await assert.rejects(_test.fetchClaudeUsage(row, options()), /Sign in to Claude in Chrome/);
+  } finally {
+    _test.resetClaudeOAuthFallback();
+    _test.resetClaudeUsageBackoff();
+    setClaudeWebProvider(null);
+    await fs.rm(directory, { recursive: true, force: true });
   }
 });

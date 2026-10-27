@@ -6,6 +6,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { ClaudeWebUsage, parseWebUsage, retryDelay, pageRead, chromeCommand, userChromePid, matchingChromeProfile, connectionUrl } = require("../claude-web-usage");
 const server = require("../server");
+// Never read the real Claude Code status line file from tests.
+server._test.setClaudeLocalUsagePaths({ statuslinePath: path.join(os.tmpdir(), "usage-meter-test-no-statusline.json"), t3LogDir: path.join(os.tmpdir(), "usage-meter-test-no-t3-logs") });
 const org = "11111111-1111-4111-8111-111111111111";
 const otherOrg = "22222222-2222-4222-8222-222222222222";
 const account = { id: "claude-one", type: "claude", providerAccountId: "account-one", email: "one@example.test", organization: org };

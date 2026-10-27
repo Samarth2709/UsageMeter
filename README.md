@@ -36,6 +36,14 @@ Usage Meter is designed around local CLI state:
 
 - Usage History indexes local `.jsonl` transcripts in a short-lived worker, reads only newly appended bytes after the first pass, and saves compact 90-day aggregates under `~/.rate-limit-tool/`. Indexed history stays available when a CLI cleans up an old transcript. It does not upload transcript contents.
 - Codex limits use the authenticated credentials already stored by Codex and call its usage service.
+- When the Chrome reading is unavailable, Claude limits come from Claude Code itself: the latest limits that T3 Code logs for Claude sessions, or a status line script that saves Claude Code's `rate_limits` input, for example:
+
+  ```sh
+  limits=$(printf '%s' "$input" | jq -c '.rate_limits // empty')
+  [ -n "$limits" ] && printf '{"observedAt":%s,"rate_limits":%s}\n' "$(date +%s)" "$limits" > ~/.rate-limit-tool/claude-statusline-limits.json
+  ```
+
+  Otherwise the app reads Anthropic's rate-limited OAuth usage endpoint with the Claude Code login, read-only.
 - The app reads Claude limits every 60 seconds through a dedicated Google Chrome tab using its existing signed-in session. It checks the account and organization before accepting percentages or reset times. Failed reads retain the original timestamp and show `Cached`; authentication failures also show **Sign in**. Provider throttling can delay a refresh.
 - Claude credentials stay in Google Chrome. Only tab IDs are saved in `~/.rate-limit-tool/claude-chrome-tabs.json`; the reader does not extract cookies or modify Claude Code credentials. **Log Out**, **Log Out & Remove Login**, and **Delete Row** disconnect that row from Chrome. They preserve your shared Chrome login; use Claude's own menu to sign out of the website. The standalone browser/debug server retains the older read-only Keychain/OAuth path.
 - App configuration, saved identities, caches, window state, verified Core versions, and optional automation state live under `~/.rate-limit-tool/`.
