@@ -7,7 +7,7 @@ const vm = require("node:vm");
 
 const { getClaudeAuthStatus, _test } = require("../server");
 // Never read the real Claude Code status line file from tests.
-_test.setClaudeLocalUsagePaths({ statuslinePath: path.join(os.tmpdir(), "usage-meter-test-no-statusline.json"), t3LogDir: path.join(os.tmpdir(), "usage-meter-test-no-t3-logs") });
+_test.setClaudeLocalUsagePaths({ statuslinePath: path.join(os.tmpdir(), "usage-meter-test-no-statusline.json"), t3LogDir: path.join(os.tmpdir(), "usage-meter-test-no-t3-logs"), claudeConfigPath: path.join(os.tmpdir(), "usage-meter-test-no-claude.json") });
 const packageJson = require("../package.json");
 
 function base64UrlJson(value) {
@@ -1797,6 +1797,40 @@ test("current local Claude Code observations stand in for Chrome without calling
   } finally {
     _test.resetClaudeOAuthFallback();
     _test.resetClaudeUsageBackoff();
+    setClaudeWebProvider(null);
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("local observations use Claude Code's signed-in account when its access token has expired", async () => {
+  const { setClaudeWebProvider } = require("../server");
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "claude-local-identity-test-"));
+  const t3LogDir = path.join(directory, "provider");
+  const claudeConfigPath = path.join(directory, ".claude.json");
+  await fs.mkdir(t3LogDir);
+  const now = new Date();
+  const row = { type: "claude", providerAccountId: "acct-claude", email: "samarthk@cantina.security", organization: "org-cantina" };
+  const at = new Date(now - 60000).toISOString();
+  await fs.writeFile(path.join(t3LogDir, "events.thread.log"), `[${at}] NTIVE: ${JSON.stringify({ observedAt: at, event: { method: "claude/rate_limit_event", payload: { type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.4, resetsAt: 1788368400 }, seven_day: { utilization: 0.3, resetsAt: 1788800000 } } } } } })}\n`);
+  const options = {
+    now,
+    t3LogDir,
+    claudeConfigPath,
+    statuslinePath: path.join(directory, "none.json"),
+    readCredentials: async () => { throw new Error("The saved Claude Code login has expired. Sign in to Claude again."); }
+  };
+  _test.resetClaudeOAuthFallback();
+  setClaudeWebProvider({ read: async () => { throw new Error("Sign in to Claude in Chrome from Usage Meter."); } });
+  try {
+    await fs.writeFile(claudeConfigPath, JSON.stringify({ oauthAccount: { accountUuid: "acct-claude", emailAddress: row.email, organizationUuid: "org-cantina" } }));
+    const data = await _test.fetchClaudeUsage(row, options);
+    assert.equal(data.source, "t3_claude_rate_limit_event");
+    assert.deepEqual(data.windows.map((window) => window.remainingPercent), [60, 70]);
+    _test.resetClaudeOAuthFallback();
+    await fs.writeFile(claudeConfigPath, JSON.stringify({ oauthAccount: { accountUuid: "acct-other", emailAddress: row.email, organizationUuid: "org-cantina" } }));
+    await assert.rejects(_test.fetchClaudeUsage(row, options), /Sign in to Claude in Chrome/);
+  } finally {
+    _test.resetClaudeOAuthFallback();
     setClaudeWebProvider(null);
     await fs.rm(directory, { recursive: true, force: true });
   }

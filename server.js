@@ -1204,6 +1204,23 @@ async function readT3RateLimitObservation(directory, nowMs) {
   return newest;
 }
 
+let claudeCodeConfigPath = process.env.RATE_LIMIT_TOOL_CLAUDE_CONFIG_PATH
+  || path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), ".claude.json");
+
+async function readClaudeCodeAccount(configPath) {
+  try {
+    const account = JSON.parse(await fs.readFile(configPath, "utf8"))?.oauthAccount;
+    const identity = {
+      providerAccountId: firstString(account?.accountUuid),
+      email: firstString(account?.emailAddress),
+      organization: firstString(account?.organizationUuid)
+    };
+    return identity.providerAccountId && identity.organization ? identity : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readClaudeLocalUsage(options = {}) {
   const now = (options.now || new Date()).getTime();
   const observations = (await Promise.all([
@@ -1215,16 +1232,24 @@ async function readClaudeLocalUsage(options = {}) {
     && observation.observedAt - now <= 60000);
   if (!observations.length) throw new Error("No current Claude Code usage observation was found.");
   const newest = observations.sort((left, right) => right.observedAt - left.observedAt)[0];
-  // These observations carry no identity: bind them to the CLI login that
-  // produced them, and the caller only accepts a login matching the row.
-  const credentials = await (options.readCredentials || readClaudeOAuthCredentials)();
-  const profile = await readClaudeOAuthProfile(credentials, options.requestJson || fetchJsonWithTimeout);
+  // These observations carry no identity: bind them to the account Claude Code
+  // is signed in to, and the caller only accepts one matching the row. Claude
+  // Code's own config names it without a token, so an expired access token
+  // (refreshed only when Claude Code next calls the API) cannot block it.
+  const identity = await readClaudeCodeAccount(options.claudeConfigPath || claudeCodeConfigPath)
+    || await (async () => {
+      const credentials = await (options.readCredentials || readClaudeOAuthCredentials)();
+      const profile = await readClaudeOAuthProfile(credentials, options.requestJson || fetchJsonWithTimeout);
+      return {
+        providerAccountId: firstString(profile?.account?.uuid, profile?.account?.id),
+        email: firstString(profile?.account?.email, profile?.email),
+        organization: firstString(profile?.organization?.uuid, profile?.organization?.id)
+      };
+    })();
   return {
     service: "claude",
     source: newest.source,
-    providerAccountId: firstString(profile?.account?.uuid, profile?.account?.id),
-    email: firstString(profile?.account?.email, profile?.email),
-    organization: firstString(profile?.organization?.uuid, profile?.organization?.id),
+    ...identity,
     windows: newest.windows,
     fetchedAt: new Date(newest.observedAt).toISOString()
   };
@@ -2956,7 +2981,7 @@ module.exports = {
     fetchClaudeUsage,
     claudeOAuthUsageMatchesAccount,
     readClaudeLocalUsage,
-    setClaudeLocalUsagePaths: ({ statuslinePath, t3LogDir }) => { claudeStatuslineLimitsPath = statuslinePath; t3ProviderLogDir = t3LogDir; },
+    setClaudeLocalUsagePaths: ({ statuslinePath, t3LogDir, claudeConfigPath }) => { claudeStatuslineLimitsPath = statuslinePath; t3ProviderLogDir = t3LogDir; if (claudeConfigPath) claudeCodeConfigPath = claudeConfigPath; },
     resetClaudeOAuthFallback: () => { claudeOAuthFallback = null; claudeOAuthProfileCache = null; },
     primeClaudeOAuthFallback: (promise) => { promise.catch(() => {}); claudeOAuthFallback = { at: Date.now(), ok: false, promise }; },
     claudeUsageRequestTimeoutMs,
